@@ -1,0 +1,1131 @@
+import express from 'express';
+import { MongoClient, ObjectId } from 'mongodb';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import multer from 'multer';
+import axios from 'axios';
+import FormData from 'form-data';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import fs from 'fs';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleAuth } from 'google-auth-library';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const app = express();
+
+// Serve React app static files
+app.use(express.static(join(__dirname, 'frontend/dist')));
+
+const MONGODB_URI = process.env.MONGODB_URI;
+const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
+
+let db;
+const client = new MongoClient(MONGODB_URI);
+
+await client.connect();
+db = client.db('ragchatbot');
+console.log('Connected to MongoDB');
+
+// Auto-create admin user if not exists
+const adminEmail = process.env.ADMIN_EMAIL || 'admin@gencode.com.my';
+const adminPassword = process.env.ADMIN_PASSWORD || 'Admin@123';
+
+const adminExists = await db.collection('users').findOne({ email: adminEmail });
+if (!adminExists) {
+  const hashedPassword = await bcrypt.hash(adminPassword, 10);
+  await db.collection('users').insertOne({
+    email: adminEmail,
+    password: hashedPassword,
+    role: 'admin',
+    organizationId: null, // Admin has no org restriction
+    createdAt: new Date()
+  });
+  console.log(`Admin user created: ${adminEmail}`);
+} else {
+  console.log('Admin user already exists');
+}
+
+// Initialize default settings
+const settingsExists = await db.collection('settings').findOne({ _id: 'config' });
+if (!settingsExists) {
+  await db.collection('settings').insertOne({
+    _id: 'config',
+    companyName: 'GenBotChat',
+    voiceMode: 'browser',
+    voiceLanguage: 'auto',
+    googleSttApiKey: '',
+    googleTtsApiKey: '',
+    geminiSttApiKey: '',
+    geminiTtsApiKey: '',
+    elevenlabsApiKey: '',
+    elevenlabsVoice: 'onwK4e9ZLuTAKqWW03F9',
+    gclasServiceAccount: '',
+    gclasLanguage: 'auto',
+    gclasVoice: 'en-US-Neural2-C',
+    geminiVoice: 'Aoede',
+    geminiTtsLanguage: 'auto',
+    ttsMode: 'browser',
+    ttsLanguage: 'en-US',
+    chatWebhook: '',
+    uploadWebhook: '',
+    transcribeWebhook: '',
+    s3Bucket: '',
+    s3Region: '',
+    s3AccessKey: '',
+    s3SecretKey: ''
+  });
+  console.log('Default settings initialized');
+}
+
+// Helper to get S3 client
+async function getS3Client() {
+  const settings = await db.collection('settings').findOne({ _id: 'config' });
+  if (!settings?.s3AccessKey || !settings?.s3SecretKey || !settings?.s3Region) {
+    return null;
+  }
+  return new S3Client({
+    region: settings.s3Region,
+    credentials: {
+      accessKeyId: settings.s3AccessKey,
+      secretAccessKey: settings.s3SecretKey
+    }
+  });
+}
+
+// Helper to get webhook URLs from DB
+async function getWebhookUrls() {
+  const settings = await db.collection('settings').findOne({ _id: 'config' });
+  return {
+    chat: settings?.chatWebhook || 'http://localhost:5678/webhook/chat',
+    upload: settings?.uploadWebhook || 'http://localhost:5678/webhook/upload',
+    transcribe: settings?.transcribeWebhook || 'http://localhost:5678/webhook/transcribe'
+  };
+}
+
+// Middleware
+app.use(express.json());
+app.use(express.static('public'));
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, 'uploads/'),
+  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
+});
+const upload = multer({ storage });
+
+const auth = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'No token' });
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch (err) {
+    console.error('Auth error:', err.message);
+    res.status(401).json({ error: 'Invalid token' });
+  }
+};
+
+const adminOnly = (req, res, next) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+  next();
+};
+
+// Auth
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body;
+  const user = await db.collection('users').findOne({ email });
+  if (!user || !await bcrypt.compare(password, user.password)) {
+    return res.json({ success: false, message: 'Invalid credentials' });
+  }
+  
+  // Get organization name if user has organizationId
+  let organizationName = null;
+  if (user.organizationId) {
+    const org = await db.collection('organizations').findOne({ _id: new ObjectId(user.organizationId) });
+    organizationName = org?.name || null;
+  }
+  
+  const token = jwt.sign({ 
+    id: user._id, 
+    email: user.email, 
+    role: user.role,
+    organizationId: user.organizationId || null
+  }, JWT_SECRET);
+  res.json({ 
+    success: true, 
+    token, 
+    user: { 
+      id: user._id, 
+      email: user.email, 
+      role: user.role,
+      organizationId: user.organizationId || null,
+      organizationName: organizationName
+    } 
+  });
+});
+
+// Chat
+app.post('/api/chat', auth, async (req, res) => {
+  try {
+    const { message, sessionId, fileId } = req.body;
+    const chatSessionId = sessionId || new ObjectId().toString();
+    
+    // Get user info for startedBy
+    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const startedByEmail = user?.email || 'Unknown';
+    const startedByName = startedByEmail.split('@')[0];
+    
+    // Save user message
+    await db.collection('messages').insertOne({
+      userId: req.user.id,
+      sessionId: chatSessionId,
+      organizationId: req.user.organizationId,
+      startedBy: startedByName,
+      startedByEmail: startedByEmail,
+      role: 'user',
+      content: message,
+      createdAt: new Date()
+    });
+
+    // Get webhook URL from settings
+    const webhooks = await getWebhookUrls();
+
+    // Send to n8n with sessionId, fileId and timeout
+    const { data } = await axios.post(webhooks.chat, { 
+      message, 
+      userId: req.user.id,
+      organizationId: req.user.organizationId,
+      sessionId: chatSessionId,
+      fileId: fileId || null
+    }, {
+      sessionId: chatSessionId
+    }, {
+      timeout: 60000 // 1 minute timeout
+    });
+
+    // Save bot response
+    await db.collection('messages').insertOne({
+      userId: req.user.id,
+      sessionId: chatSessionId,
+      organizationId: req.user.organizationId,
+      startedBy: startedByName,
+      startedByEmail: startedByEmail,
+      role: 'bot',
+      content: data.response,
+      createdAt: new Date()
+    });
+
+    res.json({ response: data.response, sessionId: chatSessionId });
+  } catch (error) {
+    console.error('Chat error:', error);
+    res.status(500).json({ 
+      error: 'Failed to get response. Please check n8n webhook configuration.',
+      details: error.message 
+    });
+  }
+});
+
+// Get chat history
+app.get('/api/messages', auth, async (req, res) => {
+  const sessionId = req.query.sessionId;
+  let query = {};
+  
+  if (req.user.role === 'admin') {
+    // Admin sees all chats
+    query = {};
+  } else if (req.user.role === 'manager') {
+    // Manager sees own chats + users in their org
+    query = {
+      organizationId: req.user.organizationId
+    };
+  } else {
+    // User sees only own chats
+    query = {
+      userId: req.user.id
+    };
+  }
+  
+  if (sessionId) query.sessionId = sessionId;
+  
+  const messages = await db.collection('messages')
+    .find(query)
+    .sort({ createdAt: 1 })
+    .toArray();
+  res.json(messages.map(m => ({ role: m.role, content: m.content })));
+});
+
+// Get chat sessions
+app.get('/api/sessions', auth, async (req, res) => {
+  const matchQuery = req.user.role === 'admin'
+    ? { role: 'user' }
+    : { organizationId: req.user.organizationId, role: 'user' };
+    
+  const sessions = await db.collection('messages')
+    .aggregate([
+      { $match: matchQuery },
+      { $sort: { createdAt: 1 } },
+      { $group: {
+        _id: '$sessionId',
+        firstMessage: { $first: '$content' },
+        lastMessageAt: { $last: '$createdAt' },
+        messageCount: { $sum: 1 }
+      }},
+      { $sort: { lastMessageAt: -1 } },
+      { $limit: 50 }
+    ]).toArray();
+  
+  res.json(sessions.map(s => ({
+    id: s._id,
+    title: (s.firstMessage || 'New chat').substring(0, 50),
+    lastMessageAt: s.lastMessageAt,
+    messageCount: s.messageCount
+  })));
+});
+
+// Delete chat session
+app.delete('/api/sessions/:id', auth, async (req, res) => {
+  try {
+    // Verify session belongs to user's org or user is admin
+    const matchQuery = req.user.role === 'admin'
+      ? { sessionId: req.params.id }
+      : { sessionId: req.params.id, organizationId: req.user.organizationId };
+      
+    const sessionExists = await db.collection('messages').findOne(matchQuery);
+    
+    if (!sessionExists) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    
+    // Delete all messages in this session
+    await db.collection('messages').deleteMany({
+      sessionId: req.params.id,
+      userId: req.user.id
+    });
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete session error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Upload file
+app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
+  try {
+    const { targetOrganization } = req.body; // "all" or specific orgId
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const s3Client = await getS3Client();
+    
+    // Get uploader info
+    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const uploaderEmail = user?.email || 'Unknown';
+    const uploaderName = uploaderEmail.split('@')[0];
+    
+    // Determine organization for file
+    let fileOrganizationId = null;
+    let isAllOrganizations = false;
+    
+    if (req.user.role === 'admin') {
+      if (targetOrganization === 'all') {
+        isAllOrganizations = true;
+        fileOrganizationId = null; // null means all orgs
+      } else if (targetOrganization) {
+        fileOrganizationId = targetOrganization;
+      }
+    } else {
+      // Manager/User can only upload to their org
+      fileOrganizationId = req.user.organizationId;
+    }
+    
+    let fileUrl;
+    
+    if (s3Client && settings.s3Bucket) {
+      try {
+        // Upload to S3
+        const fileContent = fs.readFileSync(req.file.path);
+        const s3Key = `uploads/${req.user.id}/${Date.now()}-${req.file.originalname}`;
+        
+        await s3Client.send(new PutObjectCommand({
+          Bucket: settings.s3Bucket,
+          Key: s3Key,
+          Body: fileContent,
+          ContentType: req.file.mimetype
+        }));
+        
+        fileUrl = `https://${settings.s3Bucket}.s3.${settings.s3Region}.amazonaws.com/${s3Key}`;
+        
+        // Delete local file after S3 upload
+        fs.unlinkSync(req.file.path);
+      } catch (s3Error) {
+        console.error('S3 upload failed, using local storage:', s3Error.message);
+        // Fallback to local storage if S3 fails
+        fileUrl = `file://${req.file.path}`;
+      }
+    } else {
+      // Keep local if S3 not configured
+      fileUrl = `file://${req.file.path}`;
+    }
+    
+    // Save file metadata
+    const file = {
+      userId: req.user.id,
+      organizationId: fileOrganizationId,
+      isAllOrganizations,
+      uploadedBy: uploaderName,
+      uploadedByEmail: uploaderEmail,
+      name: req.file.originalname,
+      url: fileUrl,
+      uploadedAt: new Date()
+    };
+    
+    const result = await db.collection('files').insertOne(file);
+    
+    // Send to n8n and WAIT for response (max 5 minutes)
+    const webhooks = await getWebhookUrls();
+    
+    try {
+      const response = await axios.post(webhooks.upload, {
+        fileId: result.insertedId.toString(),
+        userId: req.user.id,
+        organizationId: fileOrganizationId,
+        fileName: req.file.originalname,
+        fileUrl: fileUrl
+      }, {
+        timeout: 300000 // 5 minutes
+      });
+      
+      res.json({ 
+        success: true, 
+        fileId: result.insertedId,
+        message: response.data.message || 'File uploaded and embedded successfully',
+        chunks: response.data.chunks || 0
+      });
+    } catch (webhookError) {
+      console.error('n8n webhook error:', webhookError.message);
+      res.status(500).json({ 
+        success: false, 
+        error: 'File uploaded but embedding failed. Please try again.' 
+      });
+    }
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// List files
+app.get('/api/files', auth, async (req, res) => {
+  let query = {};
+  
+  if (req.user.role === 'admin') {
+    // Admin sees all files
+    query = {};
+  } else if (req.user.role === 'manager' || req.user.role === 'user') {
+    // Manager/User see files in their org OR files marked for all orgs
+    query = {
+      $or: [
+        { organizationId: req.user.organizationId },
+        { isAllOrganizations: true }
+      ]
+    };
+  }
+    
+  const files = await db.collection('files')
+    .find(query)
+    .sort({ uploadedAt: -1 })
+    .toArray();
+    
+  // Include uploader info and org info for admin
+  const filesWithInfo = await Promise.all(files.map(async (f) => {
+    let orgName = null;
+    if (f.organizationId) {
+      const org = await db.collection('organizations').findOne({ _id: new ObjectId(f.organizationId) });
+      orgName = org?.name || 'Unknown';
+    }
+    
+    return {
+      id: f._id,
+      name: f.name,
+      uploadedAt: f.uploadedAt,
+      uploadedBy: f.uploadedBy || 'Unknown',
+      organizationName: f.isAllOrganizations ? 'All Organizations' : orgName,
+      isAllOrganizations: f.isAllOrganizations || false
+    };
+  }));
+  
+  res.json(filesWithInfo);
+});
+
+// Delete file
+app.delete('/api/files/:id', auth, async (req, res) => {
+  try {
+    const matchQuery = req.user.role === 'admin'
+      ? { _id: new ObjectId(req.params.id) }
+      : { _id: new ObjectId(req.params.id), organizationId: req.user.organizationId };
+      
+    const file = await db.collection('files').findOne(matchQuery);
+    if (!file) return res.status(404).json({ error: 'File not found' });
+    
+    // Delete from S3 if URL is S3
+    if (file.url.startsWith('https://') && file.url.includes('.s3.')) {
+      const s3Client = await getS3Client();
+      if (s3Client) {
+        const urlParts = file.url.replace('https://', '').split('/');
+        const bucket = urlParts[0].split('.')[0];
+        const key = urlParts.slice(1).join('/');
+        
+        await s3Client.send(new DeleteObjectCommand({
+          Bucket: bucket,
+          Key: key
+        }));
+      }
+    }
+    
+    // Delete from MongoDB files collection
+    await db.collection('files').deleteOne({ _id: new ObjectId(req.params.id) });
+    
+    // Delete from embedding_files collection
+    // fileId is at root level, not nested in metadata!
+    console.log(`Deleting embeddings for fileId: ${req.params.id}`);
+    
+    const deleteResult = await db.collection('embedding_files').deleteMany({ 
+      fileId: req.params.id
+    });
+    
+    console.log(`Deleted ${deleteResult.deletedCount} embeddings`);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// List users (admin)
+app.get('/api/users', auth, adminOnly, async (req, res) => {
+  const users = await db.collection('users').find().toArray();
+  res.json(users.map(u => ({ id: u._id, email: u.email, role: u.role })));
+});
+
+// Update user role (admin)
+app.put('/api/users/:id/role', auth, adminOnly, async (req, res) => {
+  await db.collection('users').updateOne(
+    { _id: new ObjectId(req.params.id) },
+    { $set: { role: req.body.role } }
+  );
+  res.json({ success: true });
+});
+
+// Organizations
+app.get('/api/organizations', auth, adminOnly, async (req, res) => {
+  const orgs = await db.collection('organizations').find().sort({ name: 1 }).toArray();
+  res.json(orgs);
+});
+
+app.post('/api/organizations', auth, adminOnly, async (req, res) => {
+  const { name } = req.body;
+  const result = await db.collection('organizations').insertOne({ 
+    name, 
+    createdAt: new Date() 
+  });
+  res.json({ success: true, id: result.insertedId });
+});
+
+app.delete('/api/organizations/:id', auth, adminOnly, async (req, res) => {
+  await db.collection('organizations').deleteOne({ _id: new ObjectId(req.params.id) });
+  res.json({ success: true });
+});
+
+// Create user (admin)
+app.post('/api/users', auth, adminOnly, async (req, res) => {
+  const { email, password, role } = req.body;
+  
+  const existing = await db.collection('users').findOne({ email });
+  if (existing) {
+    return res.json({ success: false, error: 'User already exists' });
+  }
+  
+  const hashedPassword = await bcrypt.hash(password, 10);
+  await db.collection('users').insertOne({ 
+    email, 
+    password: hashedPassword, 
+    role,
+    organizationId: req.body.organizationId || null
+  });
+  res.json({ success: true });
+});
+
+// Update user
+app.put('/api/users/:id', auth, adminOnly, async (req, res) => {
+  try {
+    const { email, password, role, organizationId } = req.body;
+    
+    const updateData = {
+      email,
+      role,
+      organizationId: organizationId || null
+    };
+    
+    // Only update password if provided
+    if (password && password.trim() !== '') {
+      updateData.password = await bcrypt.hash(password, 10);
+    }
+    
+    const result = await db.collection('users').updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: updateData }
+    );
+    
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Delete user
+app.delete('/api/users/:id', auth, adminOnly, async (req, res) => {
+  try {
+    // Prevent deleting yourself
+    if (req.params.id === req.user.id) {
+      return res.status(400).json({ success: false, error: 'Cannot delete your own account' });
+    }
+    
+    const result = await db.collection('users').deleteOne({ _id: new ObjectId(req.params.id) });
+    
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Public settings (no auth required) - only returns logo
+app.get('/api/public-settings', async (req, res) => {
+  try {
+    const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+    res.json({
+      logo: settings.logo || null,
+      voiceMode: settings.voiceMode || 'browser',
+      voiceLanguage: settings.voiceLanguage || 'auto',
+      ttsMode: settings.ttsMode || 'browser',
+      ttsLanguage: settings.ttsLanguage || 'en-US'
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load settings' });
+  }
+});
+
+// Settings
+app.get('/api/settings', auth, adminOnly, async (req, res) => {
+  const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+  res.json({
+    companyName: settings.companyName || 'GenBotChat',
+    logo: settings.logo || null,
+    voiceMode: settings.voiceMode || 'browser',
+    voiceLanguage: settings.voiceLanguage || 'auto',
+    googleSttApiKey: settings.googleSttApiKey || '',
+    googleTtsApiKey: settings.googleTtsApiKey || '',
+    geminiSttApiKey: settings.geminiSttApiKey || '',
+    geminiTtsApiKey: settings.geminiTtsApiKey || '',
+    elevenlabsApiKey: settings.elevenlabsApiKey || '',
+    elevenlabsVoice: settings.elevenlabsVoice || 'onwK4e9ZLuTAKqWW03F9',
+    gclasServiceAccount: settings.gclasServiceAccount || '',
+    gclasLanguage: settings.gclasLanguage || 'auto',
+    gclasVoice: settings.gclasVoice || 'en-US-Neural2-C',
+    geminiVoice: settings.geminiVoice || 'Aoede',
+    geminiTtsLanguage: settings.geminiTtsLanguage || 'auto',
+    ttsMode: settings.ttsMode || 'browser',
+    ttsLanguage: settings.ttsLanguage || 'en-US',
+    chatWebhook: settings.chatWebhook || '',
+    uploadWebhook: settings.uploadWebhook || '',
+    transcribeWebhook: settings.transcribeWebhook || '',
+    s3Bucket: settings.s3Bucket || '',
+    s3Region: settings.s3Region || '',
+    s3AccessKey: settings.s3AccessKey || '',
+    s3SecretKey: settings.s3SecretKey || ''
+  });
+});
+
+app.post('/api/settings', auth, adminOnly, async (req, res) => {
+  await db.collection('settings').updateOne(
+    { _id: 'config' },
+    { $set: req.body },
+    { upsert: true }
+  );
+  res.json({ success: true });
+});
+
+// Upload logo
+app.post('/api/upload-logo', auth, adminOnly, upload.single('logo'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    // For logo, we'll store it locally in public/logos folder
+    const logoDir = join(__dirname, 'public', 'logos');
+    if (!fs.existsSync(logoDir)) {
+      fs.mkdirSync(logoDir, { recursive: true });
+    }
+
+    // Copy file to public/logos (use copyFileSync instead of renameSync for cross-device)
+    const logoFileName = `logo-${Date.now()}.${req.file.originalname.split('.').pop()}`;
+    const logoPath = join(logoDir, logoFileName);
+    fs.copyFileSync(req.file.path, logoPath);
+    fs.unlinkSync(req.file.path); // Delete original upload
+
+    // Store relative URL in database
+    const logoUrl = `/logos/${logoFileName}`;
+
+    await db.collection('settings').updateOne(
+      { _id: 'config' },
+      { $set: { logo: logoUrl } },
+      { upsert: true }
+    );
+
+    res.json({ success: true, logo: logoUrl });
+  } catch (error) {
+    console.error('Logo upload error:', error);
+    res.status(500).json({ error: 'Upload failed' });
+  }
+});
+
+app.post('/api/test-webhook', auth, adminOnly, async (req, res) => {
+  try {
+    const response = await axios.post(req.body.url, { test: true }, { timeout: 5000 });
+    res.json({ success: true });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/test-s3', auth, adminOnly, async (req, res) => {
+  try {
+    const { s3Bucket, s3Region, s3AccessKey, s3SecretKey } = req.body;
+    
+    if (!s3Bucket || !s3Region || !s3AccessKey || !s3SecretKey) {
+      return res.json({ success: false, error: 'Missing S3 configuration' });
+    }
+
+    const testClient = new S3Client({
+      region: s3Region,
+      credentials: {
+        accessKeyId: s3AccessKey,
+        secretAccessKey: s3SecretKey
+      }
+    });
+
+    // Test by checking bucket access
+    await testClient.send(new HeadBucketCommand({ Bucket: s3Bucket }));
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('S3 test error:', error);
+    
+    // Extract meaningful error message
+    let errorMsg = 'S3 connection failed';
+    
+    if (error.name === 'NoSuchBucket') {
+      errorMsg = 'Bucket does not exist';
+    } else if (error.name === 'InvalidAccessKeyId') {
+      errorMsg = 'Invalid Access Key ID';
+    } else if (error.name === 'SignatureDoesNotMatch') {
+      errorMsg = 'Invalid Secret Access Key';
+    } else if (error.name === 'AccessDenied') {
+      errorMsg = 'Access denied - check bucket permissions';
+    } else if (error.$metadata?.httpStatusCode === 400) {
+      errorMsg = 'Bad request - check bucket name and region';
+    } else if (error.$metadata?.httpStatusCode === 403) {
+      errorMsg = 'Access forbidden - check credentials and permissions';
+    } else if (error.$metadata?.httpStatusCode === 404) {
+      errorMsg = 'Bucket not found in this region';
+    } else if (error.message) {
+      errorMsg = error.message;
+    }
+    
+    res.json({ success: false, error: errorMsg });
+  }
+});
+
+// Transcribe audio
+app.post('/api/transcribe', auth, upload.single('audio'), async (req, res) => {
+  try {
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const voiceMode = settings?.voiceMode || 'browser';
+    const voiceLanguage = settings?.voiceLanguage || 'auto';
+    
+    if (voiceMode === 'local') {
+      // Use local Whisper service
+      const formData = new FormData();
+      formData.append('audio_file', fs.createReadStream(req.file.path), {
+        filename: req.file.originalname,
+        contentType: req.file.mimetype
+      });
+      
+      let whisperUrl = process.env.WHISPER_API_URL + '/asr?task=transcribe&output=json';
+      if (voiceLanguage !== 'auto') {
+        whisperUrl += `&language=${voiceLanguage}`;
+      }
+      
+      const { data } = await axios.post(whisperUrl, formData, {
+        headers: formData.getHeaders()
+      });
+      
+      fs.unlinkSync(req.file.path);
+      res.json({ text: data.text || '', language: voiceLanguage });
+      
+    } else if (voiceMode === 'gemini') {
+      // Use Gemini AI for transcription
+      const geminiSttApiKey = settings?.geminiSttApiKey;
+      
+      if (!geminiSttApiKey) {
+        fs.unlinkSync(req.file.path);
+        return res.status(400).json({ error: 'Gemini STT API Key not configured. Please set it in Settings.' });
+      }
+
+      try {
+        const genAI = new GoogleGenerativeAI(geminiSttApiKey);
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+
+        // Read audio file
+        const audioData = fs.readFileSync(req.file.path);
+        const base64Audio = audioData.toString('base64');
+
+        const result = await model.generateContent([
+          {
+            inlineData: {
+              mimeType: 'audio/webm',
+              data: base64Audio
+            }
+          },
+          'Transcribe this audio to text. Only return the transcribed text, nothing else.'
+        ]);
+
+        fs.unlinkSync(req.file.path);
+
+        const transcript = result.response.text().trim();
+        res.json({ text: transcript, language: voiceLanguage });
+      } catch (geminiError) {
+        fs.unlinkSync(req.file.path);
+        console.error('Gemini API Error:', geminiError.message);
+        return res.status(500).json({ 
+          error: `Gemini error: ${geminiError.message}. Please check your API key.` 
+        });
+      }
+      
+    } else if (voiceMode === 'elevenlabs') {
+      // Use ElevenLabs for transcription
+      const elevenlabsApiKey = settings?.elevenlabsApiKey;
+      
+      if (!elevenlabsApiKey) {
+        fs.unlinkSync(req.file.path);
+        return res.status(400).json({ error: 'ElevenLabs API Key not configured. Please set it in Settings.' });
+      }
+
+      try {
+        const formData = new FormData();
+        formData.append('audio', fs.createReadStream(req.file.path), {
+          filename: 'audio.webm',
+          contentType: 'audio/webm'
+        });
+
+        const { data } = await axios.post('https://api.elevenlabs.io/v1/audio-to-text', formData, {
+          headers: {
+            ...formData.getHeaders(),
+            'xi-api-key': elevenlabsApiKey
+          },
+          timeout: 30000
+        });
+
+        fs.unlinkSync(req.file.path);
+        res.json({ text: data.text || '', language: voiceLanguage });
+      } catch (elevenlabsError) {
+        fs.unlinkSync(req.file.path);
+        console.error('ElevenLabs API Error:', elevenlabsError.message);
+        return res.status(500).json({ 
+          error: `ElevenLabs error: ${elevenlabsError.response?.data?.detail || elevenlabsError.message}` 
+        });
+      }
+      
+    } else if (voiceMode === 'api') {
+      // Use external webhook
+      const webhooks = await getWebhookUrls();
+      
+      if (!webhooks.transcribe || webhooks.transcribe === 'http://localhost:5678/webhook/transcribe') {
+        fs.unlinkSync(req.file.path);
+        return res.status(400).json({ error: 'Transcribe webhook not configured. Please set it in Settings.' });
+      }
+      
+      const formData = new FormData();
+      formData.append('file', fs.createReadStream(req.file.path), {
+        filename: req.file.originalname,
+        contentType: req.file.mimetype
+      });
+      
+      const { data } = await axios.post(webhooks.transcribe, formData, {
+        headers: formData.getHeaders()
+      });
+      
+      fs.unlinkSync(req.file.path);
+      res.json({ text: data.text || '', language: data.language });
+      
+    } else {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: 'Voice mode not supported for backend transcription' });
+    }
+  } catch (error) {
+    console.error('Transcription error:', error.message);
+    if (req.file?.path) fs.unlinkSync(req.file.path);
+    res.status(500).json({ error: 'Transcription failed: ' + error.message });
+  }
+});
+
+// Text-to-Speech
+app.post('/api/tts', auth, async (req, res) => {
+  try {
+    const { text, language, mode } = req.body;
+    
+    if (!text) {
+      return res.status(400).json({ error: 'Text is required' });
+    }
+
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const ttsMode = mode || settings?.ttsMode || 'browser';
+    
+    if (ttsMode === 'gemini') {
+      // Use Gemini 2.5 Flash TTS with full chunking for speed
+      const geminiTtsApiKey = settings?.geminiTtsApiKey;
+      if (!geminiTtsApiKey) {
+        return res.status(400).json({ error: 'Gemini TTS API Key not configured. Please set it in Settings.' });
+      }
+
+      try {
+        const voiceName = settings?.geminiVoice || 'Aoede';
+
+        // Split text into sentences for parallel processing
+        const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+        
+        // Group sentences into chunks (max 2 sentences per chunk for speed)
+        const chunks = [];
+        for (let i = 0; i < sentences.length; i += 2) {
+          chunks.push(sentences.slice(i, i + 2).join(' ').trim());
+        }
+
+        // Generate audio for all chunks in parallel
+        const audioPromises = chunks.map(async (chunk, index) => {
+          const requestBody = {
+            contents: [{
+              parts: [{ text: chunk }]
+            }],
+            generationConfig: {
+              responseModalities: ['AUDIO'],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: {
+                    voiceName
+                  }
+                }
+              }
+            }
+          };
+
+          // Retry logic with exponential backoff
+          let retries = 3;
+          let delay = 1000;
+          
+          for (let attempt = 0; attempt < retries; attempt++) {
+            try {
+              const { data } = await axios.post(
+                `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${geminiTtsApiKey}`,
+                requestBody,
+                {
+                  timeout: 30000,
+                  headers: { 'Content-Type': 'application/json' }
+                }
+              );
+
+              return Buffer.from(data.candidates[0].content.parts[0].inlineData.data, 'base64');
+            } catch (error) {
+              if (attempt === retries - 1) throw error;
+              console.log(`Retry ${attempt + 1} for chunk ${index + 1} after ${delay}ms`);
+              await new Promise(resolve => setTimeout(resolve, delay));
+              delay *= 2; // Exponential backoff
+            }
+          }
+        });
+
+        // Wait for all chunks to complete
+        const pcmChunks = await Promise.all(audioPromises);
+        
+        // Combine all PCM data
+        const pcmData = Buffer.concat(pcmChunks);
+        
+        // Convert PCM to WAV (add WAV header)
+        // PCM format: 16-bit, 24000 Hz, mono
+        const sampleRate = 24000;
+        const numChannels = 1;
+        const bitsPerSample = 16;
+        const byteRate = sampleRate * numChannels * bitsPerSample / 8;
+        const blockAlign = numChannels * bitsPerSample / 8;
+        const dataSize = pcmData.length;
+        
+        const wavHeader = Buffer.alloc(44);
+        wavHeader.write('RIFF', 0);
+        wavHeader.writeUInt32LE(36 + dataSize, 4);
+        wavHeader.write('WAVE', 8);
+        wavHeader.write('fmt ', 12);
+        wavHeader.writeUInt32LE(16, 16);
+        wavHeader.writeUInt16LE(1, 20);
+        wavHeader.writeUInt16LE(numChannels, 22);
+        wavHeader.writeUInt32LE(sampleRate, 24);
+        wavHeader.writeUInt32LE(byteRate, 28);
+        wavHeader.writeUInt16LE(blockAlign, 32);
+        wavHeader.writeUInt16LE(bitsPerSample, 34);
+        wavHeader.write('data', 36);
+        wavHeader.writeUInt32LE(dataSize, 40);
+        
+        const wavBuffer = Buffer.concat([wavHeader, pcmData]);
+        
+        res.set('Content-Type', 'audio/wav');
+        res.send(wavBuffer);
+      } catch (geminiError) {
+        console.error('Gemini TTS error:', geminiError.response?.data || geminiError.message);
+        return res.status(500).json({ error: 'Gemini TTS failed: ' + (geminiError.response?.data?.error?.message || geminiError.message) });
+      }
+    } else if (ttsMode === 'elevenlabs') {
+      // Use ElevenLabs TTS (fast, high quality)
+      const elevenlabsApiKey = settings?.elevenlabsApiKey;
+      if (!elevenlabsApiKey) {
+        return res.status(400).json({ error: 'ElevenLabs API Key not configured. Please set it in Settings.' });
+      }
+
+      try {
+        const voiceId = settings?.elevenlabsVoice || 'onwK4e9ZLuTAKqWW03F9';
+
+        const requestBody = {
+          text,
+          model_id: 'eleven_multilingual_v2',
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75
+          }
+        };
+
+        const { data } = await axios.post(
+          `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+          requestBody,
+          {
+            timeout: 15000,
+            headers: {
+              'Content-Type': 'application/json',
+              'xi-api-key': elevenlabsApiKey
+            },
+            responseType: 'arraybuffer'
+          }
+        );
+
+        res.set('Content-Type', 'audio/mpeg');
+        res.send(Buffer.from(data));
+      } catch (elevenlabsError) {
+        console.error('ElevenLabs TTS error:', elevenlabsError.response?.data || elevenlabsError.message);
+        return res.status(500).json({ error: 'ElevenLabs TTS failed: ' + (elevenlabsError.response?.data?.detail || elevenlabsError.message) });
+      }
+    } else if (ttsMode === 'gclas') {
+      // Google Cloud Long Audio Synthesis with service account
+      const gclasServiceAccount = settings?.gclasServiceAccount;
+      if (!gclasServiceAccount) {
+        return res.status(400).json({ error: 'Google Cloud Service Account not configured. Please set it in Settings.' });
+      }
+
+      try {
+        // Parse service account JSON
+        const serviceAccount = JSON.parse(gclasServiceAccount);
+        
+        // Get OAuth2 access token
+        const auth = new GoogleAuth({
+          credentials: serviceAccount,
+          scopes: ['https://www.googleapis.com/auth/cloud-platform']
+        });
+        const client = await auth.getClient();
+        const accessToken = await client.getAccessToken();
+
+        // Auto-detect language if set to auto
+        let languageCode = settings?.gclasLanguage || 'auto';
+        let voiceName = settings?.gclasVoice || 'en-US-Neural2-C';
+
+        if (languageCode === 'auto') {
+          // Simple language detection
+          const hasChinese = /[\u4e00-\u9fff]/.test(text);
+          const hasTamil = /[\u0B80-\u0BFF]/.test(text);
+          const hasMalay = /\b(saya|anda|dengan|untuk|ini|itu|yang|adalah|tidak|ada|boleh|akan|sudah|dari|ke|di|pada|atau|juga|kalau|bila|macam|mana|nak|dah|tak)\b/i.test(text);
+          
+          if (hasChinese) {
+            languageCode = 'cmn-CN';
+            voiceName = 'cmn-CN-Standard-A';
+          } else if (hasTamil) {
+            languageCode = 'ta-IN';
+            voiceName = 'ta-IN-Standard-A';
+          } else if (hasMalay) {
+            languageCode = 'ms-MY';
+            voiceName = 'ms-MY-Standard-A';
+          } else {
+            languageCode = 'en-US';
+            voiceName = 'en-US-Neural2-C';
+          }
+        }
+
+        const requestBody = {
+          input: { text },
+          voice: {
+            languageCode,
+            name: voiceName
+          },
+          audioConfig: {
+            audioEncoding: 'MP3'
+          }
+        };
+
+        const { data } = await axios.post(
+          'https://texttospeech.googleapis.com/v1/text:synthesize',
+          requestBody,
+          {
+            timeout: 15000,
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${accessToken.token}`
+            }
+          }
+        );
+
+        const audioBuffer = Buffer.from(data.audioContent, 'base64');
+        res.set('Content-Type', 'audio/mpeg');
+        res.send(audioBuffer);
+      } catch (gclasError) {
+        console.error('GCLAS error:', gclasError.response?.data || gclasError.message);
+        return res.status(500).json({ error: 'Google Cloud TTS failed: ' + (gclasError.response?.data?.error?.message || gclasError.message) });
+      }
+    } else {
+      return res.status(400).json({ error: 'Invalid TTS mode' });
+    }
+  } catch (error) {
+    console.error('TTS error:', error.response?.data || error.message);
+    res.status(500).json({ error: 'TTS failed: ' + (error.response?.data?.error?.message || error.message) });
+  }
+});
+
+// Serve React app for all other routes
+app.get('*', (req, res) => {
+  res.sendFile(join(__dirname, 'frontend/dist/index.html'));
+});
+
+app.listen(3000, () => console.log('Server running on port 3000'));
