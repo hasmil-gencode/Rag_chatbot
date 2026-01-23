@@ -1,5 +1,4 @@
-# RAG Chatbot UI
-
+# RAG Chatbot U
 RAG chatbot with MongoDB Atlas backend and n8n for AI processing.
 
 ## Features
