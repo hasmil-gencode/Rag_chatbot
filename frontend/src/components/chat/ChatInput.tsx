@@ -59,7 +59,6 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
     
     // Listen for TTS events to STOP/START recognition
     const handleTTSStart = () => {
-      console.log('🛑 TTS Started - STOPPING all recording');
       isTTSPlayingRef.current = true;
       
       // CRITICAL: Clear any pending transcript and silence timer
@@ -67,7 +66,6 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
       if (silenceTimerRef.current) {
         clearTimeout(silenceTimerRef.current);
         silenceTimerRef.current = null;
-        console.log('✅ Cleared silence timer');
       }
       
       // Set blocking flag
@@ -77,7 +75,6 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
       if (recognitionRef.current) {
         try {
           recognitionRef.current.abort();
-          console.log('✅ Browser recognition aborted');
         } catch (e) {
           console.error('Error stopping recognition:', e);
         }
@@ -85,11 +82,9 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
       
       // DON'T stop Gemini MediaRecorder - just set blocking flag
       // The checkAudioLevel loop will ignore audio during TTS
-      console.log('✅ TTS blocking flag set - audio detection paused');
     };
     
     const handleTTSEnd = () => {
-      console.log('▶️ TTS Ended - RESUMING audio detection');
       isTTSPlayingRef.current = false;
       
       // Re-enable continuous mode
@@ -106,7 +101,6 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
           setTimeout(() => {
             if (recognitionRef.current && localStorage.getItem('continuousMode') === 'true') {
               recognitionRef.current.start();
-              console.log('✅ Browser recognition restarted');
             }
           }, 200);
         } catch (e) {
@@ -115,7 +109,6 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
       }
       
       // For Gemini: Just resume detection - recorder never stopped!
-      console.log('✅ Audio detection resumed - recorder still running');
     };
     
     window.addEventListener('ttsStarted', handleTTSStart);
@@ -272,7 +265,15 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
 
     if (isContinuousMode) {
       // Stop continuous mode
-      console.log('🛑 Stopping continuous mode...');
+      
+      // Stop TTS if playing
+      if (localStorage.getItem('ttsPlaying') === 'true') {
+        const stopButtons = document.querySelectorAll('[data-tts-play]');
+        const lastStopButton = stopButtons[stopButtons.length - 1] as HTMLButtonElement;
+        if (lastStopButton && lastStopButton.textContent?.includes('Stop')) {
+          lastStopButton.click();
+        }
+      }
       
       if (recognition) {
         recognition.stop();
@@ -304,13 +305,11 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
       
       // Clear restart function ref
       restartRecordingRef.current = null;
-      console.log('✅ Cleared restart function ref');
       
       // Cancel animation frame loop
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
         animationFrameRef.current = null;
-        console.log('✅ Cancelled animation frame loop');
       }
       
       if (abortController) {
@@ -322,12 +321,10 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
       setMessage('');
       localStorage.removeItem('continuousMode');
       localStorage.removeItem('continuousModeMessage');
-      console.log('✅ Continuous mode stopped');
       return;
     }
 
     // Start continuous mode
-    console.log('▶️ Starting continuous mode...');
     setIsContinuousMode(true);
     setMessage('Listening...');
     localStorage.setItem('continuousMode', 'true');
@@ -348,7 +345,6 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
       // CRITICAL: Set ref IMMEDIATELY
       recognitionRef.current = recognitionInstance;
       setRecognition(recognitionInstance);
-      console.log('✅ Recognition instance saved to ref IMMEDIATELY');
       
       recognitionInstance.continuous = true;
       recognitionInstance.interimResults = true;
@@ -361,7 +357,6 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
         if (isTTSPlayingRef.current || 
             localStorage.getItem('ttsPlaying') === 'true' || 
             localStorage.getItem('ttsBlocking') === 'true') {
-          console.log('⚠️ BLOCKED - TTS active (ref:', isTTSPlayingRef.current, 'blocking:', localStorage.getItem('ttsBlocking'), ')');
           return;
         }
         
@@ -422,7 +417,6 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
 
       recognitionInstance.start();
       // Ref already set at the beginning
-      console.log('✅ Recognition started');
     } catch (error) {
       console.error('Browser continuous error:', error);
       alert('Failed to start continuous mode');
@@ -448,7 +442,6 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
       const recorder = new MediaRecorder(stream);
       setMediaRecorder(recorder);
       mediaRecorderRef.current = recorder; // CRITICAL: Save to ref IMMEDIATELY
-      console.log('✅ Gemini MediaRecorder saved to ref IMMEDIATELY');
       
       const audioChunks: Blob[] = [];
       let lastSoundTime = Date.now();
@@ -462,24 +455,14 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
           localStorage.setItem('continuousModeMessage', 'Listening...');
           lastSoundTime = Date.now();
           isSpeaking = false;
-          console.log('✅ Recorder restarted via closure function');
         }
       };
       restartRecordingRef.current = restartRecording;
-      console.log('✅ Restart function saved to ref');
 
       // Monitor audio levels
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
       const checkAudioLevel = () => {
         if (!localStorage.getItem('continuousMode')) {
-          console.log('🛑 Continuous mode flag removed, stopping...');
-          return;
-        }
-
-        // Check if TTS is playing or blocking - STOP processing completely
-        if (localStorage.getItem('ttsPlaying') === 'true' || localStorage.getItem('ttsBlocking') === 'true') {
-          // Don't even check audio levels during TTS
-          requestAnimationFrame(checkAudioLevel);
           return;
         }
 
@@ -490,18 +473,36 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
         }
         const average = sum / dataArray.length;
 
+        // Check if TTS is playing
+        const isTTSPlaying = localStorage.getItem('ttsPlaying') === 'true';
+
         if (average > 5) {
           // Sound detected
-          lastSoundTime = Date.now();
-          if (!isSpeaking) {
+          if (isTTSPlaying) {
+            // User is speaking during TTS - INTERRUPT IT!
+            const stopButtons = document.querySelectorAll('[data-tts-play]');
+            const lastStopButton = stopButtons[stopButtons.length - 1] as HTMLButtonElement;
+            if (lastStopButton && lastStopButton.textContent?.includes('Stop')) {
+              lastStopButton.click();
+            }
+            // Reset to listening mode
+            lastSoundTime = Date.now();
             isSpeaking = true;
             setMessage('Speaking...');
             localStorage.setItem('continuousModeMessage', 'Speaking...');
+          } else {
+            // Normal speech detection
+            lastSoundTime = Date.now();
+            if (!isSpeaking) {
+              isSpeaking = true;
+              setMessage('Speaking...');
+              localStorage.setItem('continuousModeMessage', 'Speaking...');
+            }
           }
         } else {
-          // Silence - but DON'T count silence during TTS!
-          if (localStorage.getItem('ttsBlocking') === 'true') {
-            // Reset silence timer during TTS so it doesn't trigger
+          // Silence
+          if (isTTSPlaying) {
+            // During TTS, reset silence timer so it doesn't trigger
             lastSoundTime = Date.now();
           } else {
             const silenceDuration = Date.now() - lastSoundTime;
@@ -523,7 +524,6 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
       recorder.onstop = async () => {
         // Check if continuous mode was manually stopped
         if (localStorage.getItem('continuousMode') !== 'true') {
-          console.log('⚠️ Continuous mode stopped, discarding audio buffer');
           audioChunks.length = 0; // Clear buffer
           return;
         }
@@ -577,7 +577,6 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
                   localStorage.setItem('continuousModeMessage', 'Bot speaking...');
                   lastSoundTime = Date.now();
                   isSpeaking = false;
-                  console.log('✅ Recorder restarted (waiting for TTS to finish)');
                 }
               }, 300);
             }
@@ -591,7 +590,6 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
                   localStorage.setItem('continuousModeMessage', 'Listening...');
                   lastSoundTime = Date.now();
                   isSpeaking = false;
-                  console.log('✅ Recorder restarted (no text)');
                 }
               }, 300);
             }
@@ -602,7 +600,6 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
           
           // If aborted, don't restart
           if (error.name === 'AbortError') {
-            console.log('Transcription aborted');
             return;
           }
           

@@ -29,19 +29,23 @@ nano .env  # Update MONGODB_URI and JWT_SECRET
 docker-compose up -d --build
 ```
 
-4. **Login**
-- URL: `http://your-server:3000`
-- Email: `admin@gencode.com.my` (or custom from .env)
-- Password: `Admin@123` (or custom from .env)
-
-Admin user auto-created on first run. Change credentials in `.env` before deployment.
+4. **Create Admin User**
+First user must be created directly in MongoDB with role 'admin'. Subsequent users can be managed through the admin panel.
 
 ## Voice Input
 
 - Click microphone button to start recording
 - Click again to stop and transcribe
 - Transcribed text appears in input box
-- Uses Groq Whisper API (free tier: 14,400 requests/day)
+- Uses Gemini STT API
+
+## Continuous Conversation Mode
+
+- Click Radio button to start continuous listening
+- Speak naturally - auto-detects 5 seconds of silence
+- Auto-sends to chatbot and plays TTS response
+- Interrupt TTS by speaking - automatically stops playback
+- Click Radio button again to stop continuous mode
 
 ## Architecture
 - **Frontend:** Vanilla JS

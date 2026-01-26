@@ -50,8 +50,6 @@ export const SettingsPage = ({ onLogoChange }: SettingsPageProps) => {
   const loadSettings = async () => {
     try {
       const data = await api.getSettings();
-      console.log('Loaded settings:', data);
-      console.log('detectVoiceDuringTTS:', data.detectVoiceDuringTTS);
       setSettings(data);
     } catch (error) {
       console.error(error);
@@ -183,8 +181,6 @@ export const SettingsPage = ({ onLogoChange }: SettingsPageProps) => {
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      console.log('Saving settings:', settings);
-      console.log('detectVoiceDuringTTS value:', settings.detectVoiceDuringTTS);
       await api.updateSettings(settings);
       if (settings.logo && onLogoChange) {
         onLogoChange(settings.logo);

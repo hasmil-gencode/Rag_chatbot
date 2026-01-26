@@ -47,7 +47,6 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail }: Chat
           const playButtons = document.querySelectorAll('[data-tts-play]');
           const lastPlayButton = playButtons[playButtons.length - 1] as HTMLButtonElement;
           if (lastPlayButton) {
-            console.log('🔊 Auto-clicking Play button');
             lastPlayButton.click();
           }
         }, 100); // Reduced delay from 300ms to 100ms

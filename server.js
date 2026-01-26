@@ -28,25 +28,6 @@ await client.connect();
 db = client.db('ragchatbot');
 console.log('Connected to MongoDB');
 
-// Auto-create admin user if not exists
-const adminEmail = process.env.ADMIN_EMAIL || 'admin@gencode.com.my';
-const adminPassword = process.env.ADMIN_PASSWORD || 'Admin@123';
-
-const adminExists = await db.collection('users').findOne({ email: adminEmail });
-if (!adminExists) {
-  const hashedPassword = await bcrypt.hash(adminPassword, 10);
-  await db.collection('users').insertOne({
-    email: adminEmail,
-    password: hashedPassword,
-    role: 'admin',
-    organizationId: null, // Admin has no org restriction
-    createdAt: new Date()
-  });
-  console.log(`Admin user created: ${adminEmail}`);
-} else {
-  console.log('Admin user already exists');
-}
-
 // Initialize default settings
 const settingsExists = await db.collection('settings').findOne({ _id: 'config' });
 if (!settingsExists) {
