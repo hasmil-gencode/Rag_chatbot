@@ -42,6 +42,12 @@ interface Settings {
   companyName?: string
   voiceMode?: string
   voiceLanguage?: string
+  detectVoiceDuringTTS?: boolean
+  ttsMode?: string
+  ttsLanguage?: string
+  geminiApiKey?: string
+  elevenlabsApiKey?: string
+  gclasApiKey?: string
   chatWebhook?: string
   uploadWebhook?: string
   transcribeWebhook?: string

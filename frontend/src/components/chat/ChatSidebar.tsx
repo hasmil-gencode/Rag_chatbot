@@ -7,6 +7,7 @@ interface ChatSession {
   title: string;
   date: string;
   isActive?: boolean;
+  startedBy?: string;
 }
 
 interface ChatSidebarProps {
@@ -126,19 +127,27 @@ export const ChatSidebar = ({
                       <div className="text-[13px] font-medium truncate text-sidebar-foreground leading-tight">
                         {session.title.length > 50 ? session.title.substring(0, 50) + '...' : session.title}
                       </div>
-                      <div className="text-[11px] text-muted-foreground mt-0.5">{session.date}</div>
+                      <div className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-1.5">
+                        <span>{session.date}</span>
+                        {userRole === 'admin' && session.startedBy && session.startedBy !== userEmail && (
+                          <span className="text-[10px] text-muted-foreground/70">• by {session.startedBy}</span>
+                        )}
+                      </div>
                     </button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteChat(session.id);
-                      }}
-                      className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity h-7 w-7 text-sidebar-muted hover:text-destructive rounded-md"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
+                    {/* Only show delete button if user owns the chat */}
+                    {(!session.startedBy || session.startedBy === userEmail) && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteChat(session.id);
+                        }}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity h-7 w-7 text-sidebar-muted hover:text-destructive rounded-md"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                    )}
                   </div>
                   {index < sessions.length - 1 && (
                     <div className="border-b border-border/50 my-1" />

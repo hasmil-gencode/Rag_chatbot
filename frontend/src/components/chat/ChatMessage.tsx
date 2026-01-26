@@ -8,11 +8,12 @@ interface ChatMessageProps {
   role: "user" | "assistant";
   content: string;
   isTyping?: boolean;
+  isStreaming?: boolean;
   userName?: string;
   startedBy?: string;
 }
 
-export const ChatMessage = ({ role, content, isTyping, userName, startedBy }: ChatMessageProps) => {
+export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, startedBy }: ChatMessageProps) => {
   const isUser = role === "user";
   const userInitial = userName ? userName.charAt(0).toUpperCase() : "U";
   const userRole = localStorage.getItem('userRole') || 'user';
@@ -45,23 +46,51 @@ export const ChatMessage = ({ role, content, isTyping, userName, startedBy }: Ch
       }
       setIsPlaying(false);
       setIsLoading(false);
+      localStorage.removeItem('ttsPlaying');
+      if (localStorage.getItem('continuousMode') === 'true') {
+        localStorage.setItem('continuousModeMessage', 'Listening...');
+      }
+      window.dispatchEvent(new CustomEvent('ttsEnded'));
       return;
     }
 
     setIsLoading(true);
 
+    // Strip markdown formatting for TTS
+    const cleanText = content
+      .replace(/\*\*(.+?)\*\*/g, '$1')  // **bold** -> bold
+      .replace(/\*(.+?)\*/g, '$1')      // *italic* -> italic
+      .replace(/`(.+?)`/g, '$1')        // `code` -> code
+      .replace(/\[(.+?)\]\(.+?\)/g, '$1') // [link](url) -> link
+      .replace(/#+\s/g, '')             // # heading -> heading
+      .replace(/>\s/g, '')              // > quote -> quote
+      .replace(/[-*]\s/g, '')           // - list -> list
+      .replace(/\n+/g, '. ');           // newlines -> periods
+
     if (ttsMode === 'browser') {
       // Browser Web Speech API
-      const utterance = new SpeechSynthesisUtterance(content);
+      const utterance = new SpeechSynthesisUtterance(cleanText);
       utterance.lang = ttsLanguage;
       utterance.onstart = () => {
         setIsLoading(false);
         setIsPlaying(true);
       };
-      utterance.onend = () => setIsPlaying(false);
+      utterance.onend = () => {
+        setIsPlaying(false);
+        localStorage.removeItem('ttsPlaying');
+        if (localStorage.getItem('continuousMode') === 'true') {
+          localStorage.setItem('continuousModeMessage', 'Listening...');
+        }
+        window.dispatchEvent(new CustomEvent('ttsEnded'));
+      };
       utterance.onerror = () => {
         setIsPlaying(false);
         setIsLoading(false);
+        localStorage.removeItem('ttsPlaying');
+        if (localStorage.getItem('continuousMode') === 'true') {
+          localStorage.setItem('continuousModeMessage', 'Listening...');
+        }
+        window.dispatchEvent(new CustomEvent('ttsEnded'));
       };
       window.speechSynthesis.speak(utterance);
     } else {
@@ -74,7 +103,7 @@ export const ChatMessage = ({ role, content, isTyping, userName, startedBy }: Ch
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ text: content, language: ttsLanguage, mode: ttsMode })
+          body: JSON.stringify({ text: cleanText, language: ttsLanguage, mode: ttsMode })
         });
 
         if (!response.ok) throw new Error('TTS failed');
@@ -90,11 +119,21 @@ export const ChatMessage = ({ role, content, isTyping, userName, startedBy }: Ch
         newAudio.onended = () => {
           setIsPlaying(false);
           URL.revokeObjectURL(audioUrl);
+          localStorage.removeItem('ttsPlaying');
+          if (localStorage.getItem('continuousMode') === 'true') {
+            localStorage.setItem('continuousModeMessage', 'Listening...');
+          }
+          window.dispatchEvent(new CustomEvent('ttsEnded'));
         };
         newAudio.onerror = () => {
           setIsPlaying(false);
           setIsLoading(false);
           URL.revokeObjectURL(audioUrl);
+          localStorage.removeItem('ttsPlaying');
+          if (localStorage.getItem('continuousMode') === 'true') {
+            localStorage.setItem('continuousModeMessage', 'Listening...');
+          }
+          window.dispatchEvent(new CustomEvent('ttsEnded'));
         };
 
         setAudio(newAudio);
@@ -133,6 +172,7 @@ export const ChatMessage = ({ role, content, isTyping, userName, startedBy }: Ch
           ) : (
             <div className="text-sm leading-relaxed prose prose-sm max-w-none prose-invert">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+              {isStreaming && <span className="inline-block w-2 h-4 bg-current ml-1 animate-pulse">▊</span>}
             </div>
           )}
         </div>
@@ -141,6 +181,7 @@ export const ChatMessage = ({ role, content, isTyping, userName, startedBy }: Ch
           <button
             onClick={handleSpeak}
             disabled={isLoading}
+            data-tts-play
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors self-start px-2 py-1 rounded hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
             title={isLoading ? "Loading..." : isPlaying ? "Stop" : "Play audio"}
           >

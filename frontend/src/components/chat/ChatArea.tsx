@@ -19,10 +19,42 @@ interface ChatAreaProps {
 export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail }: ChatAreaProps) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
+  const [waitingForResponse, setWaitingForResponse] = useState(false);
+  const lastMessageCountRef = useRef(0);
+  const lastMessageIdRef = useRef<string>('');
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Auto-trigger Play button when new assistant message arrives
+  useEffect(() => {
+    if (waitingForResponse && messages.length > lastMessageCountRef.current) {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage && lastMessage.role === 'assistant' && lastMessage.id !== lastMessageIdRef.current) {
+        setWaitingForResponse(false);
+        lastMessageIdRef.current = lastMessage.id;
+        
+        // IMMEDIATELY pause listening during TTS (before any delay)
+        localStorage.setItem('ttsPlaying', 'true');
+        localStorage.setItem('continuousModeMessage', 'Bot speaking...');
+        
+        // Dispatch event to force recognition to stop processing
+        window.dispatchEvent(new CustomEvent('ttsStarted'));
+        
+        // Auto-click Play button after short delay
+        setTimeout(() => {
+          const playButtons = document.querySelectorAll('[data-tts-play]');
+          const lastPlayButton = playButtons[playButtons.length - 1] as HTMLButtonElement;
+          if (lastPlayButton) {
+            console.log('🔊 Auto-clicking Play button');
+            lastPlayButton.click();
+          }
+        }, 100); // Reduced delay from 300ms to 100ms
+      }
+    }
+    lastMessageCountRef.current = messages.length;
+  }, [messages, waitingForResponse]);
 
   const getUserName = () => {
     if (!userEmail) return "User";
@@ -32,7 +64,11 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail }: Chat
 
   const handleSend = (message: string, fileId?: string | null) => {
     onSendMessage(message, fileId);
-    // Keep file selection after sending
+  };
+
+  const handleAutoSend = async (message: string, fileId?: string | null) => {
+    setWaitingForResponse(true);
+    onSendMessage(message, fileId);
   };
 
   return (
@@ -49,7 +85,8 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail }: Chat
                 <p className="text-muted-foreground">How can I help you today?</p>
               </div>
               <ChatInput 
-                onSend={handleSend} 
+                onSend={handleSend}
+                onAutoSend={handleAutoSend}
                 isLoading={isLoading}
                 selectedFileId={selectedFileId}
                 onFileSelect={setSelectedFileId}
@@ -77,7 +114,8 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail }: Chat
           </div>
           {/* Input Area at bottom */}
           <ChatInput 
-            onSend={handleSend} 
+            onSend={handleSend}
+            onAutoSend={handleAutoSend}
             isLoading={isLoading}
             selectedFileId={selectedFileId}
             onFileSelect={setSelectedFileId}

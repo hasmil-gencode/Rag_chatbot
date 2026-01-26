@@ -226,6 +226,7 @@ app.post('/api/chat', auth, async (req, res) => {
   }
 });
 
+// Streaming chat endpoint
 // Get chat history
 app.get('/api/messages', auth, async (req, res) => {
   const sessionId = req.query.sessionId;
@@ -269,7 +270,8 @@ app.get('/api/sessions', auth, async (req, res) => {
         _id: '$sessionId',
         firstMessage: { $first: '$content' },
         lastMessageAt: { $last: '$createdAt' },
-        messageCount: { $sum: 1 }
+        messageCount: { $sum: 1 },
+        userEmail: { $first: '$userEmail' }
       }},
       { $sort: { lastMessageAt: -1 } },
       { $limit: 50 }
@@ -279,7 +281,8 @@ app.get('/api/sessions', auth, async (req, res) => {
     id: s._id,
     title: (s.firstMessage || 'New chat').substring(0, 50),
     lastMessageAt: s.lastMessageAt,
-    messageCount: s.messageCount
+    messageCount: s.messageCount,
+    startedBy: s.userEmail
   })));
 });
 

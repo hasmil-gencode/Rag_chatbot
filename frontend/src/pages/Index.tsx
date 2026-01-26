@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { ChatArea } from "@/components/chat/ChatArea";
 import { FilesPage } from "@/components/chat/FilesPage";
@@ -18,6 +18,7 @@ interface ChatSession {
   title: string;
   date: string;
   isActive?: boolean;
+  startedBy?: string;
 }
 
 const Index = () => {
@@ -27,6 +28,7 @@ const Index = () => {
   const [logo, setLogo] = useState<string | null>(null);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const currentSessionIdRef = useRef<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [userEmail, setUserEmail] = useState<string>("");
   const [userRole, setUserRole] = useState<string>("");
@@ -146,12 +148,21 @@ const Index = () => {
 
   const handleNewChat = () => {
     setCurrentSessionId(null);
+    currentSessionIdRef.current = null;
     setMessages([]);
     setSessions(prev => prev.map(s => ({ ...s, isActive: false })));
+    
+    // Stop continuous mode if active
+    localStorage.removeItem('continuousMode');
+    localStorage.removeItem('continuousModeMessage');
+    localStorage.removeItem('ttsPlaying');
+    localStorage.removeItem('ttsBlocking');
+    localStorage.removeItem('waitingForTTS');
   };
 
   const handleSelectChat = async (id: string) => {
     setCurrentSessionId(id);
+    currentSessionIdRef.current = id;
     setSessions(prev => prev.map(s => ({ ...s, isActive: s.id === id })));
     
     try {
@@ -189,7 +200,15 @@ const Index = () => {
     setIsLoading(true);
 
     try {
-      const response = await api.sendMessage(content, currentSessionId || undefined, fileId || undefined);
+      // Use ref for immediate session ID (avoids race condition)
+      const sessionId = currentSessionIdRef.current;
+      const response = await api.sendMessage(content, sessionId || undefined, fileId || undefined);
+      
+      // Update session ID immediately if this was first message
+      if (!sessionId && response.sessionId) {
+        setCurrentSessionId(response.sessionId);
+        currentSessionIdRef.current = response.sessionId;
+      }
       
       const botMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -199,8 +218,8 @@ const Index = () => {
 
       setMessages(prev => [...prev, botMessage]);
       
-      if (!currentSessionId) {
-        setCurrentSessionId(response.sessionId);
+      // Reload sessions list if new session was created
+      if (!sessionId) {
         await loadInitialData();
       }
     } catch (error: any) {
