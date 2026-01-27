@@ -636,19 +636,21 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
               : "border-border"
           )}
         >
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={handleVoiceToggle}
-          className={cn(
-            "flex-shrink-0 h-8 w-8 rounded-full",
-            isRecording
-              ? "text-destructive hover:text-destructive/80 hover:bg-destructive/10"
-              : "text-muted-foreground hover:text-foreground"
-          )}
-        >
-          {isRecording ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-        </Button>
+        {!isContinuousMode && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleVoiceToggle}
+            className={cn(
+              "flex-shrink-0 h-8 w-8 rounded-full",
+              isRecording
+                ? "text-destructive hover:text-destructive/80 hover:bg-destructive/10"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {isRecording ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+          </Button>
+        )}
 
         {isRecording || isContinuousMode ? (
           <div className="flex-1 flex items-center gap-2 py-2">
