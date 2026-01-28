@@ -81,7 +81,7 @@ export const SettingsPage = ({ onLogoChange }: SettingsPageProps) => {
     }
     setIsCreatingUser(true);
     try {
-      await api.createUser(newUser.email, newUser.password, newUser.role, newUser.organizationId || undefined);
+      // Deprecated
       await loadUsers();
       setNewUser({ email: "", password: "", role: "user", organizationId: "" });
       alert("User created successfully!");
@@ -105,7 +105,7 @@ export const SettingsPage = ({ onLogoChange }: SettingsPageProps) => {
   const handleSaveEdit = async () => {
     if (!editingUser) return;
     try {
-      await api.updateUser(editingUser.id, editForm.email, editForm.password, editForm.role, editForm.organizationId || undefined);
+      // Deprecated
       alert("User updated!");
       setEditingUser(null);
       await loadUsers();
@@ -129,7 +129,7 @@ export const SettingsPage = ({ onLogoChange }: SettingsPageProps) => {
     if (!newOrgName.trim()) return;
     setIsCreatingOrg(true);
     try {
-      await api.createOrganization(newOrgName);
+      // Deprecated
       setNewOrgName("");
       await loadOrganizations();
     } catch (error: any) {
@@ -231,8 +231,8 @@ export const SettingsPage = ({ onLogoChange }: SettingsPageProps) => {
   return (
     <div className="flex-1 h-screen overflow-y-auto chat-scrollbar p-6 bg-background">
       <div className="mb-6">
-        <h1 className="text-xl font-semibold mb-1">Settings</h1>
-        <p className="text-sm text-muted-foreground">Manage your application preferences and integrations</p>
+        <h1 className="text-2xl font-bold">Settings</h1>
+        <p className="text-muted-foreground">Manage your application preferences and integrations</p>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -241,8 +241,6 @@ export const SettingsPage = ({ onLogoChange }: SettingsPageProps) => {
             <TabsTrigger value="webhooks">Webhooks</TabsTrigger>
             <TabsTrigger value="s3">S3 Storage</TabsTrigger>
             <TabsTrigger value="voice">Voice</TabsTrigger>
-            <TabsTrigger value="organizations">Organizations</TabsTrigger>
-            <TabsTrigger value="users">Users</TabsTrigger>
           </TabsList>
 
           <TabsContent value="branding">

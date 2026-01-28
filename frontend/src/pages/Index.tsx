@@ -1,8 +1,13 @@
 import { useState, useEffect, useRef } from "react";
+import { Toaster, toast } from "sonner";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { ChatArea } from "@/components/chat/ChatArea";
 import { FilesPage } from "@/components/chat/FilesPage";
 import { SettingsPage } from "@/components/chat/SettingsPage";
+import { RolesPage } from "@/components/chat/RolesPage";
+import { UsersPage } from "@/components/chat/UsersPage";
+import { OrganizationsPage } from "@/components/chat/OrganizationsPage";
+import { DepartmentsPage } from "@/components/chat/DepartmentsPage";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,12 +24,13 @@ interface ChatSession {
   date: string;
   isActive?: boolean;
   startedBy?: string;
+  startedByEmail?: string;
 }
 
 const Index = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings">("chat");
+  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments">("chat");
   const [logo, setLogo] = useState<string | null>(null);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -33,6 +39,7 @@ const Index = () => {
   const [userEmail, setUserEmail] = useState<string>("");
   const [userRole, setUserRole] = useState<string>("");
   const [userOrganization, setUserOrganization] = useState<string>("");
+  const [userPermissions, setUserPermissions] = useState<string[]>([]);
 
   // Login state
   const [email, setEmail] = useState("");
@@ -44,11 +51,13 @@ const Index = () => {
     const storedEmail = localStorage.getItem("userEmail");
     const storedRole = localStorage.getItem("userRole");
     const storedOrg = localStorage.getItem("userOrganization");
+    const storedPerms = localStorage.getItem("userPermissions");
     if (token) {
       setIsAuthenticated(true);
       if (storedEmail) setUserEmail(storedEmail);
       if (storedRole) setUserRole(storedRole);
       if (storedOrg) setUserOrganization(storedOrg);
+      if (storedPerms) setUserPermissions(JSON.parse(storedPerms));
       
       // Reset to chat page on load
       setCurrentPage("chat");
@@ -117,16 +126,22 @@ const Index = () => {
 
       localStorage.setItem("token", data.token);
       localStorage.setItem("userEmail", data.user?.email || email);
-      localStorage.setItem("userRole", data.user?.role || "user");
+      localStorage.setItem("userRole", data.user?.roles?.[0] || "user");
       localStorage.setItem("userOrganization", data.user?.organizationName || "");
+      localStorage.setItem("userPermissions", JSON.stringify(data.user?.permissions || []));
       setUserEmail(data.user?.email || email);
-      setUserRole(data.user?.role || "user");
+      setUserRole(data.user?.roles?.[0] || "user");
       setUserOrganization(data.user?.organizationName || "");
+      setUserPermissions(data.user?.permissions || []);
+      
+      // Always redirect to chat page after login
+      setCurrentPage("chat");
       
       setIsAuthenticated(true);
       await loadInitialData();
+      toast.success("Welcome back!");
     } catch (error: any) {
-      alert(error.message);
+      toast.error(error.message || "Login failed");
     } finally {
       setIsLoading(false);
     }
@@ -137,6 +152,7 @@ const Index = () => {
     localStorage.removeItem("userEmail");
     localStorage.removeItem("userRole");
     localStorage.removeItem("userOrganization");
+    localStorage.removeItem("userPermissions");
     setIsAuthenticated(false);
     setSessions([]);
     setMessages([]);
@@ -144,6 +160,7 @@ const Index = () => {
     setUserEmail("");
     setUserRole("");
     setUserOrganization("");
+    setUserPermissions([]);
   };
 
   const handleNewChat = () => {
@@ -185,7 +202,7 @@ const Index = () => {
         handleNewChat();
       }
     } catch (error: any) {
-      alert(error.message);
+      toast.error(error.message);
     }
   };
 
@@ -236,7 +253,9 @@ const Index = () => {
 
   if (!isAuthenticated) {
     return (
-      <div className="h-screen flex">
+      <>
+        <Toaster position="top-right" richColors />
+        <div className="h-screen flex">
         {/* Left Side - Marketing */}
         <div className="hidden lg:flex lg:w-[60%] bg-gradient-to-br from-stone-300 via-slate-800 to-slate-900 p-9 flex-col justify-between relative overflow-hidden">
           {/* Background Pattern */}
@@ -383,11 +402,14 @@ const Index = () => {
           </div>
         </div>
       </div>
+      </>
     );
   }
 
   return (
-    <div className="flex h-screen bg-background overflow-hidden">
+    <>
+      <Toaster position="top-right" richColors />
+      <div className="flex h-screen bg-background overflow-hidden">
       {/* Mobile Menu Button */}
       <button
         onClick={() => {
@@ -432,6 +454,7 @@ const Index = () => {
           userEmail={userEmail}
           userRole={userRole}
           userOrganization={userOrganization}
+          userPermissions={userPermissions}
         />
       </div>
 
@@ -445,11 +468,16 @@ const Index = () => {
           />
         )}
         {currentPage === "files" && <FilesPage />}
+        {currentPage === "organizations" && <OrganizationsPage />}
+        {currentPage === "departments" && <DepartmentsPage />}
+        {currentPage === "roles" && <RolesPage />}
+        {currentPage === "users" && <UsersPage />}
         {currentPage === "settings" && (
           <SettingsPage onLogoChange={setLogo} />
         )}
       </div>
     </div>
+    </>
   );
 };
 

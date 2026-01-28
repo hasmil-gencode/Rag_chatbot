@@ -1,3 +1,4 @@
+import { toast } from "sonner";
 import { useState, KeyboardEvent, useEffect, useRef } from "react";
 import { Mic, MicOff, Send, Radio, Loader2, Bot } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -161,7 +162,7 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
         try {
           const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
           if (!SpeechRecognition) {
-            alert('Speech recognition not supported in this browser. Please use Chrome.');
+            toast.error('Speech recognition not supported in this browser. Please use Chrome.');
             return;
           }
 
@@ -188,7 +189,7 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
 
           recognitionInstance.onerror = (event: any) => {
             console.error('Speech recognition error:', event.error);
-            alert('Speech recognition failed: ' + event.error);
+            toast.error('Speech recognition failed: ' + event.error);
             setIsRecording(false);
           };
 
@@ -201,7 +202,7 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
           setIsRecording(true);
         } catch (error) {
           console.error('Speech recognition error:', error);
-          alert('Failed to start speech recognition');
+          toast.error('Failed to start speech recognition');
         }
       } else {
         // Local/API mode - record and send to backend
@@ -235,11 +236,11 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
               if (data.text) {
                 setMessage(data.text);
               } else {
-                alert('No transcription received');
+                toast.error('No transcription received');
               }
             } catch (error) {
               console.error('Transcription error:', error);
-              alert('Failed to transcribe audio');
+              toast.error('Failed to transcribe audio');
             }
 
             // Stop all tracks
@@ -252,7 +253,7 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
           setIsRecording(true);
         } catch (error) {
           console.error('Microphone access error:', error);
-          alert('Could not access microphone');
+          toast.error('Could not access microphone');
           setIsRecording(false);
         }
       }
@@ -419,7 +420,7 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
       // Ref already set at the beginning
     } catch (error) {
       console.error('Browser continuous error:', error);
-      alert('Failed to start continuous mode');
+      toast.error('Failed to start continuous mode');
       setIsContinuousMode(false);
       localStorage.removeItem('continuousMode');
     }
@@ -618,7 +619,7 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
       
     } catch (error) {
       console.error('Gemini continuous error:', error);
-      alert('Failed to start continuous mode');
+      toast.error('Failed to start continuous mode');
       setIsContinuousMode(false);
       localStorage.removeItem('continuousMode');
     }

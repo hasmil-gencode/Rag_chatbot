@@ -1,16 +1,29 @@
-import { useState, useEffect } from 'react';
-import { Building2, Plus, Trash2 } from 'lucide-react';
-import { api } from '../../lib/api';
+import { useState, useEffect } from "react";
+import { toast } from "sonner";
+import { Building2, Plus, Edit, Trash2, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { api } from "@/lib/api";
 
 interface Organization {
   _id: string;
   name: string;
+  description: string;
+  status: string;
+  createdAt: string;
 }
 
-export function OrganizationsPage() {
+export const OrganizationsPage = () => {
   const [organizations, setOrganizations] = useState<Organization[]>([]);
-  const [newOrgName, setNewOrgName] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [showModal, setShowModal] = useState(false);
+  const [editingOrg, setEditingOrg] = useState<Organization | null>(null);
+  const [formData, setFormData] = useState({
+    name: "",
+    description: "",
+    status: "active"
+  });
 
   useEffect(() => {
     loadOrganizations();
@@ -20,77 +33,175 @@ export function OrganizationsPage() {
     try {
       const data = await api.getOrganizations();
       setOrganizations(data);
-    } catch (error: any) {
-      alert(error.message);
+    } catch (error) {
+      console.error("Failed to load organizations:", error);
     }
   };
 
   const handleCreate = async () => {
-    if (!newOrgName.trim()) return;
-    setLoading(true);
     try {
-      await api.createOrganization(newOrgName);
-      setNewOrgName('');
-      await loadOrganizations();
+      await api.createOrganization(formData);
+      setShowModal(false);
+      setFormData({ name: "", description: "", status: "active" });
+      loadOrganizations();
     } catch (error: any) {
-      alert(error.message);
-    } finally {
-      setLoading(false);
+      toast.error(error.message || "Failed");
+    }
+  };
+
+  const handleUpdate = async () => {
+    if (!editingOrg) return;
+    try {
+      await api.updateOrganization(editingOrg._id, formData);
+      setEditingOrg(null);
+      setFormData({ name: "", description: "", status: "active" });
+      loadOrganizations();
+    } catch (error: any) {
+      toast.error(error.message || "Failed");
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete this organization?')) return;
+    if (!confirm("Delete this organization? All departments will also be deleted.")) return;
     try {
       await api.deleteOrganization(id);
-      await loadOrganizations();
+      loadOrganizations();
     } catch (error: any) {
-      alert(error.message);
+      toast.error(error.message || "Failed");
     }
   };
 
+  const openEditModal = (org: Organization) => {
+    setEditingOrg(org);
+    setFormData({
+      name: org.name,
+      description: org.description,
+      status: org.status
+    });
+  };
+
   return (
-    <div className="flex-1 overflow-y-auto p-6">
-      <div className="max-w-4xl mx-auto">
-        <h2 className="text-2xl font-bold mb-6">Organizations</h2>
-
-        <div className="bg-white rounded-lg shadow p-6 mb-6">
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={newOrgName}
-              onChange={(e) => setNewOrgName(e.target.value)}
-              placeholder="Organization name"
-              className="flex-1 px-4 py-2 border rounded-lg"
-            />
-            <button
-              onClick={handleCreate}
-              disabled={loading || !newOrgName.trim()}
-              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 flex items-center gap-2"
-            >
-              <Plus className="w-4 h-4" />
-              Add
-            </button>
-          </div>
+    <div className="p-6">
+      <div className="flex justify-between items-center mb-6">
+        <div>
+          <h1 className="text-2xl font-bold">Organizations</h1>
+          <p className="text-muted-foreground">Manage organizations and their structure</p>
         </div>
-
-        <div className="space-y-2">
-          {organizations.map((org) => (
-            <div key={org._id} className="bg-white rounded-lg shadow p-4 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <Building2 className="w-5 h-5 text-gray-500" />
-                <span className="font-medium">{org.name}</span>
-              </div>
-              <button
-                onClick={() => handleDelete(org._id)}
-                className="p-2 text-red-500 hover:bg-red-50 rounded"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
-          ))}
-        </div>
+        <Button onClick={() => setShowModal(true)}>
+          <Plus className="w-4 h-4 mr-2" />
+          Add Organization
+        </Button>
       </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {organizations.map(org => (
+          <Card key={org._id}>
+            <CardHeader>
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-2">
+                  <Building2 className="w-5 h-5 text-primary" />
+                  <CardTitle className="text-lg">{org.name}</CardTitle>
+                </div>
+                <div className="flex gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => openEditModal(org)}
+                  >
+                    <Edit className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleDelete(org._id)}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground mb-2">{org.description}</p>
+              <span className={`px-2 py-1 rounded text-xs ${
+                org.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
+              }`}>
+                {org.status}
+              </span>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      {/* Create/Edit Modal */}
+      {(showModal || editingOrg) && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <Card className="w-full max-w-md">
+            <CardHeader>
+              <div className="flex justify-between items-center">
+                <CardTitle>{editingOrg ? "Edit Organization" : "Create Organization"}</CardTitle>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => {
+                    setShowModal(false);
+                    setEditingOrg(null);
+                    setFormData({ name: "", description: "", status: "active" });
+                  }}
+                >
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <Label>Organization Name *</Label>
+                <Input
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  placeholder="Enter organization name"
+                />
+              </div>
+
+              <div>
+                <Label>Description</Label>
+                <Input
+                  value={formData.description}
+                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  placeholder="Enter description"
+                />
+              </div>
+
+              <div>
+                <Label>Status</Label>
+                <select
+                  className="w-full border rounded-md p-2 bg-background text-foreground"
+                  value={formData.status}
+                  onChange={(e) => setFormData({ ...formData, status: e.target.value })}
+                >
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+              </div>
+
+              <div className="flex gap-2 justify-end">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowModal(false);
+                    setEditingOrg(null);
+                    setFormData({ name: "", description: "", status: "active" });
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button onClick={editingOrg ? handleUpdate : handleCreate}>
+                  {editingOrg ? "Update" : "Create"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
   );
-}
+};

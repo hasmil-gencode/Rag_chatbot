@@ -1,5 +1,6 @@
 import { Bot, Volume2, Square, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 import { useState, useEffect } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -17,7 +18,7 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, st
   const isUser = role === "user";
   const userInitial = userName ? userName.charAt(0).toUpperCase() : "U";
   const userRole = localStorage.getItem('userRole') || 'user';
-  const showStartedBy = (userRole === 'admin' || userRole === 'manager') && startedBy;
+  const showStartedBy = (userRole.toLowerCase() === 'developer' || userRole === 'admin' || userRole === 'manager') && startedBy;
   
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -142,7 +143,7 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, st
         console.error('TTS error:', error);
         setIsPlaying(false);
         setIsLoading(false);
-        alert('Failed to play audio. Please check API key in Settings.');
+        toast.error('Failed to play audio. Please check API key in Settings.');
       }
     }
   };

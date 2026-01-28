@@ -133,11 +133,6 @@ const auth = async (req, res, next) => {
 // Permission check middleware
 const hasPermission = (...requiredPermissions) => {
   return (req, res, next) => {
-    // Developer role has all permissions
-    if (req.user.roles.includes('Developer')) {
-      return next();
-    }
-    
     const hasAllPermissions = requiredPermissions.every(p => 
       req.user.permissions.includes(p)
     );
@@ -155,7 +150,7 @@ app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
   const user = await db.collection('users').findOne({ email, status: 'active' });
   if (!user || !await bcrypt.compare(password, user.password)) {
-    return res.status(401).json({ error: 'Invalid credentials' });
+    return res.json({ success: false, message: 'Invalid credentials' });
   }
   
   // Get user's roles and permissions
@@ -181,24 +176,6 @@ app.post('/api/login', async (req, res) => {
       permissions
     } 
   });
-});
-
-// Get current user info
-app.get('/api/user/me', auth, async (req, res) => {
-  try {
-    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    
-    res.json({
-      id: user._id,
-      email: user.email,
-      fullName: user.fullName,
-      organizationId: user.organizationId || null,
-      departmentId: user.departmentId || null
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get user info' });
-  }
 });
 
 // Chat
@@ -227,14 +204,15 @@ app.post('/api/chat', auth, async (req, res) => {
     // Get webhook URL from settings
     const webhooks = await getWebhookUrls();
 
-    // Send to n8n with sessionId, fileId, org/dept and timeout
+    // Send to n8n with sessionId, fileId and timeout
     const { data } = await axios.post(webhooks.chat, { 
       message, 
       userId: req.user.id,
-      organizationId: user?.organizationId || null,
-      departmentId: user?.departmentId || null,
+      organizationId: req.user.organizationId,
       sessionId: chatSessionId,
       fileId: fileId || null
+    }, {
+      sessionId: chatSessionId
     }, {
       timeout: 60000 // 1 minute timeout
     });
@@ -293,12 +271,9 @@ app.get('/api/messages', auth, async (req, res) => {
 
 // Get chat sessions
 app.get('/api/sessions', auth, async (req, res) => {
-  // Developer can see all sessions, others see only their org
-  const canViewAll = req.user.roles.includes('Developer');
-  
-  const matchQuery = canViewAll
+  const matchQuery = req.user.role === 'admin'
     ? { role: 'user' }
-    : { userId: req.user.id, role: 'user' };
+    : { organizationId: req.user.organizationId, role: 'user' };
     
   const sessions = await db.collection('messages')
     .aggregate([
@@ -309,8 +284,7 @@ app.get('/api/sessions', auth, async (req, res) => {
         firstMessage: { $first: '$content' },
         lastMessageAt: { $last: '$createdAt' },
         messageCount: { $sum: 1 },
-        startedBy: { $first: '$startedBy' },
-        startedByEmail: { $first: '$startedByEmail' }
+        userEmail: { $first: '$userEmail' }
       }},
       { $sort: { lastMessageAt: -1 } },
       { $limit: 50 }
@@ -321,20 +295,17 @@ app.get('/api/sessions', auth, async (req, res) => {
     title: (s.firstMessage || 'New chat').substring(0, 50),
     lastMessageAt: s.lastMessageAt,
     messageCount: s.messageCount,
-    startedBy: s.startedBy || s.startedByEmail,
-    startedByEmail: s.startedByEmail
+    startedBy: s.userEmail
   })));
 });
 
 // Delete chat session
-app.delete('/api/sessions/:id', auth, hasPermission('chat:delete'), async (req, res) => {
+app.delete('/api/sessions/:id', auth, async (req, res) => {
   try {
-    // Developer can delete any session, others can only delete their own
-    const canDeleteAll = req.user.roles.includes('Developer');
-    
-    const matchQuery = canDeleteAll
+    // Verify session belongs to user's org or user is admin
+    const matchQuery = req.user.role === 'admin'
       ? { sessionId: req.params.id }
-      : { sessionId: req.params.id, userId: req.user.id };
+      : { sessionId: req.params.id, organizationId: req.user.organizationId };
       
     const sessionExists = await db.collection('messages').findOne(matchQuery);
     
@@ -358,6 +329,7 @@ app.delete('/api/sessions/:id', auth, hasPermission('chat:delete'), async (req, 
 // Upload file
 app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
   try {
+    const { targetOrganization } = req.body; // "all" or specific orgId
     const settings = await db.collection('settings').findOne({ _id: 'config' });
     const s3Client = await getS3Client();
     
@@ -366,36 +338,21 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     const uploaderEmail = user?.email || 'Unknown';
     const uploaderName = uploaderEmail.split('@')[0];
     
-    // Get target org/dept from request
-    const targetOrganization = req.body.organizationId;
-    const targetDepartment = req.body.departmentId;
-    
-    // Determine organization and department for file
-    let fileOrganizationId = user?.organizationId || null;
-    let fileDepartmentId = user?.departmentId || null;
+    // Determine organization for file
+    let fileOrganizationId = null;
     let isAllOrganizations = false;
-    let isAllDepartments = false;
     
-    // Check user permissions
-    const hasFileManageAccess = req.user.permissions.includes('file:manage_access');
-    
-    if (hasFileManageAccess) {
-      // Admin/Developer can upload to any org/dept
+    if (req.user.role === 'admin') {
       if (targetOrganization === 'all') {
         isAllOrganizations = true;
-        fileOrganizationId = null;
+        fileOrganizationId = null; // null means all orgs
       } else if (targetOrganization) {
         fileOrganizationId = targetOrganization;
       }
-      
-      if (targetDepartment === 'all') {
-        isAllDepartments = true;
-        fileDepartmentId = null;
-      } else if (targetDepartment) {
-        fileDepartmentId = targetDepartment;
-      }
+    } else {
+      // Manager/User can only upload to their org
+      fileOrganizationId = req.user.organizationId;
     }
-    // else: Manager/User can only upload to their own org/dept
     
     let fileUrl;
     
@@ -430,9 +387,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     const file = {
       userId: req.user.id,
       organizationId: fileOrganizationId,
-      departmentId: fileDepartmentId,
       isAllOrganizations,
-      isAllDepartments,
       uploadedBy: uploaderName,
       uploadedByEmail: uploaderEmail,
       name: req.file.originalname,
@@ -450,7 +405,6 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         fileId: result.insertedId.toString(),
         userId: req.user.id,
         organizationId: fileOrganizationId,
-        departmentId: fileDepartmentId,
         fileName: req.file.originalname,
         fileUrl: fileUrl
       }, {
@@ -565,313 +519,113 @@ app.delete('/api/files/:id', auth, async (req, res) => {
 });
 
 // List users (admin)
-// ============= PERMISSIONS =============
-app.get('/api/permissions', auth, hasPermission('role:manage'), async (req, res) => {
-  const permissions = await db.collection('permissions').find().toArray();
-  res.json(permissions);
+app.get('/api/users', auth, adminOnly, async (req, res) => {
+  const users = await db.collection('users').find().toArray();
+  res.json(users.map(u => ({ id: u._id, email: u.email, role: u.role })));
 });
 
-// ============= ROLES =============
-// List roles (for user creation - no permission needed, just auth)
-app.get('/api/roles/list', auth, async (req, res) => {
-  const roles = await db.collection('roles').find({ status: 'active' }).toArray();
-  res.json(roles);
-});
-
-// Manage roles (full CRUD - requires role:manage)
-app.get('/api/roles', auth, hasPermission('role:manage'), async (req, res) => {
-  const roles = await db.collection('roles').find().toArray();
-  res.json(roles);
-});
-
-app.post('/api/roles', auth, hasPermission('role:manage'), async (req, res) => {
-  const { name, description, permissions, status } = req.body;
-  
-  const result = await db.collection('roles').insertOne({
-    name,
-    description,
-    permissions,
-    isSystem: false,
-    status: status || 'active',
-    createdAt: new Date()
-  });
-  
-  res.json({ success: true, id: result.insertedId });
-});
-
-app.put('/api/roles/:id', auth, hasPermission('role:manage'), async (req, res) => {
-  const { name, description, permissions, status } = req.body;
-  const role = await db.collection('roles').findOne({ _id: new ObjectId(req.params.id) });
-  
-  if (role?.isSystem) {
-    return res.status(403).json({ error: 'Cannot edit system roles' });
-  }
-  
-  await db.collection('roles').updateOne(
+// Update user role (admin)
+app.put('/api/users/:id/role', auth, adminOnly, async (req, res) => {
+  await db.collection('users').updateOne(
     { _id: new ObjectId(req.params.id) },
-    { $set: { name, description, permissions, status, updatedAt: new Date() } }
+    { $set: { role: req.body.role } }
   );
-  
   res.json({ success: true });
 });
 
-app.delete('/api/roles/:id', auth, hasPermission('role:manage', 'system:delete'), async (req, res) => {
-  const role = await db.collection('roles').findOne({ _id: new ObjectId(req.params.id) });
-  
-  if (role?.isSystem) {
-    return res.status(403).json({ error: 'Cannot delete system roles' });
-  }
-  
-  const usersWithRole = await db.collection('users').countDocuments({
-    roles: new ObjectId(req.params.id)
-  });
-  
-  if (usersWithRole > 0) {
-    return res.status(400).json({ error: 'Cannot delete role assigned to users' });
-  }
-  
-  await db.collection('roles').deleteOne({ _id: new ObjectId(req.params.id) });
-  res.json({ success: true });
-});
-
-// Add these endpoints to server.js after RBAC endpoints
-
-// ============= ORGANIZATIONS =============
-app.get('/api/organizations', auth, hasPermission('org:view'), async (req, res) => {
-  const orgs = await db.collection('organizations').find().toArray();
+// Organizations
+app.get('/api/organizations', auth, adminOnly, async (req, res) => {
+  const orgs = await db.collection('organizations').find().sort({ name: 1 }).toArray();
   res.json(orgs);
 });
 
-app.post('/api/organizations', auth, hasPermission('org:manage'), async (req, res) => {
-  const { name, description, status } = req.body;
-  
-  const result = await db.collection('organizations').insertOne({
-    name,
-    description,
-    status: status || 'active',
-    createdAt: new Date()
+app.post('/api/organizations', auth, adminOnly, async (req, res) => {
+  const { name } = req.body;
+  const result = await db.collection('organizations').insertOne({ 
+    name, 
+    createdAt: new Date() 
   });
-  
   res.json({ success: true, id: result.insertedId });
 });
 
-app.put('/api/organizations/:id', auth, hasPermission('org:manage'), async (req, res) => {
-  const { name, description, status } = req.body;
-  
-  await db.collection('organizations').updateOne(
-    { _id: new ObjectId(req.params.id) },
-    { $set: { name, description, status, updatedAt: new Date() } }
-  );
-  
-  res.json({ success: true });
-});
-
-app.delete('/api/organizations/:id', auth, hasPermission('org:manage', 'system:delete'), async (req, res) => {
-  // Check if any users belong to this org
-  const usersCount = await db.collection('users').countDocuments({
-    organizationId: new ObjectId(req.params.id)
-  });
-  
-  if (usersCount > 0) {
-    return res.status(400).json({ error: 'Cannot delete organization with users' });
-  }
-  
-  // Delete all departments in this org
-  await db.collection('departments').deleteMany({
-    organizationId: new ObjectId(req.params.id)
-  });
-  
+app.delete('/api/organizations/:id', auth, adminOnly, async (req, res) => {
   await db.collection('organizations').deleteOne({ _id: new ObjectId(req.params.id) });
   res.json({ success: true });
 });
 
-// ============= DEPARTMENTS =============
-app.get('/api/departments', auth, hasPermission('dept:view'), async (req, res) => {
-  const { organizationId } = req.query;
+// Create user (admin)
+app.post('/api/users', auth, adminOnly, async (req, res) => {
+  const { email, password, role } = req.body;
   
-  const query = organizationId ? { organizationId: new ObjectId(organizationId) } : {};
-  const depts = await db.collection('departments').find(query).toArray();
-  
-  // Get org names
-  const deptsWithOrg = await Promise.all(depts.map(async (dept) => {
-    const org = await db.collection('organizations').findOne({ _id: new ObjectId(dept.organizationId) });
-    return {
-      ...dept,
-      organizationName: org?.name || 'Unknown'
-    };
-  }));
-  
-  res.json(deptsWithOrg);
-});
-
-app.post('/api/departments', auth, hasPermission('dept:manage'), async (req, res) => {
-  const { name, description, organizationId, status } = req.body;
-  
-  const result = await db.collection('departments').insertOne({
-    name,
-    description,
-    organizationId: new ObjectId(organizationId),
-    status: status || 'active',
-    createdAt: new Date()
-  });
-  
-  res.json({ success: true, id: result.insertedId });
-});
-
-app.put('/api/departments/:id', auth, hasPermission('dept:manage'), async (req, res) => {
-  const { name, description, organizationId, status } = req.body;
-  
-  await db.collection('departments').updateOne(
-    { _id: new ObjectId(req.params.id) },
-    { $set: { 
-      name, 
-      description, 
-      organizationId: new ObjectId(organizationId),
-      status, 
-      updatedAt: new Date() 
-    } }
-  );
-  
-  res.json({ success: true });
-});
-
-app.delete('/api/departments/:id', auth, hasPermission('dept:manage', 'system:delete'), async (req, res) => {
-  // Check if any users belong to this dept
-  const usersCount = await db.collection('users').countDocuments({
-    departmentId: new ObjectId(req.params.id)
-  });
-  
-  if (usersCount > 0) {
-    return res.status(400).json({ error: 'Cannot delete department with users' });
-  }
-  
-  await db.collection('departments').deleteOne({ _id: new ObjectId(req.params.id) });
-  res.json({ success: true });
-});
-
-
-// ============= USERS =============
-app.get('/api/users', auth, hasPermission('user:view'), async (req, res) => {
-  // Get current user info
-  const currentUser = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
-  const currentUserRoles = await db.collection('roles').find({
-    _id: { $in: currentUser.roles.map(r => new ObjectId(r)) }
-  }).toArray();
-  const currentUserRole = currentUserRoles[0]?.name.toLowerCase();
-  
-  // Build filter based on role
-  let userFilter = {};
-  
-  if (currentUserRole === 'developer') {
-    // Developer sees all users
-    userFilter = {};
-  } else if (currentUserRole === 'admin') {
-    // Admin sees only users in own organization
-    userFilter = { organizationId: currentUser.organizationId };
-  } else if (currentUserRole === 'manager') {
-    // Manager sees only users in own department
-    userFilter = { 
-      organizationId: currentUser.organizationId,
-      departmentId: currentUser.departmentId 
-    };
-  } else {
-    // User role cannot view users list (but has permission check above)
-    userFilter = { _id: new ObjectId(req.user.id) }; // Only see self
-  }
-  
-  const users = await db.collection('users').find(userFilter).toArray();
-  
-  const usersWithRoles = await Promise.all(users.map(async (user) => {
-    const roles = await db.collection('roles').find({
-      _id: { $in: user.roles.map(r => new ObjectId(r)) }
-    }).toArray();
-    
-    let organization = null;
-    let department = null;
-    
-    if (user.organizationId) {
-      organization = await db.collection('organizations').findOne({ _id: new ObjectId(user.organizationId) });
-    }
-    
-    if (user.departmentId) {
-      department = await db.collection('departments').findOne({ _id: new ObjectId(user.departmentId) });
-    }
-    
-    return {
-      id: user._id,
-      email: user.email,
-      fullName: user.fullName,
-      status: user.status,
-      roles: roles.map(r => ({ id: r._id, name: r.name })),
-      organizationId: user.organizationId,
-      organizationName: organization?.name || null,
-      departmentId: user.departmentId,
-      departmentName: department?.name || null,
-      createdAt: user.createdAt
-    };
-  }));
-  
-  res.json(usersWithRoles);
-});
-
-app.post('/api/users', auth, hasPermission('user:manage'), async (req, res) => {
-  const { email, password, fullName, roles, status, organizationId, departmentId } = req.body;
-  
-  const existingUser = await db.collection('users').findOne({ email });
-  if (existingUser) {
-    return res.status(400).json({ error: 'Email already exists' });
+  const existing = await db.collection('users').findOne({ email });
+  if (existing) {
+    return res.json({ success: false, error: 'User already exists' });
   }
   
   const hashedPassword = await bcrypt.hash(password, 10);
-  
-  const result = await db.collection('users').insertOne({
-    email,
-    password: hashedPassword,
-    fullName,
-    roles: roles.map(r => new ObjectId(r)),
-    organizationId: organizationId ? new ObjectId(organizationId) : null,
-    departmentId: departmentId ? new ObjectId(departmentId) : null,
-    status: status || 'active',
-    createdAt: new Date()
+  await db.collection('users').insertOne({ 
+    email, 
+    password: hashedPassword, 
+    role,
+    organizationId: req.body.organizationId || null
   });
-  
-  res.json({ success: true, id: result.insertedId });
-});
-
-app.put('/api/users/:id', auth, hasPermission('user:manage'), async (req, res) => {
-  const { email, fullName, roles, status, password, organizationId, departmentId } = req.body;
-  
-  const updateData = {
-    email,
-    fullName,
-    roles: roles.map(r => new ObjectId(r)),
-    organizationId: organizationId ? new ObjectId(organizationId) : null,
-    departmentId: departmentId ? new ObjectId(departmentId) : null,
-    status,
-    updatedAt: new Date()
-  };
-  
-  if (password) {
-    updateData.password = await bcrypt.hash(password, 10);
-  }
-  
-  await db.collection('users').updateOne(
-    { _id: new ObjectId(req.params.id) },
-    { $set: updateData }
-  );
-  
   res.json({ success: true });
 });
 
-app.delete('/api/users/:id', auth, hasPermission('user:manage', 'system:delete'), async (req, res) => {
-  if (req.params.id === req.user.id.toString()) {
-    return res.status(400).json({ error: 'Cannot delete your own account' });
+// Update user
+app.put('/api/users/:id', auth, adminOnly, async (req, res) => {
+  try {
+    const { email, password, role, organizationId } = req.body;
+    
+    const updateData = {
+      email,
+      role,
+      organizationId: organizationId || null
+    };
+    
+    // Only update password if provided
+    if (password && password.trim() !== '') {
+      updateData.password = await bcrypt.hash(password, 10);
+    }
+    
+    const result = await db.collection('users').updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: updateData }
+    );
+    
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
-  
-  await db.collection('users').deleteOne({ _id: new ObjectId(req.params.id) });
-  res.json({ success: true });
 });
 
+// Delete user
+app.delete('/api/users/:id', auth, adminOnly, async (req, res) => {
+  try {
+    // Prevent deleting yourself
+    if (req.params.id === req.user.id) {
+      return res.status(400).json({ success: false, error: 'Cannot delete your own account' });
+    }
+    
+    const result = await db.collection('users').deleteOne({ _id: new ObjectId(req.params.id) });
+    
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Public settings (no auth required) - only returns logo
 app.get('/api/public-settings', async (req, res) => {
   try {
     const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
@@ -888,7 +642,7 @@ app.get('/api/public-settings', async (req, res) => {
 });
 
 // Settings
-app.get('/api/settings', auth, hasPermission('system:manage_settings'), async (req, res) => {
+app.get('/api/settings', auth, adminOnly, async (req, res) => {
   const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
   res.json({
     companyName: settings.companyName || 'GenBotChat',
@@ -918,7 +672,7 @@ app.get('/api/settings', auth, hasPermission('system:manage_settings'), async (r
   });
 });
 
-app.post('/api/settings', auth, hasPermission('system:manage_settings'), async (req, res) => {
+app.post('/api/settings', auth, adminOnly, async (req, res) => {
   await db.collection('settings').updateOne(
     { _id: 'config' },
     { $set: req.body },
@@ -928,7 +682,7 @@ app.post('/api/settings', auth, hasPermission('system:manage_settings'), async (
 });
 
 // Upload logo
-app.post('/api/upload-logo', auth, hasPermission('system:manage_settings'), upload.single('logo'), async (req, res) => {
+app.post('/api/upload-logo', auth, adminOnly, upload.single('logo'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -962,7 +716,7 @@ app.post('/api/upload-logo', auth, hasPermission('system:manage_settings'), uplo
   }
 });
 
-app.post('/api/test-webhook', auth, hasPermission('system:manage_settings'), async (req, res) => {
+app.post('/api/test-webhook', auth, adminOnly, async (req, res) => {
   try {
     const response = await axios.post(req.body.url, { test: true }, { timeout: 5000 });
     res.json({ success: true });
@@ -971,7 +725,7 @@ app.post('/api/test-webhook', auth, hasPermission('system:manage_settings'), asy
   }
 });
 
-app.post('/api/test-s3', auth, hasPermission('system:manage_settings'), async (req, res) => {
+app.post('/api/test-s3', auth, adminOnly, async (req, res) => {
   try {
     const { s3Bucket, s3Region, s3AccessKey, s3SecretKey } = req.body;
     

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { toast } from "sonner";
 import { Upload, File, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,16 +9,54 @@ import { api } from "@/lib/api";
 export const FilesPage = () => {
   const [files, setFiles] = useState<any[]>([]);
   const [organizations, setOrganizations] = useState<any[]>([]);
-  const [targetOrganization, setTargetOrganization] = useState<string>("all");
+  const [departments, setDepartments] = useState<any[]>([]);
+  const [targetOrganization, setTargetOrganization] = useState<string>("");
+  const [targetDepartment, setTargetDepartment] = useState<string>("");
   const [isUploading, setIsUploading] = useState(false);
   const userRole = localStorage.getItem('userRole') || 'user';
+  const userPermissions = JSON.parse(localStorage.getItem('userPermissions') || '[]');
+  const isDeveloper = userRole.toLowerCase() === 'developer';
+  const isAdmin = userRole.toLowerCase() === 'admin';
+  const isManager = userRole.toLowerCase() === 'manager';
+  const hasFileManageAccess = userPermissions.includes('file:manage_access') || isDeveloper;
+  const [userOrgId, setUserOrgId] = useState<string>("");
+  const [userDeptId, setUserDeptId] = useState<string>("");
 
   useEffect(() => {
     loadFiles();
-    if (userRole === 'admin') {
+    if (hasFileManageAccess) {
       loadOrganizations();
     }
+    loadUserInfo();
   }, []);
+
+  const loadUserInfo = async () => {
+    try {
+      const response = await fetch('/api/user/me', {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+      });
+      const data = await response.json();
+      if (data.organizationId) {
+        setUserOrgId(data.organizationId);
+        setTargetOrganization(data.organizationId);
+        if (data.departmentId) {
+          setUserDeptId(data.departmentId);
+          loadDepartments(data.organizationId);
+        }
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  useEffect(() => {
+    if (targetOrganization) {
+      loadDepartments(targetOrganization);
+    } else {
+      setDepartments([]);
+      setTargetDepartment("");
+    }
+  }, [targetOrganization]);
 
   const loadFiles = async () => {
     try {
@@ -30,11 +69,17 @@ export const FilesPage = () => {
 
   const loadOrganizations = async () => {
     try {
-      const response = await fetch('/api/organizations', {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-      });
-      const data = await response.json();
-      setOrganizations(data);
+      const data = await api.getOrganizations();
+      setOrganizations(data.filter((o: any) => o.status === 'active'));
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  const loadDepartments = async (orgId: string) => {
+    try {
+      const data = await api.getDepartments(orgId);
+      setDepartments(data.filter((d: any) => d.status === 'active'));
     } catch (error) {
       console.error(error);
     }
@@ -48,8 +93,16 @@ export const FilesPage = () => {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      if (userRole === 'admin') {
-        formData.append('targetOrganization', targetOrganization);
+      
+      // Manager: Use own org/dept automatically
+      if (isManager) {
+        formData.append('organizationId', userOrgId);
+        formData.append('departmentId', userDeptId);
+      } 
+      // Admin/Developer: Use selected org/dept
+      else if (hasFileManageAccess) {
+        formData.append('organizationId', targetOrganization || 'all');
+        formData.append('departmentId', targetDepartment || 'all');
       }
       
       const response = await fetch('/api/upload', {
@@ -61,9 +114,9 @@ export const FilesPage = () => {
       if (!response.ok) throw new Error('Upload failed');
       
       await loadFiles();
-      alert("File uploaded successfully!");
+      toast.success("File uploaded successfully");
     } catch (error: any) {
-      alert(error.message);
+      toast.error(error.message);
     } finally {
       setIsUploading(false);
     }
@@ -76,15 +129,15 @@ export const FilesPage = () => {
       await api.deleteFile(id);
       await loadFiles();
     } catch (error: any) {
-      alert(error.message);
+      toast.error(error.message);
     }
   };
 
   return (
     <div className="flex-1 h-screen overflow-y-auto chat-scrollbar p-6 bg-background">
       <div className="mb-6">
-        <h1 className="text-xl font-semibold mb-1">File Management</h1>
-        <p className="text-sm text-muted-foreground">Upload documents for RAG processing</p>
+        <h1 className="text-2xl font-bold">File Management</h1>
+        <p className="text-muted-foreground">Upload documents for RAG processing</p>
       </div>
 
       <Card className="mb-6">
@@ -96,19 +149,48 @@ export const FilesPage = () => {
               PDF, DOCX, TXT, JSON supported
             </p>
             
-            {userRole === 'admin' && (
-              <div className="mb-4 max-w-xs mx-auto">
-                <Label className="text-sm">Target Organization</Label>
-                <select
-                  value={targetOrganization}
-                  onChange={(e) => setTargetOrganization(e.target.value)}
-                  className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm mt-1"
-                >
-                  <option value="all">All Organizations</option>
-                  {organizations.map(org => (
-                    <option key={org._id} value={org._id}>{org.name}</option>
-                  ))}
-                </select>
+            {hasFileManageAccess && (
+              <div className="mb-4 max-w-md mx-auto space-y-3">
+                {/* Developer can select organization */}
+                {isDeveloper && (
+                  <div>
+                    <Label className="text-sm">Upload For Organization</Label>
+                    <select
+                      value={targetOrganization}
+                      onChange={(e) => setTargetOrganization(e.target.value)}
+                      className="w-full h-10 px-3 rounded-md border border-input bg-background text-foreground text-sm mt-1"
+                    >
+                      <option value="">All Organizations</option>
+                      {organizations.map(org => (
+                        <option key={org._id} value={org._id}>{org.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                
+                {/* Developer & Admin can select department */}
+                {(isDeveloper || isAdmin) && (
+                  <div>
+                    <Label className="text-sm">Upload For Department</Label>
+                    <select
+                      value={targetDepartment}
+                      onChange={(e) => setTargetDepartment(e.target.value)}
+                      className="w-full h-10 px-3 rounded-md border border-input bg-background text-foreground text-sm mt-1"
+                    >
+                      <option value="">All Departments in Organization</option>
+                      {departments.map(dept => (
+                        <option key={dept._id} value={dept._id}>{dept.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                
+                {/* Manager: Show info only, no selection */}
+                {isManager && (
+                  <div className="text-sm text-muted-foreground">
+                    File will be uploaded to your department only
+                  </div>
+                )}
               </div>
             )}
             

@@ -1,0 +1,188 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "b5fbca09-8038-4f2f-b563-c7b6992065ba",
+      "name": "Webhook Chat",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [1632, 5808],
+      "webhookId": "chat-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.item.json.body;\nconst message = body.message || '';\nconst userId = body.userId || '';\nconst organizationId = body.organizationId || null;\nconst departmentId = body.departmentId || null;\nconst sessionId = body.sessionId || userId;\nconst fileId = body.fileId || null;\n\nif (!message || !userId) {\n  throw new Error('message and userId are required');\n}\n\nreturn {\n  message: message,\n  userId: userId,\n  organizationId: organizationId,\n  departmentId: departmentId,\n  sessionId: sessionId,\n  fileId: fileId\n};"
+      },
+      "id": "3520f9fc-23d0-44b4-a947-6725e8cec926",
+      "name": "Parse Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1856, 5808]
+    },
+    {
+      "parameters": {
+        "jsCode": "const parseData = $input.item.json;\n\n// Build vector search filter\nlet vectorFilter = {};\n\n// Organization filter (skip if admin/developer with null organizationId)\nif (parseData.organizationId !== null) {\n  vectorFilter['organizationId'] = parseData.organizationId;\n}\n\n// Department filter (skip if manager/admin with null departmentId)\nif (parseData.departmentId !== null) {\n  vectorFilter['departmentId'] = parseData.departmentId;\n}\n\n// File filter (if specific file selected)\nif (parseData.fileId) {\n  vectorFilter['fileId'] = parseData.fileId;\n}\n\nreturn {\n  chatInput: parseData.message,\n  userId: parseData.userId,\n  organizationId: parseData.organizationId,\n  departmentId: parseData.departmentId,\n  sessionId: parseData.sessionId,\n  vectorFilter: JSON.stringify(vectorFilter)\n};"
+      },
+      "id": "09cf33f9-2979-4680-8b62-3e206198debb",
+      "name": "Format History",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2080, 5808]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.chatInput }}",
+        "options": {
+          "systemMessage": "You are Genie from GenCode, a helpful AI assistant with access to a knowledge base from uploaded documents.\n\n## Response Guidelines\n\n**Language**: Always respond in the SAME language as the user's question (English, Malay, Chinese, Tamil, etc.)\n\n**Format**: Use markdown formatting for better readability:\n- **Bold** for important terms\n- *Italic* for emphasis\n- `code` for technical terms\n- Bullet points for lists\n- Numbered lists for steps\n\n## Knowledge Base Rules\n\n1. **General Questions**: Answer normally using your general knowledge (greetings, math, general facts, etc.)\n\n2. **Document-Specific Questions**: When users ask about specific information, products, manuals, or technical details:\n   - **ALWAYS** use the \"Search the knowledge base\" tool first\n   - If information is found: Provide detailed answer with **page numbers** when available\n   - If NOT found in knowledge base: Respond with:\n     - English: \"I don't have information about that in the uploaded documents. Please upload the relevant document so I can help you better.\"\n     - Malay: \"Saya tidak mempunyai maklumat tentang itu dalam dokumen yang dimuat naik. Sila muat naik dokumen yang berkaitan supaya saya boleh membantu anda dengan lebih baik.\"\n     - Chinese: \"我在已上传的文档中没有找到相关信息。请上传相关文档，以便我能更好地帮助您。\"\n     - Tamil: \"பதிவேற்றப்பட்ட ஆவணங்களில் அதைப் பற்றிய தகவல் என்னிடம் இல்லை. நான் உங்களுக்கு சிறப்பாக உதவ தொடர்புடைய ஆவணத்தைப் பதிவேற்றவும்.\"\n\n3. **DO NOT** search external sources or make up information\n4. **DO NOT** answer document-specific questions without checking the knowledge base first\n5. **ALWAYS** cite page numbers when available (e.g., \"According to page 12...\")\n\n## Example Responses\n\n**Good**:\n- \"Based on page 15 of the manual, the **ioLogik E1210** is a Remote Ethernet I/O device with 2-port Ethernet switch.\"\n- \"Berdasarkan halaman 10, model ini mempunyai 16 Digital Inputs.\"\n\n**Bad**:\n- \"I think it might be...\" (without checking knowledge base)\n- \"Based on my general knowledge...\" (for document-specific questions)\n\nBe helpful, accurate, and always prioritize information from the uploaded documents!"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [2368, 5600],
+      "id": "b67d4237-03ab-4ca6-97b4-a9cfc08a63b7",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "options": {
+          "maxOutputTokens": 2048,
+          "temperature": 0.7
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [2304, 5824],
+      "id": "98779fb3-4b7a-4c21-85fb-08bf208ae85d",
+      "name": "Gemini 2.0 Flash",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "ZAOAdLszpQe1usS9",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolDescription": "Search the knowledge base for information from uploaded documents. Use this when users ask questions about uploaded files or need specific information.",
+        "mongoCollection": {
+          "__rl": true,
+          "value": "embedding_files",
+          "mode": "name"
+        },
+        "vectorIndexName": "rag_vector_search_1",
+        "topK": 5,
+        "options": {
+          "preFilter": "={{ $('Format History').item.json.vectorFilter }}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreMongoDBAtlas",
+      "typeVersion": 1.3,
+      "position": [2560, 5824],
+      "id": "dffc6d9f-9dd9-4b49-9759-b4e0688d441d",
+      "name": "Vector Store Retrieval",
+      "credentials": {
+        "mongoDb": {
+          "id": "DTUm7hRi7TfDKEcE",
+          "name": "MongoDB account 2"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "@n8n/n8n-nodes-langchain.embeddingsGoogleGemini",
+      "typeVersion": 1,
+      "position": [2496, 6032],
+      "id": "b519ae18-0043-44b4-8b65-7b2b95b3a999",
+      "name": "Gemini Embeddings",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "ZAOAdLszpQe1usS9",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const aiOutput = $input.item.json.output || $input.item.json.text || 'No response generated';\n\nreturn {\n  response: aiOutput\n};"
+      },
+      "id": "3cde4d16-735a-4dac-8e79-b510ecda9159",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2928, 5808]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "81a6b40d-a873-47ba-b586-cc10c3dd028e",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [3152, 5808]
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.sessionId }}",
+        "collectionName": "messages",
+        "databaseName": "ragchatbot",
+        "contextWindowLength": 50
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryMongoDbChat",
+      "typeVersion": 1,
+      "position": [2432, 5824],
+      "id": "cb34808c-a8ae-4158-a871-06a802b9dbf9",
+      "name": "MongoDB Chat Memory1",
+      "credentials": {
+        "mongoDb": {
+          "id": "DTUm7hRi7TfDKEcE",
+          "name": "MongoDB account 2"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Chat": {
+      "main": [[{"node": "Parse Input", "type": "main", "index": 0}]]
+    },
+    "Parse Input": {
+      "main": [[{"node": "Format History", "type": "main", "index": 0}]]
+    },
+    "Format History": {
+      "main": [[{"node": "AI Agent", "type": "main", "index": 0}]]
+    },
+    "AI Agent": {
+      "main": [[{"node": "Format Response", "type": "main", "index": 0}]]
+    },
+    "Gemini 2.0 Flash": {
+      "ai_languageModel": [[{"node": "AI Agent", "type": "ai_languageModel", "index": 0}]]
+    },
+    "Vector Store Retrieval": {
+      "ai_tool": [[{"node": "AI Agent", "type": "ai_tool", "index": 0}]]
+    },
+    "Gemini Embeddings": {
+      "ai_embedding": [[{"node": "Vector Store Retrieval", "type": "ai_embedding", "index": 0}]]
+    },
+    "Format Response": {
+      "main": [[{"node": "Respond", "type": "main", "index": 0}]]
+    },
+    "MongoDB Chat Memory1": {
+      "ai_memory": [[{"node": "AI Agent", "type": "ai_memory", "index": 0}]]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "749afbba9c6a9d23df7b16459183ee0d8cf1112b4ef6282f0b464180cfb645ea"
+  }
+}

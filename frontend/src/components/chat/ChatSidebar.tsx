@@ -1,4 +1,4 @@
-import { Plus, MessageSquare, Settings, FolderOpen, LogOut, Bot, Trash2 } from "lucide-react";
+import { Plus, MessageSquare, Settings, FolderOpen, LogOut, Bot, Trash2, Shield, Users, Building2, Users as UsersIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -8,6 +8,7 @@ interface ChatSession {
   date: string;
   isActive?: boolean;
   startedBy?: string;
+  startedByEmail?: string;
 }
 
 interface ChatSidebarProps {
@@ -15,13 +16,14 @@ interface ChatSidebarProps {
   onNewChat: () => void;
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
-  currentPage: "chat" | "files" | "settings";
-  onNavigate: (page: "chat" | "files" | "settings") => void;
+  currentPage: "chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments";
+  onNavigate: (page: "chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments") => void;
   onLogout: () => void;
   logo?: string | null;
   userEmail: string;
   userRole: string;
   userOrganization: string;
+  userPermissions?: string[];
 }
 
 export const ChatSidebar = ({
@@ -36,15 +38,25 @@ export const ChatSidebar = ({
   userEmail,
   userRole,
   userOrganization,
+  userPermissions = [],
 }: ChatSidebarProps) => {
+  const isDeveloper = userRole.toLowerCase() === 'developer';
+  const canManageUsers = userPermissions.includes('user:manage') || isDeveloper;
+  const canManageDepts = userPermissions.includes('dept:manage') || isDeveloper;
+  const canManageOrgs = userPermissions.includes('org:manage') || isDeveloper;
+  const canManageRoles = userPermissions.includes('role:manage') || isDeveloper;
+  const canManageSettings = userPermissions.includes('setup:manage') || isDeveloper;
+  const canAccessFiles = userPermissions.includes('file:manage_access') || userPermissions.includes('file:upload') || isDeveloper;
+  
   // Role-based navigation access
-  // Admin: chat, files, settings
-  // Manager: chat, files
-  // User: chat only
   const navItems = [
     { id: "chat" as const, label: "Chat", icon: MessageSquare },
-    ...(userRole === "admin" || userRole === "manager" ? [{ id: "files" as const, label: "Files", icon: FolderOpen }] : []),
-    ...(userRole === "admin" ? [{ id: "settings" as const, label: "Settings", icon: Settings }] : []),
+    ...(canAccessFiles ? [{ id: "files" as const, label: "Files", icon: FolderOpen }] : []),
+    ...(canManageOrgs ? [{ id: "organizations" as const, label: "Organizations", icon: Building2 }] : []),
+    ...(canManageDepts ? [{ id: "departments" as const, label: "Departments", icon: UsersIcon }] : []),
+    ...(canManageRoles ? [{ id: "roles" as const, label: "Roles", icon: Shield }] : []),
+    ...(canManageUsers ? [{ id: "users" as const, label: "Users", icon: Users }] : []),
+    ...(canManageSettings ? [{ id: "settings" as const, label: "Settings", icon: Settings }] : []),
   ];
 
   // Extract name from email and get first letter for avatar
@@ -129,13 +141,13 @@ export const ChatSidebar = ({
                       </div>
                       <div className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-1.5">
                         <span>{session.date}</span>
-                        {userRole === 'admin' && session.startedBy && session.startedBy !== userEmail && (
+                        {(userRole.toLowerCase() === 'developer' || userRole === 'admin') && session.startedBy && session.startedBy !== userEmail && (
                           <span className="text-[10px] text-muted-foreground/70">• by {session.startedBy}</span>
                         )}
                       </div>
                     </button>
-                    {/* Only show delete button if user owns the chat */}
-                    {(!session.startedBy || session.startedBy === userEmail) && (
+                    {/* Developer can delete any chat, others only their own */}
+                    {(userRole.toLowerCase() === 'developer' || session.startedByEmail === userEmail) && (
                       <Button
                         variant="ghost"
                         size="icon"

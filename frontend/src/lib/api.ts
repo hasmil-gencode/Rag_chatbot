@@ -196,33 +196,52 @@ class API {
     return json
   }
 
-  async getOrganizations() {
-    const res = await fetch(`${API_BASE}/organizations`, {
+  // ============= RBAC =============
+  async getPermissions() {
+    const res = await fetch(`${API_BASE}/permissions`, {
       headers: this.getHeaders(),
     })
-    const json = await res.json()
-    if (!res.ok) throw new Error(json.error || 'Failed to fetch organizations')
-    return json
+    if (!res.ok) throw new Error('Failed to load permissions')
+    return res.json()
   }
 
-  async createOrganization(name: string) {
-    const res = await fetch(`${API_BASE}/organizations`, {
+  async getRoles() {
+    const res = await fetch(`${API_BASE}/roles`, {
+      headers: this.getHeaders(),
+    })
+    if (!res.ok) throw new Error('Failed to load roles')
+    return res.json()
+  }
+
+  async createRole(data: { name: string; description: string; permissions: string[]; status: string }) {
+    const res = await fetch(`${API_BASE}/roles`, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({ name }),
+      body: JSON.stringify(data),
     })
     const json = await res.json()
-    if (!res.ok) throw new Error(json.error || 'Failed to create organization')
+    if (!res.ok) throw new Error(json.error || 'Failed to create role')
     return json
   }
 
-  async deleteOrganization(id: string) {
-    const res = await fetch(`${API_BASE}/organizations/${id}`, {
+  async updateRole(id: string, data: { name: string; description: string; permissions: string[]; status: string }) {
+    const res = await fetch(`${API_BASE}/roles/${id}`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify(data),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to update role')
+    return json
+  }
+
+  async deleteRole(id: string) {
+    const res = await fetch(`${API_BASE}/roles/${id}`, {
       method: 'DELETE',
       headers: this.getHeaders(),
     })
     const json = await res.json()
-    if (!res.ok) throw new Error(json.error || 'Failed to delete organization')
+    if (!res.ok) throw new Error(json.error || 'Failed to delete role')
     return json
   }
 
@@ -234,32 +253,22 @@ class API {
     return res.json()
   }
 
-  async updateUserRole(userId: string, role: string) {
-    const res = await fetch(`${API_BASE}/users/${userId}/role`, {
-      method: 'PUT',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ role }),
-    })
-    if (!res.ok) throw new Error('Failed to update user role')
-    return res.json()
-  }
-
-  async createUser(email: string, password: string, role: string, organizationId?: string) {
+  async createUser(data: { email: string; password: string; fullName: string; roles: string[]; status: string }) {
     const res = await fetch(`${API_BASE}/users`, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({ email, password, role, organizationId }),
+      body: JSON.stringify(data),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to create user')
     return json
   }
 
-  async updateUser(id: string, email: string, password: string, role: string, organizationId?: string) {
+  async updateUser(id: string, data: { email: string; fullName: string; roles: string[]; status: string; password?: string }) {
     const res = await fetch(`${API_BASE}/users/${id}`, {
       method: 'PUT',
       headers: this.getHeaders(),
-      body: JSON.stringify({ email, password, role, organizationId }),
+      body: JSON.stringify(data),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to update user')
@@ -273,6 +282,91 @@ class API {
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to delete user')
+    return json
+  }
+
+  // ============= ORGANIZATIONS =============
+  async getOrganizations() {
+    const res = await fetch(`${API_BASE}/organizations`, {
+      headers: this.getHeaders(),
+    })
+    if (!res.ok) throw new Error('Failed to load organizations')
+    return res.json()
+  }
+
+  async createOrganization(data: { name: string; description: string; status: string }) {
+    const res = await fetch(`${API_BASE}/organizations`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(data),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to create organization')
+    return json
+  }
+
+  async updateOrganization(id: string, data: { name: string; description: string; status: string }) {
+    const res = await fetch(`${API_BASE}/organizations/${id}`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify(data),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to update organization')
+    return json
+  }
+
+  async deleteOrganization(id: string) {
+    const res = await fetch(`${API_BASE}/organizations/${id}`, {
+      method: 'DELETE',
+      headers: this.getHeaders(),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to delete organization')
+    return json
+  }
+
+  // ============= DEPARTMENTS =============
+  async getDepartments(organizationId?: string) {
+    const url = organizationId 
+      ? `${API_BASE}/departments?organizationId=${organizationId}`
+      : `${API_BASE}/departments`
+    const res = await fetch(url, {
+      headers: this.getHeaders(),
+    })
+    if (!res.ok) throw new Error('Failed to load departments')
+    return res.json()
+  }
+
+  async createDepartment(data: { name: string; description: string; organizationId: string; status: string }) {
+    const res = await fetch(`${API_BASE}/departments`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(data),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to create department')
+    return json
+  }
+
+  async updateDepartment(id: string, data: { name: string; description: string; organizationId: string; status: string }) {
+    const res = await fetch(`${API_BASE}/departments/${id}`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify(data),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to update department')
+    return json
+  }
+
+  async deleteDepartment(id: string) {
+    const res = await fetch(`${API_BASE}/departments/${id}`, {
+      method: 'DELETE',
+      headers: this.getHeaders(),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to delete department')
     return json
   }
 
