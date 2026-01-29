@@ -119,7 +119,9 @@ const auth = async (req, res, next) => {
       id: user._id,
       email: user.email,
       fullName: user.fullName,
+      organizationId: user.organizationId,
       roles: roles.map(r => r.name),
+      role: roles[0]?.name.toLowerCase() || 'user', // Primary role for easy checking
       permissions
     };
     
@@ -174,7 +176,7 @@ app.post('/api/login', async (req, res) => {
     success: true, 
     token, 
     user: { 
-      id: user._id, 
+      id: user._id.toString(), 
       email: user.email,
       fullName: user.fullName,
       roles: roles.map(r => r.name),
@@ -267,16 +269,13 @@ app.get('/api/messages', auth, async (req, res) => {
   const sessionId = req.query.sessionId;
   let query = {};
   
-  if (req.user.role === 'admin') {
-    // Admin sees all chats
-    query = {};
-  } else if (req.user.role === 'manager') {
-    // Manager sees own chats + users in their org
+  if (req.user.role === 'developer') {
+    // Developer sees all chats in their org
     query = {
       organizationId: req.user.organizationId
     };
   } else {
-    // User sees only own chats
+    // Admin/Manager/User see only own chats
     query = {
       userId: req.user.id
     };
@@ -293,12 +292,14 @@ app.get('/api/messages', auth, async (req, res) => {
 
 // Get chat sessions
 app.get('/api/sessions', auth, async (req, res) => {
-  // Developer can see all sessions, others see only their org
-  const canViewAll = req.user.roles.includes('Developer');
+  // Only developer can see all sessions in org, others see own only
+  let matchQuery;
   
-  const matchQuery = canViewAll
-    ? { role: 'user' }
-    : { userId: req.user.id, role: 'user' };
+  if (req.user.role === 'developer') {
+    matchQuery = { organizationId: req.user.organizationId };
+  } else {
+    matchQuery = { userId: req.user.id };
+  }
     
   const sessions = await db.collection('messages')
     .aggregate([
@@ -385,14 +386,18 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         isAllOrganizations = true;
         fileOrganizationId = null;
       } else if (targetOrganization) {
-        fileOrganizationId = targetOrganization;
+        fileOrganizationId = new ObjectId(targetOrganization);
+      } else if (!fileOrganizationId) {
+        // If admin has no org and didn't select one, default to "All Organizations"
+        isAllOrganizations = true;
+        fileOrganizationId = null;
       }
       
       if (targetDepartment === 'all') {
         isAllDepartments = true;
         fileDepartmentId = null;
       } else if (targetDepartment) {
-        fileDepartmentId = targetDepartment;
+        fileDepartmentId = new ObjectId(targetDepartment);
       }
     }
     // else: Manager/User can only upload to their own org/dept
@@ -480,11 +485,8 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
 app.get('/api/files', auth, async (req, res) => {
   let query = {};
   
-  if (req.user.role === 'admin') {
-    // Admin sees all files
-    query = {};
-  } else if (req.user.role === 'manager' || req.user.role === 'user') {
-    // Manager/User see files in their org OR files marked for all orgs
+  if (req.user.role === 'admin' || req.user.role === 'developer' || req.user.role === 'manager' || req.user.role === 'user') {
+    // All roles see files in their org OR files marked for all orgs
     query = {
       $or: [
         { organizationId: req.user.organizationId },
@@ -506,11 +508,23 @@ app.get('/api/files', auth, async (req, res) => {
       orgName = org?.name || 'Unknown';
     }
     
+    // Get uploader role
+    let uploaderRole = null;
+    if (f.userId) {
+      const uploader = await db.collection('users').findOne({ _id: new ObjectId(f.userId) });
+      if (uploader && uploader.roles && uploader.roles.length > 0) {
+        const role = await db.collection('roles').findOne({ _id: new ObjectId(uploader.roles[0]) });
+        uploaderRole = role?.name || null;
+      }
+    }
+    
     return {
       id: f._id,
       name: f.name,
       uploadedAt: f.uploadedAt,
       uploadedBy: f.uploadedBy || 'Unknown',
+      userId: f.userId,
+      uploaderRole: uploaderRole,
       organizationName: f.isAllOrganizations ? 'All Organizations' : orgName,
       isAllOrganizations: f.isAllOrganizations || false
     };
@@ -524,7 +538,7 @@ app.delete('/api/files/:id', auth, async (req, res) => {
   try {
     const matchQuery = req.user.role === 'admin'
       ? { _id: new ObjectId(req.params.id) }
-      : { _id: new ObjectId(req.params.id), organizationId: req.user.organizationId };
+      : { _id: new ObjectId(req.params.id), userId: req.user.id };
       
     const file = await db.collection('files').findOne(matchQuery);
     if (!file) return res.status(404).json({ error: 'File not found' });
@@ -1057,7 +1071,7 @@ app.post('/api/transcribe', auth, upload.single('audio'), async (req, res) => {
 
       try {
         const genAI = new GoogleGenerativeAI(geminiSttApiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
         // Read audio file
         const audioData = fs.readFileSync(req.file.path);
@@ -1329,7 +1343,7 @@ app.post('/api/tts', auth, async (req, res) => {
           // Simple language detection
           const hasChinese = /[\u4e00-\u9fff]/.test(text);
           const hasTamil = /[\u0B80-\u0BFF]/.test(text);
-          const hasMalay = /\b(saya|anda|dengan|untuk|ini|itu|yang|adalah|tidak|ada|boleh|akan|sudah|dari|ke|di|pada|atau|juga|kalau|bila|macam|mana|nak|dah|tak)\b/i.test(text);
+          const hasMalay = /\b(saya|aku|kau|awak|anda|kita|kami|mereka|dia|dengan|untuk|ini|itu|yang|adalah|tidak|tak|tiada|ada|boleh|akan|sudah|dah|belum|lagi|dari|daripada|ke|di|pada|atau|juga|kalau|bila|macam|mana|nak|hendak|mahu|perlu|mesti|harus|buat|bikin|bagi|ambil|dapat|jadi|jangan|siapa|apa|mana|bila|kenapa|mengapa|bagaimana|berapa|pun|sahaja|je|jer|la|lah|kah|tah|kan|pula|jugak|gak|gitu|gini|nanti|sekarang|tadi|esok|semalam|hari|masa|waktu|tempat|orang|benda|perkara|hal|soal|cerita|kata|cakap|bercakap|beritahu|tanya|jawab|dengar|tengok|lihat|nampak|rasa|fikir|ingat|tahu|kenal|faham|mengerti|belajar|ajar|kerja|main|rehat|tidur|bangun|makan|minum|masak|basuh|cuci|sapu|gosok|lap|buang|simpan|letak|taruh|angkat|bawa|hantar|terima|buka|tutup|masuk|keluar|naik|turun|datang|pergi|balik|sampai|tiba|mulai|mula|habis|tamat|selesai|siap|terus|berhenti|tunggu|cari|jumpa|temu|beli|jual|bayar|hutang|pinjam|sewa|guna|pakai|kena|cuba|try|tolong|bantu|ajak|jemput|panggil|telefon|call|whatsapp|email|mesej|message|chat|sembang|borak|lepak|jalan|lari|duduk|berdiri|berbaring|baca|tulis|lukis|gambar|foto|video|rakam|record|dengar|lagu|muzik|nyanyi|menari|tarian|main|permainan|game|menang|kalah|seri|draw|gol|goal|score|mata|markah|point|tinggi|rendah|besar|kecil|panjang|pendek|lebar|sempit|tebal|nipis|berat|ringan|kuat|lemah|keras|lembut|kasar|halus|licin|tajam|tumpul|panas|sejuk|suam|dingin|hangat|basah|kering|lembap|kotor|bersih|cantik|hodoh|buruk|elok|bagus|baik|jahat|betul|salah|benar|palsu|betul|tepat|silap|salah|lurus|bengkok|senget|condong|tegak|rata|lurus|bengkok|bulat|segi|empat|tiga|lima|enam|tujuh|lapan|sembilan|sepuluh|ratus|ribu|juta|bilion|trillion|satu|dua|tiga|empat|lima|enam|tujuh|lapan|sembilan|sepuluh|sebelas|belas|puluh|ratus|ribu|pertama|kedua|ketiga|keempat|kelima|keenam|ketujuh|kelapan|kesembilan|kesepuluh|merah|biru|hijau|kuning|hitam|putih|kelabu|perang|oren|ungu|pink|merah|jambu|coklat|emas|perak|warna|colour|color|suka|benci|sayang|cinta|rindu|kangen|marah|geram|bengang|gembira|senang|seronok|sedih|dukacita|takut|gerun|cuak|nervous|risau|bimbang|worry|harap|berharap|angan|impian|mimpi|dream|wish|ingin|mahu|nak|hendak|pengen|lapar|kenyang|haus|dahaga|penat|letih|lesu|lemah|sakit|demam|batuk|selsema|selesema|flu|pening|pening|kepala|sakit|perut|mual|loya|muntah|cirit|birit|sembelit|gatal|pedih|panas|sejuk|seram|ngeri|menakutkan|bahaya|selamat|aman|tenteram|damai)\b/i.test(text);
           
           if (hasChinese) {
             languageCode = 'cmn-CN';

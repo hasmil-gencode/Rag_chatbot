@@ -125,6 +125,7 @@ const Index = () => {
       const data = await api.login({ email, password });
 
       localStorage.setItem("token", data.token);
+      localStorage.setItem("userId", data.user?.id || "");
       localStorage.setItem("userEmail", data.user?.email || email);
       localStorage.setItem("userRole", data.user?.roles?.[0] || "user");
       localStorage.setItem("userOrganization", data.user?.organizationName || "");

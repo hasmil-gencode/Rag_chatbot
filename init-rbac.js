@@ -71,6 +71,7 @@ const roles = [
     description: 'Basic user - chat and view files within department',
     permissions: [
       'chat:view',
+      'chat:delete',
       'file:view'
     ],
     isSystem: false,

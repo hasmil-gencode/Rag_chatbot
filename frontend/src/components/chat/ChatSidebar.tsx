@@ -146,8 +146,8 @@ export const ChatSidebar = ({
                         )}
                       </div>
                     </button>
-                    {/* Developer can delete any chat, others only their own */}
-                    {(userRole.toLowerCase() === 'developer' || session.startedByEmail === userEmail) && (
+                    {/* Only show delete button for own chats */}
+                    {session.startedByEmail === userEmail && (
                       <Button
                         variant="ghost"
                         size="icon"

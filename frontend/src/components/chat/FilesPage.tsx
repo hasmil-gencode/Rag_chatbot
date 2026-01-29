@@ -13,7 +13,11 @@ export const FilesPage = () => {
   const [targetOrganization, setTargetOrganization] = useState<string>("");
   const [targetDepartment, setTargetDepartment] = useState<string>("");
   const [isUploading, setIsUploading] = useState(false);
+  const [deletingFileId, setDeletingFileId] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [fileToDelete, setFileToDelete] = useState<{id: string, name: string} | null>(null);
   const userRole = localStorage.getItem('userRole') || 'user';
+  const userId = localStorage.getItem('userId') || '';
   const userPermissions = JSON.parse(localStorage.getItem('userPermissions') || '[]');
   const isDeveloper = userRole.toLowerCase() === 'developer';
   const isAdmin = userRole.toLowerCase() === 'admin';
@@ -122,15 +126,32 @@ export const FilesPage = () => {
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm("Delete this file?")) return;
+  const handleDelete = async (id: string, name: string) => {
+    setFileToDelete({ id, name });
+    setShowDeleteConfirm(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!fileToDelete) return;
+    
+    setDeletingFileId(fileToDelete.id);
+    setShowDeleteConfirm(false);
     
     try {
-      await api.deleteFile(id);
+      await api.deleteFile(fileToDelete.id);
+      toast.success("File deleted successfully");
       await loadFiles();
     } catch (error: any) {
-      toast.error(error.message);
+      toast.error(error.message || "Failed to delete file");
+    } finally {
+      setDeletingFileId(null);
+      setFileToDelete(null);
     }
+  };
+
+  const cancelDelete = () => {
+    setShowDeleteConfirm(false);
+    setFileToDelete(null);
   };
 
   return (
@@ -236,14 +257,22 @@ export const FilesPage = () => {
                       </p>
                     </div>
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => handleDelete(file.id)}
-                    className="flex-shrink-0"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
+                  {/* Admin cannot delete developer files, others can only delete their own */}
+                  {((isAdmin && file.uploaderRole?.toLowerCase() !== 'developer') || (!isAdmin && file.userId === userId)) && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => handleDelete(file.id, file.name)}
+                      disabled={deletingFileId === file.id}
+                      className="flex-shrink-0"
+                    >
+                      {deletingFileId === file.id ? (
+                        <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <Trash2 className="w-4 h-4" />
+                      )}
+                    </Button>
+                  )}
                 </div>
               ))}
               {files.length === 0 && (
@@ -257,6 +286,31 @@ export const FilesPage = () => {
             </div>
           </CardContent>
         </Card>
+
+      {/* Delete Confirmation Dialog */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <Card className="w-full max-w-md mx-4">
+            <CardHeader>
+              <CardTitle>Delete File</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Are you sure you want to delete <span className="font-semibold text-foreground">{fileToDelete?.name}</span>?
+                This action cannot be undone.
+              </p>
+              <div className="flex gap-3 justify-end">
+                <Button variant="outline" onClick={cancelDelete}>
+                  Cancel
+                </Button>
+                <Button variant="destructive" onClick={confirmDelete}>
+                  Delete
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
   );
 };
