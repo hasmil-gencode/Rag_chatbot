@@ -8,6 +8,7 @@ import { RolesPage } from "@/components/chat/RolesPage";
 import { UsersPage } from "@/components/chat/UsersPage";
 import { OrganizationsPage } from "@/components/chat/OrganizationsPage";
 import { DepartmentsPage } from "@/components/chat/DepartmentsPage";
+import { DeletedChatsPage } from "@/components/chat/DeletedChatsPage";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,7 +31,7 @@ interface ChatSession {
 const Index = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments">("chat");
+  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments" | "deleted-chats">("chat");
   const [logo, setLogo] = useState<string | null>(null);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -469,6 +470,7 @@ const Index = () => {
           />
         )}
         {currentPage === "files" && <FilesPage />}
+        {currentPage === "deleted-chats" && <DeletedChatsPage />}
         {currentPage === "organizations" && <OrganizationsPage />}
         {currentPage === "departments" && <DepartmentsPage />}
         {currentPage === "roles" && <RolesPage />}

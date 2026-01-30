@@ -193,7 +193,7 @@ export const SettingsPage = ({ onLogoChange }: SettingsPageProps) => {
     }
   };
 
-  const updateSetting = (key: string, value: string | boolean) => {
+  const updateSetting = (key: string, value: string | boolean | number) => {
     setSettings((prev: any) => ({ ...prev, [key]: value }));
   };
 
@@ -238,6 +238,7 @@ export const SettingsPage = ({ onLogoChange }: SettingsPageProps) => {
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="mb-6">
             <TabsTrigger value="branding">Branding</TabsTrigger>
+            <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="webhooks">Webhooks</TabsTrigger>
             <TabsTrigger value="s3">S3 Storage</TabsTrigger>
             <TabsTrigger value="voice">Voice</TabsTrigger>
@@ -300,6 +301,35 @@ export const SettingsPage = ({ onLogoChange }: SettingsPageProps) => {
                 >
                   <Save className="w-4 h-4 mr-2" />
                   {isSaving ? "Saving..." : "Save Branding"}
+                </Button>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="general">
+            <Card>
+              <CardHeader>
+                <CardTitle>General Settings</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div>
+                  <Label>Deleted Chat Retention (days)</Label>
+                  <Input
+                    type="number"
+                    value={settings.deletedChatRetentionDays || 360}
+                    onChange={(e) => updateSetting("deletedChatRetentionDays", parseInt(e.target.value))}
+                    placeholder="360"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Deleted chats will be automatically removed after this many days. Default: 360 days.
+                  </p>
+                </div>
+                <Button
+                  onClick={handleSave}
+                  disabled={isSaving}
+                >
+                  <Save className="w-4 h-4 mr-2" />
+                  {isSaving ? "Saving..." : "Save Settings"}
                 </Button>
               </CardContent>
             </Card>

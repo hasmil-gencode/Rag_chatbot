@@ -16,8 +16,8 @@ interface ChatSidebarProps {
   onNewChat: () => void;
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
-  currentPage: "chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments";
-  onNavigate: (page: "chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments") => void;
+  currentPage: "chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments" | "deleted-chats";
+  onNavigate: (page: "chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments" | "deleted-chats") => void;
   onLogout: () => void;
   logo?: string | null;
   userEmail: string;
@@ -57,6 +57,7 @@ export const ChatSidebar = ({
     ...(canManageRoles ? [{ id: "roles" as const, label: "Roles", icon: Shield }] : []),
     ...(canManageUsers ? [{ id: "users" as const, label: "Users", icon: Users }] : []),
     ...(canManageSettings ? [{ id: "settings" as const, label: "Settings", icon: Settings }] : []),
+    ...(isDeveloper ? [{ id: "deleted-chats" as const, label: "Deleted Chats", icon: Trash2 }] : []),
   ];
 
   // Extract name from email and get first letter for avatar

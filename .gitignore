@@ -26,9 +26,27 @@ Thumbs.db
 # Docker volumes
 data/
 uploads/
+logos/
 
 # MongoDB data
 mongo-data/
 
 # n8n data
 n8n-data/
+
+# Build output
+frontend/dist/
+frontend/.vite/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.gif
+image*.png

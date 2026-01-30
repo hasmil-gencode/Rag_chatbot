@@ -343,6 +343,25 @@ app.delete('/api/sessions/:id', auth, hasPermission('chat:delete'), async (req, 
       return res.status(404).json({ error: 'Session not found' });
     }
     
+    // Get all messages in this session before deleting
+    const messagesToDelete = await db.collection('messages').find({
+      sessionId: req.params.id,
+      userId: req.user.id
+    }).toArray();
+    
+    // Save to deleted_messages collection for audit trail
+    if (messagesToDelete.length > 0) {
+      const deletedRecords = messagesToDelete.map(m => ({
+        ...m,
+        deletedBy: req.user.id,
+        deletedByEmail: req.user.email,
+        deletedAt: new Date(),
+        originalId: m._id
+      }));
+      
+      await db.collection('deleted_messages').insertMany(deletedRecords);
+    }
+    
     // Delete all messages in this session
     await db.collection('messages').deleteMany({
       sessionId: req.params.id,
@@ -353,6 +372,79 @@ app.delete('/api/sessions/:id', auth, hasPermission('chat:delete'), async (req, 
   } catch (error) {
     console.error('Delete session error:', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get deleted chats (developer only)
+app.get('/api/deleted-sessions', auth, async (req, res) => {
+  try {
+    // Only developer can view deleted chats
+    if (req.user.role !== 'developer') {
+      return res.status(403).json({ error: 'Developer access only' });
+    }
+    
+    const sessions = await db.collection('deleted_messages')
+      .aggregate([
+        { $match: { organizationId: req.user.organizationId } },
+        { $sort: { deletedAt: -1 } },
+        { $group: {
+          _id: '$sessionId',
+          firstMessage: { $first: '$content' },
+          deletedAt: { $first: '$deletedAt' },
+          deletedBy: { $first: '$deletedByEmail' },
+          messageCount: { $sum: 1 },
+          startedBy: { $first: '$startedBy' },
+          startedByEmail: { $first: '$startedByEmail' }
+        }},
+        { $sort: { deletedAt: -1 } },
+        { $limit: 100 }
+      ]).toArray();
+    
+    res.json(sessions.map(s => ({
+      id: s._id,
+      title: (s.firstMessage || 'Deleted chat').substring(0, 50),
+      deletedAt: s.deletedAt,
+      deletedBy: s.deletedBy,
+      messageCount: s.messageCount,
+      startedBy: s.startedBy || s.startedByEmail,
+      startedByEmail: s.startedByEmail
+    })));
+  } catch (error) {
+    console.error('Get deleted sessions error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get deleted chat messages (developer only)
+app.get('/api/deleted-messages', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') {
+      return res.status(403).json({ error: 'Developer access only' });
+    }
+    
+    const sessionId = req.query.sessionId;
+    if (!sessionId) {
+      return res.status(400).json({ error: 'sessionId required' });
+    }
+    
+    const messages = await db.collection('deleted_messages')
+      .find({ 
+        sessionId,
+        organizationId: req.user.organizationId 
+      })
+      .sort({ createdAt: 1 })
+      .toArray();
+    
+    res.json(messages.map(m => ({ 
+      role: m.role, 
+      content: m.content,
+      createdAt: m.createdAt,
+      deletedAt: m.deletedAt,
+      deletedBy: m.deletedByEmail
+    })));
+  } catch (error) {
+    console.error('Get deleted messages error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -1403,5 +1495,30 @@ app.post('/api/tts', auth, async (req, res) => {
 app.get('*', (req, res) => {
   res.sendFile(join(__dirname, 'frontend/dist/index.html'));
 });
+
+// Cleanup old deleted messages based on retention setting
+async function cleanupOldDeletedMessages() {
+  try {
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const retentionDays = settings?.deletedChatRetentionDays || 360;
+    
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+    
+    const result = await db.collection('deleted_messages').deleteMany({
+      deletedAt: { $lt: cutoffDate }
+    });
+    
+    if (result.deletedCount > 0) {
+      console.log(`Cleaned up ${result.deletedCount} old deleted messages (older than ${retentionDays} days)`);
+    }
+  } catch (error) {
+    console.error('Cleanup error:', error);
+  }
+}
+
+// Run cleanup daily
+setInterval(cleanupOldDeletedMessages, 24 * 60 * 60 * 1000);
+cleanupOldDeletedMessages(); // Run on startup
 
 app.listen(3000, () => console.log('Server running on port 3000'));
