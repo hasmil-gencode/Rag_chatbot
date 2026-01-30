@@ -7,6 +7,7 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   startedBy?: string;
+  createdAt?: Date | string;
 }
 
 interface ChatAreaProps {
@@ -14,9 +15,10 @@ interface ChatAreaProps {
   onSendMessage: (message: string, fileId?: string | null) => void;
   isLoading?: boolean;
   userEmail?: string;
+  hasActiveSession?: boolean;
 }
 
-export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail }: ChatAreaProps) => {
+export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, hasActiveSession }: ChatAreaProps) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [waitingForResponse, setWaitingForResponse] = useState(false);
@@ -71,7 +73,7 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail }: Chat
   };
 
   return (
-    <div className="flex-1 flex flex-col h-screen bg-background">
+    <div className={`flex-1 flex flex-col h-screen bg-background ${hasActiveSession ? 'md:pt-0 pt-12' : ''}`}>
       {messages.length === 0 ? (
         <div className="flex-1 flex flex-col">
           {/* Centered greeting and input */}
@@ -105,6 +107,7 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail }: Chat
                   content={msg.content} 
                   userName={getUserName()} 
                   startedBy={msg.startedBy}
+                  timestamp={msg.createdAt}
                 />
               ))}
               {isLoading && <ChatMessage role="assistant" content="" isTyping />}

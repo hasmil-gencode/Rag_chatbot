@@ -273,6 +273,13 @@
     overflow-x: hidden;
   }
   
+  /* Remove padding on desktop */
+  @media (min-width: 768px) {
+    .chat-container {
+      padding-top: 0;
+    }
+  }
+  
   /* Prevent horizontal scroll */
   body, html {
     overflow-x: hidden;

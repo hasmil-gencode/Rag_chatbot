@@ -287,7 +287,11 @@ app.get('/api/messages', auth, async (req, res) => {
     .find(query)
     .sort({ createdAt: 1 })
     .toArray();
-  res.json(messages.map(m => ({ role: m.role, content: m.content })));
+  res.json(messages.map(m => ({ 
+    role: m.role, 
+    content: m.content,
+    createdAt: m.createdAt 
+  })));
 });
 
 // Get chat sessions
@@ -462,6 +466,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     // Get target org/dept from request
     const targetOrganization = req.body.organizationId;
     const targetDepartment = req.body.departmentId;
+    const fileType = req.body.type || 'document'; // 'document' or 'form'
     
     // Determine organization and department for file
     let fileOrganizationId = user?.organizationId || null;
@@ -528,6 +533,9 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       userId: req.user.id,
       organizationId: fileOrganizationId,
       departmentId: fileDepartmentId,
+      type: fileType,
+      isDownloadable: fileType === 'form',
+      isVectorized: fileType === 'document',
       isAllOrganizations,
       isAllDepartments,
       uploadedBy: uploaderName,
@@ -539,32 +547,42 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     
     const result = await db.collection('files').insertOne(file);
     
-    // Send to n8n and WAIT for response (max 5 minutes)
-    const webhooks = await getWebhookUrls();
-    
-    try {
-      const response = await axios.post(webhooks.upload, {
-        fileId: result.insertedId.toString(),
-        userId: req.user.id,
-        organizationId: fileOrganizationId,
-        departmentId: fileDepartmentId,
-        fileName: req.file.originalname,
-        fileUrl: fileUrl
-      }, {
-        timeout: 300000 // 5 minutes
-      });
+    // Only send to n8n if type is 'document'
+    if (fileType === 'document') {
+      // Send to n8n and WAIT for response (max 5 minutes)
+      const webhooks = await getWebhookUrls();
       
+      try {
+        const response = await axios.post(webhooks.upload, {
+          fileId: result.insertedId.toString(),
+          userId: req.user.id,
+          organizationId: fileOrganizationId ? fileOrganizationId.toString() : null,
+          departmentId: fileDepartmentId ? fileDepartmentId.toString() : null,
+          fileName: req.file.originalname,
+          fileUrl: fileUrl
+        }, {
+          timeout: 300000 // 5 minutes
+        });
+        
+        res.json({ 
+          success: true, 
+          fileId: result.insertedId,
+          message: response.data.message || 'File uploaded and embedded successfully',
+          chunks: response.data.chunks || 0
+        });
+      } catch (webhookError) {
+        console.error('n8n webhook error:', webhookError.message);
+        res.status(500).json({ 
+          success: false, 
+          error: 'File uploaded but embedding failed. Please try again.' 
+        });
+      }
+    } else {
+      // For forms, just return success without n8n processing
       res.json({ 
         success: true, 
         fileId: result.insertedId,
-        message: response.data.message || 'File uploaded and embedded successfully',
-        chunks: response.data.chunks || 0
-      });
-    } catch (webhookError) {
-      console.error('n8n webhook error:', webhookError.message);
-      res.status(500).json({ 
-        success: false, 
-        error: 'File uploaded but embedding failed. Please try again.' 
+        message: 'Form uploaded successfully'
       });
     }
   } catch (error) {
@@ -573,18 +591,95 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
   }
 });
 
+// Fuzzy match helper function
+function calculateSimilarity(str1, str2) {
+  const s1 = str1.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const s2 = str2.toLowerCase().replace(/[^a-z0-9]/g, '');
+  
+  // Simple substring match
+  if (s1.includes(s2) || s2.includes(s1)) return 0.9;
+  
+  // Calculate Levenshtein distance
+  const matrix = [];
+  for (let i = 0; i <= s2.length; i++) {
+    matrix[i] = [i];
+  }
+  for (let j = 0; j <= s1.length; j++) {
+    matrix[0][j] = j;
+  }
+  for (let i = 1; i <= s2.length; i++) {
+    for (let j = 1; j <= s1.length; j++) {
+      if (s2.charAt(i - 1) === s1.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+        );
+      }
+    }
+  }
+  const distance = matrix[s2.length][s1.length];
+  const maxLen = Math.max(s1.length, s2.length);
+  return 1 - (distance / maxLen);
+}
+
+// Check downloadable files with fuzzy match
+app.post('/api/files/check-downloadable', auth, async (req, res) => {
+  try {
+    const { fileNames } = req.body;
+    
+    if (!fileNames || !Array.isArray(fileNames) || fileNames.length === 0) {
+      return res.json([]);
+    }
+    
+    // Get all downloadable forms
+    const allForms = await db.collection('files').find({
+      type: 'form',
+      isDownloadable: true
+    }).toArray();
+    
+    // Fuzzy match each filename
+    const matches = [];
+    for (const searchName of fileNames) {
+      const scored = allForms.map(form => ({
+        id: form._id,
+        name: form.name,
+        uploadedBy: form.uploadedBy,
+        uploadedAt: form.uploadedAt,
+        similarity: calculateSimilarity(searchName, form.name)
+      }))
+      .filter(f => f.similarity > 0.7) // Threshold 70% to reduce false positives
+      .sort((a, b) => b.similarity - a.similarity);
+      
+      if (scored.length > 0) {
+        matches.push({
+          searchTerm: searchName,
+          files: scored
+        });
+      }
+    }
+    
+    res.json(matches);
+  } catch (error) {
+    console.error('Check downloadable error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // List files
 app.get('/api/files', auth, async (req, res) => {
-  let query = {};
+  let query = {
+    type: 'document' // Only show documents, not forms
+  };
   
   if (req.user.role === 'admin' || req.user.role === 'developer' || req.user.role === 'manager' || req.user.role === 'user') {
     // All roles see files in their org OR files marked for all orgs
-    query = {
-      $or: [
-        { organizationId: req.user.organizationId },
-        { isAllOrganizations: true }
-      ]
-    };
+    query.$or = [
+      { organizationId: req.user.organizationId },
+      { isAllOrganizations: true }
+    ];
   }
     
   const files = await db.collection('files')
@@ -623,6 +718,171 @@ app.get('/api/files', auth, async (req, res) => {
   }));
   
   res.json(filesWithInfo);
+});
+
+// Download file endpoint with tracking
+app.get('/api/files/:id/download', auth, async (req, res) => {
+  try {
+    const file = await db.collection('files').findOne({ 
+      _id: new ObjectId(req.params.id),
+      type: 'form',
+      isDownloadable: true
+    });
+    
+    if (!file) {
+      return res.status(404).json({ error: 'File not found or not downloadable' });
+    }
+    
+    // Track download
+    await db.collection('download_tracking').insertOne({
+      fileId: file._id,
+      fileName: file.name,
+      userId: new ObjectId(req.user.id),
+      userEmail: req.user.email,
+      organizationId: req.user.organizationId,
+      downloadedAt: new Date(),
+      ipAddress: req.ip
+    });
+    
+    // Generate S3 signed URL if using S3
+    if (file.url.startsWith('https://') && file.url.includes('.s3.')) {
+      const s3Client = await getS3Client();
+      if (s3Client) {
+        try {
+          const urlParts = file.url.replace('https://', '').split('/');
+          const bucket = urlParts[0].split('.')[0];
+          const key = urlParts.slice(1).join('/');
+          
+          const { GetObjectCommand } = require('@aws-sdk/client-s3');
+          const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+          
+          const command = new GetObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            ResponseContentDisposition: `attachment; filename="${file.name}"`
+          });
+          
+          const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+          return res.json({ downloadUrl: signedUrl, fileName: file.name });
+        } catch (s3Error) {
+          console.error('S3 signed URL error:', s3Error);
+        }
+      }
+    }
+    
+    // Fallback: direct URL
+    res.json({ downloadUrl: file.url, fileName: file.name });
+  } catch (error) {
+    console.error('Download error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get download tracking (developer only)
+app.get('/api/download-tracking', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') {
+      return res.status(403).json({ error: 'Developer access only' });
+    }
+    
+    const { startDate, endDate, fileId } = req.query;
+    
+    const matchQuery = {
+      organizationId: req.user.organizationId
+    };
+    
+    if (startDate && endDate) {
+      matchQuery.downloadedAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+    
+    if (fileId) {
+      matchQuery.fileId = new ObjectId(fileId);
+    }
+    
+    const downloads = await db.collection('download_tracking')
+      .find(matchQuery)
+      .sort({ downloadedAt: -1 })
+      .limit(1000)
+      .toArray();
+    
+    res.json(downloads);
+  } catch (error) {
+    console.error('Get download tracking error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get download stats (developer only)
+app.get('/api/download-tracking/stats', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') {
+      return res.status(403).json({ error: 'Developer access only' });
+    }
+    
+    const stats = await db.collection('download_tracking')
+      .aggregate([
+        { $match: { organizationId: req.user.organizationId } },
+        {
+          $group: {
+            _id: '$fileName',
+            fileId: { $first: '$fileId' },
+            downloadCount: { $sum: 1 },
+            lastDownloaded: { $max: '$downloadedAt' },
+            uniqueUsers: { $addToSet: '$userEmail' }
+          }
+        },
+        { $sort: { downloadCount: -1 } }
+      ]).toArray();
+    
+    res.json(stats.map(s => ({
+      fileName: s._id,
+      fileId: s.fileId,
+      downloadCount: s.downloadCount,
+      uniqueUsers: s.uniqueUsers.length,
+      lastDownloaded: s.lastDownloaded
+    })));
+  } catch (error) {
+    console.error('Get download stats error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// List forms (everyone can access)
+app.get('/api/forms', auth, async (req, res) => {
+  try {
+    const forms = await db.collection('files')
+      .find({ 
+        type: 'form',
+        isDownloadable: true 
+      })
+      .sort({ uploadedAt: -1 })
+      .toArray();
+    
+    const formsWithInfo = await Promise.all(forms.map(async (f) => {
+      let orgName = null;
+      if (f.organizationId) {
+        const org = await db.collection('organizations').findOne({ _id: new ObjectId(f.organizationId) });
+        orgName = org?.name || 'Unknown';
+      }
+      
+      return {
+        id: f._id,
+        name: f.name,
+        uploadedAt: f.uploadedAt,
+        uploadedBy: f.uploadedBy,
+        userId: f.userId,
+        organizationName: f.isAllOrganizations ? 'All Organizations' : orgName
+      };
+    }));
+    
+    res.json(formsWithInfo);
+  } catch (error) {
+    console.error('List forms error:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Delete file

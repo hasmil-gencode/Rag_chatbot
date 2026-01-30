@@ -4,6 +4,8 @@ import { toast } from "sonner";
 import { useState, useEffect } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { parseFileNamesFromMessage, checkDownloadableFiles } from "@/lib/fileHelper";
+import { DownloadButton } from "./DownloadButton";
 
 interface ChatMessageProps {
   role: "user" | "assistant";
@@ -12,9 +14,10 @@ interface ChatMessageProps {
   isStreaming?: boolean;
   userName?: string;
   startedBy?: string;
+  timestamp?: Date | string;
 }
 
-export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, startedBy }: ChatMessageProps) => {
+export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, startedBy, timestamp }: ChatMessageProps) => {
   const isUser = role === "user";
   const userInitial = userName ? userName.charAt(0).toUpperCase() : "U";
   const userRole = localStorage.getItem('userRole') || 'user';
@@ -25,6 +28,7 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, st
   const [ttsMode, setTtsMode] = useState<string>("browser");
   const [ttsLanguage, setTtsLanguage] = useState<string>("en-US");
   const [audio, setAudio] = useState<HTMLAudioElement | null>(null);
+  const [downloadableMatches, setDownloadableMatches] = useState<any[]>([]);
 
   useEffect(() => {
     // Load TTS settings
@@ -36,6 +40,27 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, st
       })
       .catch(err => console.error('Failed to load TTS settings:', err));
   }, []);
+
+  // Check for downloadable files in bot messages
+  useEffect(() => {
+    // Reset state first
+    setDownloadableMatches([]);
+    
+    if (!isUser && content && !isTyping && !isStreaming) {
+      const fileNames = parseFileNamesFromMessage(content);
+      // Only check if file names found AND message mentions download/form keywords
+      const hasDownloadContext = /download|form|file|document|attachment/i.test(content);
+      if (fileNames.length > 0 && hasDownloadContext) {
+        checkDownloadableFiles(fileNames)
+          .then(matches => {
+            if (matches && matches.length > 0) {
+              setDownloadableMatches(matches);
+            }
+          })
+          .catch(err => console.error('Failed to check downloadable files:', err));
+      }
+    }
+  }, [content, isUser, isTyping, isStreaming]);
 
   const handleSpeak = async () => {
     if (isPlaying) {
@@ -178,31 +203,48 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, st
           )}
         </div>
         
+        {/* Timestamp */}
+        {timestamp && !isTyping && (
+          <span className={cn("text-xs text-muted-foreground px-2", isUser ? "text-right" : "text-left")}>
+            {new Date(timestamp).toLocaleTimeString('en-US', { 
+              hour: '2-digit', 
+              minute: '2-digit',
+              hour12: true 
+            })}
+          </span>
+        )}
+        
         {!isUser && !isTyping && (
-          <button
-            onClick={handleSpeak}
-            disabled={isLoading}
-            data-tts-play
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors self-start px-2 py-1 rounded hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
-            title={isLoading ? "Loading..." : isPlaying ? "Stop" : "Play audio"}
-          >
-            {isLoading ? (
-              <>
-                <Loader2 className="w-3 h-3 animate-spin" />
-                <span>Loading...</span>
-              </>
-            ) : isPlaying ? (
-              <>
-                <Square className="w-3 h-3" />
-                <span>Stop</span>
-              </>
-            ) : (
-              <>
-                <Volume2 className="w-3 h-3" />
-                <span>Play</span>
-              </>
+          <div className="flex items-center gap-2 justify-end">
+            <button
+              onClick={handleSpeak}
+              disabled={isLoading}
+              data-tts-play
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+              title={isLoading ? "Loading..." : isPlaying ? "Stop" : "Play audio"}
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  <span>Loading...</span>
+                </>
+              ) : isPlaying ? (
+                <>
+                  <Square className="w-3 h-3" />
+                  <span>Stop</span>
+                </>
+              ) : (
+                <>
+                  <Volume2 className="w-3 h-3" />
+                  <span>Play</span>
+                </>
+              )}
+            </button>
+            
+            {downloadableMatches.length > 0 && (
+              <DownloadButton matches={downloadableMatches} />
             )}
-          </button>
+          </div>
         )}
       </div>
 

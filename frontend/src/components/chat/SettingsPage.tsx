@@ -1,15 +1,11 @@
 import { useState, useEffect } from "react";
-import { Save, UserPlus, Upload } from "lucide-react";
+import { Save, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-
-interface SettingsPageProps {
-  onLogoChange?: (logo: string | null) => void;
-}
 
 interface User {
   id: string;
@@ -23,8 +19,8 @@ interface Organization {
   name: string;
 }
 
-export const SettingsPage = ({ onLogoChange }: SettingsPageProps) => {
-  const [activeTab, setActiveTab] = useState("branding");
+export const SettingsPage = () => {
+  const [activeTab, setActiveTab] = useState("general");
   const [settings, setSettings] = useState<any>({});
   const [isSaving, setIsSaving] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
@@ -33,7 +29,6 @@ export const SettingsPage = ({ onLogoChange }: SettingsPageProps) => {
   const [newOrgName, setNewOrgName] = useState("");
   const [isCreatingUser, setIsCreatingUser] = useState(false);
   const [isCreatingOrg, setIsCreatingOrg] = useState(false);
-  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const [webhookTestResult, setWebhookTestResult] = useState<{ type: string; message: string } | null>(null);
   const [s3TestResult, setS3TestResult] = useState<{ type: string; message: string } | null>(null);
   const [editingUser, setEditingUser] = useState<User | null>(null);
@@ -182,9 +177,6 @@ export const SettingsPage = ({ onLogoChange }: SettingsPageProps) => {
     setIsSaving(true);
     try {
       await api.updateSettings(settings);
-      if (settings.logo && onLogoChange) {
-        onLogoChange(settings.logo);
-      }
       alert("Settings saved!");
     } catch (error: any) {
       alert(error.message);
@@ -197,37 +189,6 @@ export const SettingsPage = ({ onLogoChange }: SettingsPageProps) => {
     setSettings((prev: any) => ({ ...prev, [key]: value }));
   };
 
-  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    // Validate file type
-    if (!file.type.startsWith('image/')) {
-      alert('Please select an image file');
-      return;
-    }
-
-    // Validate file size (max 2MB)
-    if (file.size > 2 * 1024 * 1024) {
-      alert('File size must be less than 2MB');
-      return;
-    }
-
-    setIsUploadingLogo(true);
-    try {
-      const result = await api.uploadLogo(file);
-      setSettings((prev: any) => ({ ...prev, logo: result.logo }));
-      if (onLogoChange) {
-        onLogoChange(result.logo);
-      }
-      alert('Logo uploaded successfully!');
-    } catch (error: any) {
-      alert(error.message);
-    } finally {
-      setIsUploadingLogo(false);
-    }
-  };
-
   return (
     <div className="flex-1 h-screen overflow-y-auto chat-scrollbar p-6 bg-background">
       <div className="mb-6">
@@ -237,74 +198,11 @@ export const SettingsPage = ({ onLogoChange }: SettingsPageProps) => {
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="mb-6">
-            <TabsTrigger value="branding">Branding</TabsTrigger>
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="webhooks">Webhooks</TabsTrigger>
             <TabsTrigger value="s3">S3 Storage</TabsTrigger>
             <TabsTrigger value="voice">Voice</TabsTrigger>
           </TabsList>
-
-          <TabsContent value="branding">
-            <Card>
-              <CardHeader>
-                <CardTitle>Logo & Icon</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div>
-                  <Label>Company Name</Label>
-                  <Input
-                    value={settings.companyName || ""}
-                    onChange={(e) => updateSetting("companyName", e.target.value)}
-                    placeholder="GenBotChat"
-                  />
-                </div>
-                <div>
-                  <Label>Logo</Label>
-                  <div className="space-y-3">
-                    {settings.logo && (
-                      <div className="flex items-center gap-4 p-4 border rounded-lg">
-                        <img
-                          src={settings.logo}
-                          alt="Current logo"
-                          className="w-16 h-16 object-contain rounded-lg bg-card"
-                        />
-                        <div className="flex-1">
-                          <p className="text-sm font-medium">Current Logo</p>
-                          <p className="text-xs text-muted-foreground">This logo will appear in login and sidebar</p>
-                        </div>
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="outline"
-                        disabled={isUploadingLogo}
-                        className="relative"
-                      >
-                        <Upload className="w-4 h-4 mr-2" />
-                        {isUploadingLogo ? "Uploading..." : "Upload New Logo"}
-                        <input
-                          type="file"
-                          accept="image/png,image/jpeg,image/jpg"
-                          onChange={handleLogoUpload}
-                          disabled={isUploadingLogo}
-                          className="absolute inset-0 opacity-0 cursor-pointer"
-                        />
-                      </Button>
-                      <p className="text-xs text-muted-foreground">Square image, PNG or JPG, max 2MB</p>
-                    </div>
-                  </div>
-                </div>
-                <Button
-                  onClick={handleSave}
-                  disabled={isSaving}
-                  className="mt-4"
-                >
-                  <Save className="w-4 h-4 mr-2" />
-                  {isSaving ? "Saving..." : "Save Branding"}
-                </Button>
-              </CardContent>
-            </Card>
-          </TabsContent>
 
           <TabsContent value="general">
             <Card>
