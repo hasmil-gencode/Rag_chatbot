@@ -120,7 +120,7 @@ export const DepartmentsPage = () => {
   };
 
   return (
-    <div className="p-6">
+    <div className="h-full overflow-y-auto p-6 md:pt-6 pt-16">
       <div className="flex justify-between items-center mb-6">
         <div>
           <h1 className="text-2xl font-bold">Departments</h1>

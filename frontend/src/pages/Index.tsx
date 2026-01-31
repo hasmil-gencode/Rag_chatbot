@@ -485,6 +485,21 @@ const Index = () => {
         </button>
       )}
 
+      {/* Floating Hamburger - For other pages (not chat) */}
+      {currentPage !== "chat" && (
+        <button
+          onClick={() => {
+            const sidebar = document.querySelector('.sidebar-container');
+            sidebar?.classList.add('open');
+          }}
+          className="md:hidden fixed top-4 left-4 z-[50] p-2 hover:bg-accent rounded-md transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+      )}
+
       <div 
         className="sidebar-container"
         onClick={(e) => {

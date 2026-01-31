@@ -55,7 +55,7 @@ export const DownloadTrackingPage = () => {
   };
 
   return (
-    <div className="p-6">
+    <div className="h-full overflow-y-auto p-6 md:pt-6 pt-16">
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Download Tracking</h1>
         <p className="text-muted-foreground">Monitor form downloads and usage statistics</p>

@@ -176,9 +176,7 @@ export const ChatSidebar = ({
             onClick={onNewChat}
             variant="ghost"
             className={cn(
-              "w-full h-10 transition-all duration-200 rounded-md relative group/new flex items-center justify-center border",
-              "light:bg-black light:text-white light:hover:bg-white light:hover:text-black light:hover:border-black",
-              "bg-white text-black border-white hover:bg-black hover:text-white hover:border-white",
+              "new-chat-btn w-full h-10 transition-all duration-200 rounded-md relative group/new flex items-center justify-center",
               isCollapsed ? "w-10 px-0" : "gap-2 px-1"
             )}
           >

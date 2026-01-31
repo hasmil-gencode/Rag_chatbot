@@ -192,6 +192,32 @@
     border-color: rgba(0, 0, 0, 0.2) !important;
   }
 
+  /* New Chat button - Dark mode */
+  button.new-chat-btn {
+    background: white;
+    color: black;
+    border: 1px solid white;
+  }
+
+  button.new-chat-btn:hover {
+    background: black;
+    color: white;
+    border: 1px solid white;
+  }
+
+  /* New Chat button - Light mode */
+  .light button.new-chat-btn {
+    background: black;
+    color: white;
+    border: 1px solid black;
+  }
+
+  .light button.new-chat-btn:hover {
+    background: white;
+    color: black;
+    border: 1px solid black;
+  }
+
   .chat-scrollbar::-webkit-scrollbar {
     width: 6px;
   }
@@ -433,6 +459,11 @@
   .p-6 {
     padding: 1rem !important;
   }
+
+  /* Preserve extra top padding for pages with fixed mobile header */
+  .pt-16 {
+    padding-top: 4rem !important;
+  }
   
   /* Mobile input adjustments */
   input, select, textarea {
@@ -467,5 +498,16 @@
   
   .text-2xl {
     font-size: 1.25rem !important;
+  }
+}
+
+
+/* Mobile responsive tables */
+@media (max-width: 768px) {
+  table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
   }
 }

@@ -190,7 +190,7 @@ export const SettingsPage = () => {
   };
 
   return (
-    <div className="flex-1 h-screen overflow-y-auto chat-scrollbar p-6 bg-background">
+    <div className="flex-1 h-screen overflow-y-auto chat-scrollbar p-6 md:pt-6 pt-16 bg-background">
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Settings</h1>
         <p className="text-muted-foreground">Manage your application preferences and integrations</p>
