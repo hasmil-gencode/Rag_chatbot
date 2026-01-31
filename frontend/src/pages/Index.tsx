@@ -233,14 +233,16 @@ const Index = () => {
         <Toaster position="top-right" richColors />
         <div className="h-screen flex">
         {/* Left Side - Marketing */}
-        <div className="hidden lg:flex lg:w-[60%] bg-gradient-to-br from-stone-300 via-slate-800 to-slate-900 p-9 flex-col justify-between relative overflow-hidden">
+        <div className="hidden lg:flex lg:w-[60%] p-9 flex-col justify-between relative overflow-hidden">
           {/* Background Pattern */}
-          <div className="absolute inset-0 opacity-10">
+          <div className="absolute inset-0">
             <div className="absolute inset-0" style={{
               backgroundImage: 'url("https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=1200&q=80")',
               backgroundSize: 'cover',
               backgroundPosition: 'center'
             }} />
+            {/* Dark overlay for text readability */}
+            <div className="absolute inset-0 bg-black/50" />
           </div>
           
           {/* Logo & Company Name */}
@@ -263,9 +265,6 @@ const Index = () => {
             <p className="text-slate-300 text-lg mb-6 leading-relaxed">
               Intelligent AI-powered conversations for your business. Streamline workflows, 
               enhance productivity, and unlock insights with advanced RAG technology.
-            </p>
-            <p className="text-slate-400 leading-relaxed">
-              Optimize retrieval, govern access, and ship accurate answers in seconds.
             </p>
           </div>
 
@@ -397,7 +396,7 @@ const Index = () => {
                 const sidebar = document.querySelector('.sidebar-container');
                 sidebar?.classList.add('open');
               }}
-              className="p-2 hover:bg-white/5 rounded-md transition-colors"
+              className="p-2 hover:bg-accent rounded-md transition-colors"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
@@ -418,7 +417,7 @@ const Index = () => {
                   e.stopPropagation();
                   setShowMobileMenu(!showMobileMenu);
                 }}
-                className="p-2 hover:bg-white/5 rounded-md transition-colors"
+                className="p-2 hover:bg-accent rounded-md transition-colors"
               >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <circle cx="12" cy="5" r="1" fill="currentColor" />
@@ -478,7 +477,7 @@ const Index = () => {
             const sidebar = document.querySelector('.sidebar-container');
             sidebar?.classList.add('open');
           }}
-          className="md:hidden fixed top-4 left-4 z-[50] p-2 hover:bg-white/5 rounded-md transition-colors"
+          className="md:hidden fixed top-4 left-4 z-[50] p-2 hover:bg-accent rounded-md transition-colors"
         >
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />

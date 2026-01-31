@@ -35,20 +35,62 @@
 
     --radius: 0.5rem;
 
-    /* Sidebar - Darker for contrast */
-    --sidebar-background: 222 47% 11%;
-    --sidebar-foreground: 210 40% 98%;
+    /* Sidebar - Black for mobile */
+    --sidebar-background: 0 0% 0%;
+    --sidebar-foreground: 0 0% 100%;
     --sidebar-primary: 217 91% 60%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 217 32% 17%;
-    --sidebar-accent-foreground: 210 40% 98%;
-    --sidebar-border: 217 20% 20%;
+    --sidebar-accent: 0 0% 10%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 0 0% 20%;
     --sidebar-ring: 217 91% 60%;
-    --sidebar-muted: 215 20% 65%;
+    --sidebar-muted: 0 0% 65%;
   }
-}
 
-@layer base {
+  .light {
+    /* Light Theme - Glass morphism style */
+    --background: 0 0% 96.1%; /* #F5F5F5 base */
+    --foreground: 0 0% 10%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 10%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 10%;
+
+    --primary: 217 91% 60%; /* Blue for user messages */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 0 0% 96%;
+    --secondary-foreground: 0 0% 10%;
+
+    --muted: 0 0% 100%; /* White/glass for bot messages */
+    --muted-foreground: 0 0% 10%; /* Black text */
+
+    --accent: 0 0% 93%;
+    --accent-foreground: 0 0% 10%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 0 0% 88%; /* Grey border for menu */
+    --input: 0 0% 100%;
+    --ring: 217 91% 60%;
+
+    --radius: 0.5rem;
+
+    /* Sidebar - Light */
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 0 0% 10%;
+    --sidebar-primary: 217 91% 60%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 93%;
+    --sidebar-accent-foreground: 0 0% 10%;
+    --sidebar-border: 0 0% 90%;
+    --sidebar-ring: 217 91% 60%;
+    --sidebar-muted: 0 0% 45%;
+  }
+
   * {
     @apply border-border;
   }
@@ -59,6 +101,97 @@
 }
 
 @layer utilities {
+  /* Dark mode image background */
+  .bg-background {
+    background-image: url('/logos/bg5_7680x4320_8k.webp') !important;
+    background-size: cover !important;
+    background-position: center !important;
+    background-attachment: fixed !important;
+  }
+
+  /* Light mode image background */
+  .light .bg-background {
+    background-image: url('/logos/bg3_7680x4320_8k.webp') !important;
+    background-size: cover !important;
+    background-position: center !important;
+    background-attachment: fixed !important;
+  }
+
+  /* Glass effect for bot messages in dark mode */
+  .bg-muted {
+    background: rgba(255, 255, 255, 0.1) !important;
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+  }
+
+  /* Glass effect for user messages in dark mode */
+  .bg-primary {
+    background: rgba(255, 255, 255, 0.1) !important;
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+  }
+
+  /* Glass effect for cards/boxes in dark mode */
+  .bg-card,
+  .bg-popover,
+  .bg-secondary {
+    background: rgba(255, 255, 255, 0.1) !important;
+    backdrop-filter: blur(10px);
+  }
+
+  /* Light mode overrides */
+  /* Glass effect for bot messages in light mode */
+  .light .bg-muted {
+    background: rgba(255, 255, 255, 0.6) !important;
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+  }
+
+  /* Glass effect for user messages in light mode */
+  .light .bg-primary {
+    background: rgba(255, 255, 255, 0.6) !important;
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+  }
+
+  /* Glass effect for cards/boxes only (NOT main background) */
+  .light .bg-card,
+  .light .bg-popover,
+  .light .bg-secondary,
+  .light [class*="hover:bg-secondary"]:hover,
+  .light .border.rounded-lg,
+  .light .border.rounded-md {
+    background: rgba(255, 255, 255, 0.6) !important;
+    backdrop-filter: blur(10px);
+  }
+
+  /* Force black text in light mode chat bubbles */
+  .light .text-primary-foreground,
+  .light .text-foreground,
+  .light .prose {
+    color: #000 !important;
+  }
+
+  .light .prose * {
+    color: #000 !important;
+  }
+
+  /* Black border for download button in light mode */
+  .light button[variant="outline"],
+  .light .border {
+    border-color: rgba(0, 0, 0, 0.3) !important;
+  }
+
+  /* White border for chat input in dark mode */
+  .border-border {
+    border-color: rgba(255, 255, 255, 0.5) !important;
+  }
+
+  /* Black border for chat input in light mode */
+  .light .border-border {
+    border-color: rgba(0, 0, 0, 0.2) !important;
+  }
+
   .chat-scrollbar::-webkit-scrollbar {
     width: 6px;
   }
