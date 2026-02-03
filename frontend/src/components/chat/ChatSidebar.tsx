@@ -1,4 +1,4 @@
-import { Plus, MessageSquare, Settings, FolderOpen, LogOut, Trash2, Shield, Users, Building2, Users as UsersIcon, FileText, Download } from "lucide-react";
+import { Plus, MessageSquare, Settings, FolderOpen, LogOut, Trash2, Shield, Users, Building2, Users as UsersIcon, FileText, Download, Key } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
@@ -17,8 +17,8 @@ interface ChatSidebarProps {
   onNewChat: () => void;
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
-  currentPage: "chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments" | "deleted-chats" | "forms" | "download-tracking";
-  onNavigate: (page: "chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments" | "deleted-chats" | "forms" | "download-tracking") => void;
+  currentPage: "chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments" | "deleted-chats" | "forms" | "download-tracking" | "api-management";
+  onNavigate: (page: "chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments" | "deleted-chats" | "forms" | "download-tracking" | "api-management") => void;
   onLogout: () => void;
   userEmail: string;
   userRole: string;
@@ -72,6 +72,7 @@ export const ChatSidebar = ({
     ...(canManageRoles ? [{ id: "roles" as const, label: "Roles", icon: Shield }] : []),
     ...(canManageUsers ? [{ id: "users" as const, label: "Users", icon: Users }] : []),
     ...(canManageSettings ? [{ id: "settings" as const, label: "Settings", icon: Settings }] : []),
+    ...(isDeveloper ? [{ id: "api-management" as const, label: "API Management", icon: Key }] : []),
     ...(isDeveloper ? [{ id: "deleted-chats" as const, label: "Deleted Chats", icon: Trash2 }] : []),
     ...(isDeveloper ? [{ id: "download-tracking" as const, label: "Download Tracking", icon: Download }] : []),
   ];

@@ -391,6 +391,57 @@ class API {
     if (!res.ok || !json.success) throw new Error(json.error || 'S3 test failed')
     return json
   }
+
+  // API Key Management
+  async getApiKeys() {
+    const res = await fetch(`${API_BASE}/keys`, {
+      headers: this.getHeaders(),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to get API keys')
+    return json
+  }
+
+  async createApiKey(name: string, userId: string) {
+    const res = await fetch(`${API_BASE}/keys`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ name, userId }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to create API key')
+    return json
+  }
+
+  async toggleApiKey(id: string, isActive: boolean) {
+    const res = await fetch(`${API_BASE}/keys/${id}`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ isActive }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to toggle API key')
+    return json
+  }
+
+  async deleteApiKey(id: string) {
+    const res = await fetch(`${API_BASE}/keys/${id}`, {
+      method: 'DELETE',
+      headers: this.getHeaders(),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to delete API key')
+    return json
+  }
+
+  async getApiUsage() {
+    const res = await fetch(`${API_BASE}/usage`, {
+      headers: this.getHeaders(),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to get API usage')
+    return json
+  }
 }
 
 export const api = new API()

@@ -1751,6 +1751,259 @@ app.post('/api/tts', auth, async (req, res) => {
   }
 });
 
+// ============= API KEY MANAGEMENT =============
+
+// Generate API key
+function generateApiKey() {
+  return 'gbc_' + Array.from({ length: 32 }, () => 
+    'abcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(Math.random() * 36)]
+  ).join('');
+}
+
+// Get all API keys (developer only)
+app.get('/api/keys', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') {
+      return res.status(403).json({ error: 'Developer access required' });
+    }
+
+    const keys = await db.collection('apiKeys').find({ createdBy: req.user.userId }).toArray();
+    res.json(keys);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create new API key (developer only)
+app.post('/api/keys', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') {
+      return res.status(403).json({ error: 'Developer access required' });
+    }
+
+    const { name, userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    const apiKey = generateApiKey();
+
+    const newKey = {
+      key: apiKey,
+      userId: userId, // User yang akan guna API key ni
+      createdBy: req.user.userId, // Developer yang create
+      name: name || 'Unnamed Key',
+      isActive: true,
+      createdAt: new Date(),
+      lastUsedAt: null
+    };
+
+    await db.collection('apiKeys').insertOne(newKey);
+    res.json(newKey);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Toggle API key status (developer only)
+app.patch('/api/keys/:id', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') {
+      return res.status(403).json({ error: 'Developer access required' });
+    }
+
+    const { isActive } = req.body;
+    await db.collection('apiKeys').updateOne(
+      { _id: new ObjectId(req.params.id), createdBy: req.user.userId },
+      { $set: { isActive } }
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete API key (developer only)
+app.delete('/api/keys/:id', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') {
+      return res.status(403).json({ error: 'Developer access required' });
+    }
+
+    await db.collection('apiKeys').deleteOne({
+      _id: new ObjectId(req.params.id),
+      userId: req.user.userId
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get API usage logs (developer only)
+// Get API usage logs (developer only)
+app.get('/api/usage', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') {
+      return res.status(403).json({ error: 'Developer access required' });
+    }
+
+    // Get API keys created by this developer
+    const apiKeys = await db.collection('apiKeys')
+      .find({ createdBy: req.user.userId })
+      .toArray();
+    
+    if (apiKeys.length === 0) {
+      return res.json([]);
+    }
+
+    const apiKeyIds = apiKeys.map(k => k._id);
+
+    // Get usage for those keys
+    const usage = await db.collection('apiUsage')
+      .find({ apiKeyId: { $in: apiKeyIds } })
+      .sort({ timestamp: -1 })
+      .limit(100)
+      .toArray();
+
+    res.json(usage);
+  } catch (error) {
+    console.error('API usage error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============= PUBLIC API ENDPOINTS =============
+
+// API Key authentication middleware
+async function authenticateApiKey(req, res, next) {
+  const apiKey = req.headers['x-api-key'];
+  
+  if (!apiKey) {
+    return res.status(401).json({ error: 'API key required' });
+  }
+
+  try {
+    const keyDoc = await db.collection('apiKeys').findOne({ key: apiKey });
+    
+    if (!keyDoc) {
+      return res.status(401).json({ error: 'Invalid API key' });
+    }
+
+    if (!keyDoc.isActive) {
+      return res.status(403).json({ error: 'API key is disabled' });
+    }
+
+    // Update last used
+    await db.collection('apiKeys').updateOne(
+      { _id: keyDoc._id },
+      { $set: { lastUsedAt: new Date() } }
+    );
+
+    req.apiKey = keyDoc;
+    next();
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Public chat API endpoint
+app.post('/api/v1/chat', authenticateApiKey, async (req, res) => {
+  try {
+    const { message, sessionId } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    // Log API usage
+    await db.collection('apiUsage').insertOne({
+      apiKeyId: req.apiKey._id,
+      userId: req.apiKey.userId,
+      endpoint: '/api/v1/chat',
+      method: 'POST',
+      requestBody: { message, sessionId },
+      responseStatus: null, // Will update later
+      timestamp: new Date(),
+      ipAddress: req.ip
+    });
+
+    // Get or create session
+    let currentSessionId = sessionId;
+    if (!currentSessionId) {
+      const newSession = {
+        userId: req.apiKey.userId,
+        title: message.substring(0, 50),
+        createdAt: new Date(),
+        lastMessageAt: new Date(),
+        source: 'api',
+        apiKeyId: req.apiKey._id
+      };
+      const result = await db.collection('sessions').insertOne(newSession);
+      currentSessionId = result.insertedId.toString();
+    }
+
+    // Save user message
+    const userMessage = {
+      sessionId: currentSessionId,
+      userId: req.apiKey.userId,
+      role: 'user',
+      content: message,
+      createdAt: new Date(),
+      source: 'api',
+      apiKeyId: req.apiKey._id
+    };
+    await db.collection('messages').insertOne(userMessage);
+
+    // Get n8n webhook URL
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const webhookUrl = settings?.chatWebhook;
+
+    if (!webhookUrl) {
+      return res.status(500).json({ error: 'Webhook not configured' });
+    }
+
+    // Call n8n
+    const n8nResponse = await axios.post(webhookUrl, {
+      sessionId: currentSessionId,
+      message: message,
+      userId: req.apiKey.userId.toString()
+    });
+
+    const botReply = n8nResponse.data.output || n8nResponse.data.response || 'No response';
+
+    // Save bot message
+    const botMessage = {
+      sessionId: currentSessionId,
+      userId: req.apiKey.userId,
+      role: 'assistant',
+      content: botReply,
+      createdAt: new Date(),
+      source: 'api',
+      apiKeyId: req.apiKey._id
+    };
+    await db.collection('messages').insertOne(botMessage);
+
+    // Update session
+    await db.collection('sessions').updateOne(
+      { _id: new ObjectId(currentSessionId) },
+      { $set: { lastMessageAt: new Date() } }
+    );
+
+    res.json({
+      reply: botReply,
+      sessionId: currentSessionId
+    });
+
+  } catch (error) {
+    console.error('API chat error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Serve React app for all other routes
 app.get('*', (req, res) => {
   res.sendFile(join(__dirname, 'frontend/dist/index.html'));
