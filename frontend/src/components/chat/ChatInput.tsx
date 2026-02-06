@@ -5,6 +5,9 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { FileSelector } from "./FileSelector";
 
+// Silence timeout for continuous mode (in milliseconds)
+const SILENCE_TIMEOUT = 2000; // 2 seconds
+
 interface ChatInputProps {
   onSend: (message: string, fileId?: string | null) => void;
   isLoading?: boolean;
@@ -382,13 +385,13 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
         localStorage.setItem('continuousModeMessage', displayMessage);
 
         const timer = setTimeout(() => {
-          if (Date.now() - lastSpeechTime >= 5000 && currentTranscriptRef.current.trim()) {
+          if (Date.now() - lastSpeechTime >= SILENCE_TIMEOUT && currentTranscriptRef.current.trim()) {
             onAutoSend!(currentTranscriptRef.current.trim(), selectedFileId);
             currentTranscriptRef.current = '';
             setMessage('Listening...');
             localStorage.setItem('continuousModeMessage', 'Listening...');
           }
-        }, 5000);
+        }, SILENCE_TIMEOUT);
         
         silenceTimerRef.current = timer;
       };
@@ -507,8 +510,8 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
             lastSoundTime = Date.now();
           } else {
             const silenceDuration = Date.now() - lastSoundTime;
-            if (isSpeaking && silenceDuration > 5000) {
-              // 5 seconds of silence after speaking
+            if (isSpeaking && silenceDuration > SILENCE_TIMEOUT) {
+              // Silence timeout after speaking
               isSpeaking = false;
               recorder.stop();
             }

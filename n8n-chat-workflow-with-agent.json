@@ -1,0 +1,124 @@
+{
+  "name": "n8n Chat Workflow with Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [1008, 736],
+      "id": "c31039f9-30d2-4e73-b98f-23f2dc54e892",
+      "name": "When chat message received",
+      "webhookId": "479f9c1d-b408-4f12-bf1f-83c7f43c08e2"
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.sessionId }}"
+      },
+      "id": "03b5fd0a-a1cd-494c-8971-2fbea48846a0",
+      "name": "Window Buffer Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.2,
+      "position": [1520, 960]
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are Genie, an AI assistant that helps users book motorcycle services and answer questions.\n\n## Your Capabilities:\n1. Book motorcycle service appointments\n2. Answer general questions\n3. Have natural conversations\n\n## Booking Service Process:\nWhen user wants to book service, collect these details through conversation:\n- Appointment date/time (start_time) - format: \"YYYY-MM-DD HH:MM:SS\"\n- Motorcycle model (e.g., NVX, PCX)\n- License plate number\n- Current mileage\n- Service type (e.g., \"1st Free Service\", \"Regular Service\")\n- Customer IC/Passport number\n- Customer name\n- Customer phone number\n- Any special comments (optional)\n\n**IMPORTANT**: \n- Ask for missing information ONE at a time\n- Be conversational and friendly\n- Only call the booking tool when you have ALL required information\n- Confirm details before booking\n- Always respond in the same language as the user\n- For date/time, convert natural language to format: \"2026-02-03 14:30:00\"\n\n## Example Flow:\nUser: \"I want to book service\"\nYou: \"Sure! What's your motorcycle model?\"\n\nUser: \"NVX\"\nYou: \"Great! What's your plate number?\"\n\nUser: \"VBA9824\"\nYou: \"Perfect! When would you like to book? (Please provide date and time)\"\n\n...continue until all info collected, then call book_motor_service tool"
+        }
+      },
+      "id": "742d5507-5ab8-4f7d-9900-de051d48df72",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [1296, 736]
+    },
+    {
+      "parameters": {
+        "options": {
+          "maxOutputTokens": 2048,
+          "temperature": 0.7
+        }
+      },
+      "id": "12c1e7df-2de3-4f49-b527-e05a9ec62ca0",
+      "name": "Gemini 2.0 Flash",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [1392, 960],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "ZAOAdLszpQe1usS9",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "name": "book_motor_service",
+        "description": "Books a motorcycle service appointment. Only call this when you have collected ALL required information from the user.",
+        "workflowId": "SfcA7TOO0ahbjYHs",
+        "specifyInputSchema": true,
+        "jsonSchemaExample": "{\n  \"start_time\": \"2026-02-03 14:30:00\",\n  \"finish_time\": \"2026-02-03 23:59:59\",\n  \"model\": \"NVX\",\n  \"plate\": \"VBA9824\",\n  \"mileage\": \"7521\",\n  \"service_types\": [\"1st Free Service\"],\n  \"customer\": {\n    \"ic_passport\": \"790612071922\",\n    \"name\": \"Ahmad bin Ali\",\n    \"phone\": \"0123456789\"\n  },\n  \"comments\": \"Please check brakes\"\n}"
+      },
+      "id": "bdbff4e4-5007-477f-b3d1-47084f443a67",
+      "name": "Book Service Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 1.1,
+      "position": [1648, 960]
+    }
+  ],
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Window Buffer Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini 2.0 Flash": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Book Service Tool": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateId": "4484",
+    "templateCredsSetupCompleted": true,
+    "instanceId": "749afbba9c6a9d23df7b16459183ee0d8cf1112b4ef6282f0b464180cfb645ea"
+  }
+}
