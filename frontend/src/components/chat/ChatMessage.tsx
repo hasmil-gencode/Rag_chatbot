@@ -15,9 +15,10 @@ interface ChatMessageProps {
   userName?: string;
   startedBy?: string;
   timestamp?: Date | string;
+  onFormLinkClick?: (formType: string) => void;
 }
 
-export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, startedBy, timestamp }: ChatMessageProps) => {
+export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, startedBy, timestamp, onFormLinkClick }: ChatMessageProps) => {
   const isUser = role === "user";
   const userInitial = userName ? userName.charAt(0).toUpperCase() : "U";
   const userRole = localStorage.getItem('userRole') || 'user';
@@ -29,6 +30,40 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, st
   const [ttsLanguage, setTtsLanguage] = useState<string>("en-US");
   const [audio, setAudio] = useState<HTMLAudioElement | null>(null);
   const [downloadableMatches, setDownloadableMatches] = useState<any[]>([]);
+
+  // Auto-open form if message contains form link
+  useEffect(() => {
+    if (!isUser && content && !isTyping && !isStreaming && onFormLinkClick) {
+      const formLinkMatch = content.match(/\[.*?\]\(\/form\/([\w-]+)\)/);
+      if (formLinkMatch) {
+        const formType = formLinkMatch[1];
+        // Auto-open form after a short delay
+        setTimeout(() => {
+          onFormLinkClick(formType);
+        }, 500);
+      }
+    }
+  }, [content, isUser, isTyping, isStreaming, onFormLinkClick]);
+
+  // Custom link renderer for ReactMarkdown
+  const LinkRenderer = ({ href, children }: any) => {
+    if (href?.startsWith('/form/')) {
+      const formType = href.replace('/form/', '');
+      return (
+        <a
+          href="#"
+          onClick={(e) => {
+            e.preventDefault();
+            onFormLinkClick?.(formType);
+          }}
+          className="text-blue-500 underline hover:text-blue-600 cursor-pointer"
+        >
+          {children}
+        </a>
+      );
+    }
+    return <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 underline">{children}</a>;
+  };
 
   useEffect(() => {
     // Load TTS settings
@@ -197,7 +232,12 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, st
             </div>
           ) : (
             <div className="text-sm leading-relaxed prose prose-sm max-w-none prose-invert">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+              <ReactMarkdown 
+                remarkPlugins={[remarkGfm]}
+                components={{ a: LinkRenderer }}
+              >
+                {content}
+              </ReactMarkdown>
               {isStreaming && <span className="inline-block w-2 h-4 bg-current ml-1 animate-pulse">▊</span>}
             </div>
           )}

@@ -52,6 +52,7 @@ if (!settingsExists) {
     chatWebhook: '',
     uploadWebhook: '',
     transcribeWebhook: '',
+    formSubmissionWebhook: '',
     s3Bucket: '',
     s3Region: '',
     s3AccessKey: '',
@@ -1277,6 +1278,7 @@ app.get('/api/settings', auth, hasPermission('system:manage_settings'), async (r
     chatWebhook: settings.chatWebhook || '',
     uploadWebhook: settings.uploadWebhook || '',
     transcribeWebhook: settings.transcribeWebhook || '',
+    formSubmissionWebhook: settings.formSubmissionWebhook || '',
     s3Bucket: settings.s3Bucket || '',
     s3Region: settings.s3Region || '',
     s3AccessKey: settings.s3AccessKey || '',
@@ -2001,6 +2003,142 @@ app.post('/api/v1/chat', authenticateApiKey, async (req, res) => {
   } catch (error) {
     console.error('API chat error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Text embedding endpoints (Developer only)
+app.get('/api/text-embeddings', auth, async (req, res) => {
+  try {
+    // Check if developer
+    if (req.user.role !== 'developer') {
+      return res.status(403).json({ error: 'Developer access only' });
+    }
+    
+    const embeddings = await db.collection('embedding_files')
+      .find({ fileId: null })
+      .sort({ uploadedAt: -1 })
+      .toArray();
+    
+    res.json(embeddings);
+  } catch (error) {
+    console.error('Load embeddings error:', error);
+    res.status(500).json({ error: 'Failed to load embeddings' });
+  }
+});
+
+app.post('/api/text-embeddings', auth, async (req, res) => {
+  try {
+    // Check if developer
+    if (req.user.role !== 'developer') {
+      return res.status(403).json({ error: 'Developer access only' });
+    }
+    
+    const { text, fileName } = req.body;
+    
+    if (!text || !text.trim()) {
+      return res.status(400).json({ error: 'Text is required' });
+    }
+    
+    // Get Gemini API key
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const apiKey = settings?.geminiSttApiKey || settings?.geminiTtsApiKey;
+    
+    if (!apiKey) {
+      return res.status(500).json({ error: 'Gemini API key not configured' });
+    }
+    
+    console.log('Generating embedding for text length:', text.trim().length);
+    
+    // Generate embedding using gemini-embedding-001 (same as n8n)
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${apiKey}`,
+      {
+        model: 'models/gemini-embedding-001',
+        content: {
+          parts: [{ text: text.trim() }]
+        }
+      }
+    );
+    
+    const embedding = response.data.embedding.values;
+    console.log('Embedding generated, dimension:', embedding.length);
+    
+    // Insert into MongoDB
+    await db.collection('embedding_files').insertOne({
+      text: text.trim(),
+      embedding: embedding,
+      fileName: fileName?.trim() || 'Custom Knowledge',
+      fileId: null,
+      organizationId: null,
+      departmentId: null,
+      uploadedAt: new Date()
+    });
+    
+    console.log('Text embedded successfully');
+    res.json({ success: true, message: 'Text embedded successfully' });
+  } catch (error) {
+    console.error('Text embedding error:', error.response?.data || error.message);
+    res.status(500).json({ error: 'Failed to embed text' });
+  }
+});
+
+app.delete('/api/text-embeddings/:id', auth, async (req, res) => {
+  try {
+    // Check if developer
+    if (req.user.role !== 'developer') {
+      return res.status(403).json({ error: 'Developer access only' });
+    }
+    
+    await db.collection('embedding_files').deleteOne({ 
+      _id: new ObjectId(req.params.id),
+      fileId: null // Only allow deleting direct text embeddings
+    });
+    
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete' });
+  }
+});
+
+// Form submission endpoints
+app.get('/api/form/:formType', auth, async (req, res) => {
+  try {
+    const formPath = join(__dirname, 'form-web-view', `${req.params.formType}.json`);
+    if (!fs.existsSync(formPath)) {
+      return res.status(404).json({ error: 'Form not found' });
+    }
+    const formConfig = JSON.parse(fs.readFileSync(formPath, 'utf8'));
+    res.json(formConfig);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load form' });
+  }
+});
+
+app.post('/api/form-submission', auth, async (req, res) => {
+  try {
+    const { formType, data } = req.body;
+    
+    console.log('Form submission received:', { formType, data, user: req.user.email });
+    
+    // Fixed n8n webhook URL
+    const n8nWebhook = 'https://agent.gencode.com.my/webhook/form-submission-handler';
+    
+    // Send to n8n
+    const response = await axios.post(n8nWebhook, {
+      formType,
+      data,
+      submittedBy: req.user.email,
+      submittedAt: new Date().toISOString()
+    });
+    
+    res.json({ 
+      success: true, 
+      message: 'Thank you, your submission has been received and is being processed.',
+      data: response.data 
+    });
+  } catch (error) {
+    console.error('Form submission error:', error);
+    res.status(500).json({ error: 'Failed to submit form' });
   }
 });
 
