@@ -1,207 +1,279 @@
 import { useState, useEffect } from "react";
-import { toast } from "sonner";
-import { Building2, Plus, Edit, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
-
-interface Organization {
-  _id: string;
-  name: string;
-  description: string;
-  status: string;
-  createdAt: string;
-}
+import { Plus, Trash2, Edit } from "lucide-react";
 
 export const OrganizationsPage = () => {
-  const [organizations, setOrganizations] = useState<Organization[]>([]);
-  const [showModal, setShowModal] = useState(false);
-  const [editingOrg, setEditingOrg] = useState<Organization | null>(null);
+  const [organizations, setOrganizations] = useState<any[]>([]);
+  const [showForm, setShowForm] = useState(false);
+  const [editingOrg, setEditingOrg] = useState<any>(null);
+  
   const [formData, setFormData] = useState({
     name: "",
-    description: "",
-    status: "active"
+    type: "organization" as "organization" | "entity" | "department",
+    parentId: null as string | null
   });
 
   useEffect(() => {
-    loadOrganizations();
+    loadData();
   }, []);
 
-  const loadOrganizations = async () => {
+  const loadData = async () => {
     try {
-      const data = await api.getOrganizations();
-      setOrganizations(data);
+      const data = await api.getAllOrganizations();
+      setOrganizations(data.organizations || []);
     } catch (error) {
       console.error("Failed to load organizations:", error);
     }
   };
 
-  const handleCreate = async () => {
-    try {
-      await api.createOrganization(formData);
-      setShowModal(false);
-      setFormData({ name: "", description: "", status: "active" });
-      loadOrganizations();
-    } catch (error: any) {
-      toast.error(error.message || "Failed");
-    }
-  };
-
-  const handleUpdate = async () => {
-    if (!editingOrg) return;
-    try {
-      await api.updateOrganization(editingOrg._id, formData);
-      setEditingOrg(null);
-      setFormData({ name: "", description: "", status: "active" });
-      loadOrganizations();
-    } catch (error: any) {
-      toast.error(error.message || "Failed");
-    }
-  };
-
-  const handleDelete = async (id: string) => {
-    if (!confirm("Delete this organization? All departments will also be deleted.")) return;
-    try {
-      await api.deleteOrganization(id);
-      loadOrganizations();
-    } catch (error: any) {
-      toast.error(error.message || "Failed");
-    }
-  };
-
-  const openEditModal = (org: Organization) => {
+  const handleEdit = (org: any) => {
     setEditingOrg(org);
     setFormData({
       name: org.name,
-      description: org.description,
-      status: org.status
+      type: org.type,
+      parentId: org.parentId
     });
+    setShowForm(true);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      if (editingOrg) {
+        await api.updateOrganization(editingOrg._id, formData.name, formData.type, formData.parentId);
+      } else {
+        await api.createOrganization(formData.name, formData.type, formData.parentId);
+      }
+      setShowForm(false);
+      setEditingOrg(null);
+      setFormData({ name: "", type: "organization", parentId: null });
+      loadData();
+    } catch (error: any) {
+      alert(error.message);
+    }
+  };
+
+  const handleCancel = () => {
+    setShowForm(false);
+    setEditingOrg(null);
+    setFormData({ name: "", type: "organization", parentId: null });
+  };
+
+  const handleDelete = async (orgId: string) => {
+    if (!confirm("Delete this organization? This will affect all users assigned to it.")) return;
+    try {
+      await api.deleteOrganization(orgId);
+      loadData();
+    } catch (error: any) {
+      alert(error.message);
+    }
+  };
+
+  // Group by type for better display
+  const orgsByType = {
+    organization: organizations.filter(o => o.type === 'organization'),
+    entity: organizations.filter(o => o.type === 'entity'),
+    department: organizations.filter(o => o.type === 'department')
   };
 
   return (
-    <div className="h-full overflow-y-auto p-6 md:pt-6 pt-16">
+    <div className="p-6">
       <div className="flex justify-between items-center mb-6">
-        <div>
-          <h1 className="text-2xl font-bold">Organizations</h1>
-          <p className="text-muted-foreground">Manage organizations and their structure</p>
-        </div>
-        <Button onClick={() => setShowModal(true)}>
+        <h1 className="text-2xl font-bold">Organizations</h1>
+        <Button onClick={() => setShowForm(true)}>
           <Plus className="w-4 h-4 mr-2" />
-          Add Organization
+          Create Organization
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {organizations.map(org => (
-          <Card key={org._id}>
-            <CardHeader>
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-2">
-                  <Building2 className="w-5 h-5 text-primary" />
-                  <CardTitle className="text-lg">{org.name}</CardTitle>
-                </div>
-                <div className="flex gap-1">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => openEditModal(org)}
-                  >
-                    <Edit className="w-4 h-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => handleDelete(org._id)}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground mb-2">{org.description}</p>
-              <span className={`px-2 py-1 rounded text-xs ${
-                org.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
-              }`}>
-                {org.status}
-              </span>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      {/* Create/Edit Modal */}
-      {(showModal || editingOrg) && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <Card className="w-full max-w-md">
-            <CardHeader>
-              <div className="flex justify-between items-center">
-                <CardTitle>{editingOrg ? "Edit Organization" : "Create Organization"}</CardTitle>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => {
-                    setShowModal(false);
-                    setEditingOrg(null);
-                    setFormData({ name: "", description: "", status: "active" });
-                  }}
-                >
-                  <X className="w-4 h-4" />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
+      {showForm && (
+        <div className="mb-6 p-4 border rounded-lg bg-card">
+          <h2 className="text-lg font-semibold mb-4">{editingOrg ? 'Edit Organization' : 'Create New Organization'}</h2>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-1">Name</label>
+              <input
+                type="text"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                className="w-full px-3 py-2 border rounded-md"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Type</label>
+              <select
+                value={formData.type}
+                onChange={(e) => setFormData({ ...formData, type: e.target.value as any })}
+                className="w-full px-3 py-2 border rounded-md"
+                disabled={!!editingOrg}
+              >
+                <option value="organization">Organization (Top Level)</option>
+                <option value="entity">Entity (Mid Level)</option>
+                <option value="department">Department (Bottom Level)</option>
+              </select>
+            </div>
+            {formData.type !== 'organization' && (
               <div>
-                <Label>Organization Name *</Label>
-                <Input
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="Enter organization name"
-                />
-              </div>
-
-              <div>
-                <Label>Description</Label>
-                <Input
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="Enter description"
-                />
-              </div>
-
-              <div>
-                <Label>Status</Label>
+                <label className="block text-sm font-medium mb-1">Parent Organization</label>
                 <select
-                  className="w-full border rounded-md p-2 bg-background text-foreground"
-                  value={formData.status}
-                  onChange={(e) => setFormData({ ...formData, status: e.target.value })}
+                  value={formData.parentId || ''}
+                  onChange={(e) => setFormData({ ...formData, parentId: e.target.value || null })}
+                  className="w-full px-3 py-2 border rounded-md"
+                  required
                 >
-                  <option value="active">Active</option>
-                  <option value="inactive">Inactive</option>
+                  <option value="">Select parent...</option>
+                  {formData.type === 'entity' && orgsByType.organization.map((org) => (
+                    <option key={org._id} value={org._id}>{org.name}</option>
+                  ))}
+                  {formData.type === 'department' && [...orgsByType.organization, ...orgsByType.entity].map((org) => (
+                    <option key={org._id} value={org._id}>{org.name} ({org.type})</option>
+                  ))}
                 </select>
               </div>
-
-              <div className="flex gap-2 justify-end">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setShowModal(false);
-                    setEditingOrg(null);
-                    setFormData({ name: "", description: "", status: "active" });
-                  }}
-                >
-                  Cancel
-                </Button>
-                <Button onClick={editingOrg ? handleUpdate : handleCreate}>
-                  {editingOrg ? "Update" : "Create"}
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
+            )}
+            <div className="flex gap-2">
+              <Button type="submit">{editingOrg ? 'Update' : 'Create'}</Button>
+              <Button type="button" variant="outline" onClick={handleCancel}>
+                Cancel
+              </Button>
+            </div>
+          </form>
         </div>
       )}
+
+      <div className="space-y-6">
+        {/* Organizations */}
+        <div>
+          <h2 className="text-lg font-semibold mb-3">Organizations (Top Level)</h2>
+          <div className="border rounded-lg overflow-hidden">
+            <table className="w-full">
+              <thead className="bg-muted">
+                <tr>
+                  <th className="px-4 py-3 text-left">Name</th>
+                  <th className="px-4 py-3 text-left">Path</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {orgsByType.organization.map((org) => (
+                  <tr key={org._id} className="border-t">
+                    <td className="px-4 py-3 font-medium">{org.name}</td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground">{org.path?.join(' > ')}</td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex gap-2 justify-end">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleEdit(org)}
+                        >
+                          <Edit className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDelete(org._id)}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Entities */}
+        {orgsByType.entity.length > 0 && (
+          <div>
+            <h2 className="text-lg font-semibold mb-3">Entities (Mid Level)</h2>
+            <div className="border rounded-lg overflow-hidden">
+              <table className="w-full">
+                <thead className="bg-muted">
+                  <tr>
+                    <th className="px-4 py-3 text-left">Name</th>
+                    <th className="px-4 py-3 text-left">Path</th>
+                    <th className="px-4 py-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {orgsByType.entity.map((org) => (
+                    <tr key={org._id} className="border-t">
+                      <td className="px-4 py-3">{org.name}</td>
+                      <td className="px-4 py-3 text-sm text-muted-foreground">{org.path?.join(' > ')}</td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex gap-2 justify-end">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleEdit(org)}
+                          >
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDelete(org._id)}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Departments */}
+        {orgsByType.department.length > 0 && (
+          <div>
+            <h2 className="text-lg font-semibold mb-3">Departments (Bottom Level)</h2>
+            <div className="border rounded-lg overflow-hidden">
+              <table className="w-full">
+                <thead className="bg-muted">
+                  <tr>
+                    <th className="px-4 py-3 text-left">Name</th>
+                    <th className="px-4 py-3 text-left">Path</th>
+                    <th className="px-4 py-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {orgsByType.department.map((org) => (
+                    <tr key={org._id} className="border-t">
+                      <td className="px-4 py-3">{org.name}</td>
+                      <td className="px-4 py-3 text-sm text-muted-foreground">{org.path?.join(' > ')}</td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex gap-2 justify-end">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleEdit(org)}
+                          >
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDelete(org._id)}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 };

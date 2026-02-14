@@ -1,8 +1,7 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { Plus, Copy, Power, Trash2, Eye, EyeOff } from "lucide-react";
@@ -11,8 +10,6 @@ interface ApiKey {
   _id: string;
   key: string;
   name: string;
-  userId: string;
-  userEmail: string;
   isActive: boolean;
   createdAt: string;
   lastUsedAt: string | null;
@@ -27,10 +24,16 @@ interface ApiUsage {
   ipAddress: string;
 }
 
+interface User {
+  _id: string;
+  email: string;
+  fullName?: string;
+}
+
 export const ApiManagementPage = () => {
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [usage, setUsage] = useState<ApiUsage[]>([]);
-  const [users, setUsers] = useState<any[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
   const [selectedUserId, setSelectedUserId] = useState("");
@@ -65,14 +68,15 @@ export const ApiManagementPage = () => {
       const data = await api.getUsers();
       setUsers(data);
     } catch (error: any) {
-      console.error(error);
+      console.error('Failed to load users:', error.message);
+      // Silently fail - user might not have permission
       setUsers([]);
     }
   };
 
   const handleCreateKey = async () => {
-    if (!newKeyName || !selectedUserId) {
-      toast.error("Please fill all fields");
+    if (!selectedUserId) {
+      toast.error("Please select a user");
       return;
     }
     try {
@@ -130,7 +134,7 @@ export const ApiManagementPage = () => {
   };
 
   return (
-    <div className="p-6">
+    <div className="h-full overflow-y-auto p-6 md:pt-6 pt-16">
       <div className="flex justify-between items-center mb-6">
         <div>
           <h1 className="text-2xl font-bold">API Management</h1>
@@ -142,11 +146,10 @@ export const ApiManagementPage = () => {
         </Button>
       </div>
 
+      {/* API Keys */}
       <Card className="mb-6">
-        <CardHeader>
-          <CardTitle>API Keys</CardTitle>
-        </CardHeader>
-        <CardContent>
+        <CardContent className="p-6">
+          <h2 className="text-lg font-semibold mb-4">API Keys</h2>
           {keys.length === 0 ? (
             <p className="text-muted-foreground text-center py-8">No API keys yet</p>
           ) : (
@@ -160,7 +163,7 @@ export const ApiManagementPage = () => {
                         {key.isActive ? 'Active' : 'Disabled'}
                       </span>
                     </div>
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-2">
                       <code className="text-sm bg-muted px-2 py-1 rounded">
                         {visibleKeys.has(key._id) ? key.key : maskKey(key.key)}
                       </code>
@@ -171,16 +174,24 @@ export const ApiManagementPage = () => {
                         <Copy className="w-4 h-4" />
                       </button>
                     </div>
-                    <p className="text-xs text-muted-foreground">
-                      User: {key.userEmail} | Created: {new Date(key.createdAt).toLocaleString()} | 
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Created: {new Date(key.createdAt).toLocaleString()} | 
                       Last used: {key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : 'Never'}
                     </p>
                   </div>
                   <div className="flex gap-2">
-                    <Button size="sm" variant="outline" onClick={() => handleToggleKey(key._id, key.isActive)}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleToggleKey(key._id, key.isActive)}
+                    >
                       <Power className="w-4 h-4" />
                     </Button>
-                    <Button size="sm" variant="outline" onClick={() => handleDeleteKey(key._id)}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleDeleteKey(key._id)}
+                    >
                       <Trash2 className="w-4 h-4" />
                     </Button>
                   </div>
@@ -191,11 +202,10 @@ export const ApiManagementPage = () => {
         </CardContent>
       </Card>
 
+      {/* API Usage */}
       <Card>
-        <CardHeader>
-          <CardTitle>Recent API Usage</CardTitle>
-        </CardHeader>
-        <CardContent>
+        <CardContent className="p-6">
+          <h2 className="text-lg font-semibold mb-4">Recent API Usage</h2>
           {usage.length === 0 ? (
             <p className="text-muted-foreground text-center py-8">No API usage yet</p>
           ) : (
@@ -227,69 +237,31 @@ export const ApiManagementPage = () => {
         </CardContent>
       </Card>
 
-      {/* API Documentation */}
-      <Card>
-        <CardHeader>
-          <CardTitle>API Usage Guide</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div>
-            <h3 className="font-semibold mb-2">Chat Endpoint</h3>
-            <div className="bg-muted p-3 rounded text-sm font-mono">
-              POST /api/chat
-            </div>
-            <p className="text-sm text-muted-foreground mt-2">Headers:</p>
-            <div className="bg-muted p-3 rounded text-sm font-mono mt-1">
-              Authorization: Bearer YOUR_API_KEY
-            </div>
-            <p className="text-sm text-muted-foreground mt-2">Request Body:</p>
-            <div className="bg-muted p-3 rounded text-sm font-mono mt-1">
-              {`{
-  "message": "Your question here",
-  "sessionId": "optional-session-id"
-}`}
-            </div>
-            <p className="text-sm text-muted-foreground mt-2">Response:</p>
-            <div className="bg-muted p-3 rounded text-sm font-mono mt-1">
-              {`{
-  "response": "AI response text",
-  "sessionId": "session-id-123"
-}`}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
+      {/* Create Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <Card className="w-full max-w-md">
-            <CardHeader>
-              <CardTitle>Create API Key</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <Label>Key Name</Label>
-                <Input
-                  placeholder="e.g., Production App"
-                  value={newKeyName}
-                  onChange={(e) => setNewKeyName(e.target.value)}
-                />
-              </div>
-              <div>
-                <Label>User</Label>
-                <select
-                  value={selectedUserId}
-                  onChange={(e) => setSelectedUserId(e.target.value)}
-                  className="w-full p-2 border rounded-md bg-background"
-                >
-                  <option value="">Select User</option>
-                  {users.map((user) => (
-                    <option key={user._id} value={user._id}>
-                      {user.fullName} ({user.email})
-                    </option>
-                  ))}
-                </select>
-              </div>
+            <CardContent className="p-6">
+              <h2 className="text-lg font-semibold mb-4">Create API Key</h2>
+              <Input
+                placeholder="Key name (e.g., Production App)"
+                value={newKeyName}
+                onChange={(e) => setNewKeyName(e.target.value)}
+                className="mb-4"
+              />
+              <select
+                value={selectedUserId}
+                onChange={(e) => setSelectedUserId(e.target.value)}
+                className="w-full p-2 border rounded-md mb-4 bg-background text-foreground"
+              >
+                <option value="">Select User</option>
+                {users.length === 0 && <option value="" disabled>No users available - need user:view permission</option>}
+                {users.map((user) => (
+                  <option key={user._id} value={user._id}>
+                    {user.fullName || user.email}
+                  </option>
+                ))}
+              </select>
               <div className="flex gap-2">
                 <Button onClick={handleCreateKey} disabled={!newKeyName || !selectedUserId}>Create</Button>
                 <Button variant="outline" onClick={() => setShowCreateModal(false)}>Cancel</Button>

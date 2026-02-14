@@ -1,0 +1,233 @@
+{
+  "name": "RAG Chat with Fallback Department Search",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const body = $input.item.json.body;\nconst message = body.message || '';\nconst userId = body.userId || '';\nconst organizationId = body.organizationId || null;\nconst departmentId = body.departmentId || null;\nconst sessionId = body.sessionId || userId;\nconst fileId = body.fileId || null;\n\nif (!message || !userId) {\n  throw new Error('message and userId are required');\n}\n\nreturn {\n  message: message,\n  userId: userId,\n  organizationId: organizationId,\n  departmentId: departmentId,\n  sessionId: sessionId,\n  fileId: fileId\n};"
+      },
+      "id": "parse-input",
+      "name": "Parse Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [848, 1504]
+    },
+    {
+      "parameters": {
+        "jsCode": "const parseData = $input.item.json;\n\n// Build vector search filter - ONLY organization level\nlet vectorFilter = {};\n\nif (parseData.organizationId !== null) {\n  vectorFilter['organizationId'] = parseData.organizationId;\n}\n\nif (parseData.fileId) {\n  vectorFilter['fileId'] = parseData.fileId;\n}\n\nreturn {\n  chatInput: parseData.message,\n  userId: parseData.userId,\n  organizationId: parseData.organizationId,\n  departmentId: parseData.departmentId,\n  sessionId: parseData.sessionId,\n  fileId: parseData.fileId,\n  vectorFilter: JSON.stringify(vectorFilter)\n};"
+      },
+      "id": "format-history",
+      "name": "Format History",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1072, 1504]
+    },
+    {
+      "parameters": {
+        "mode": "load",
+        "mongoCollection": {
+          "__rl": true,
+          "value": "embedding_files",
+          "mode": "name"
+        },
+        "vectorIndexName": "rag_vector_search_1",
+        "topK": 10,
+        "options": {
+          "preFilter": "={{ $('Format History').item.json.vectorFilter }}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreMongoDBAtlas",
+      "typeVersion": 1.3,
+      "position": [1296, 1504],
+      "id": "vector-store",
+      "name": "Vector Store Load",
+      "credentials": {
+        "mongoDb": {
+          "id": "DTUm7hRi7TfDKEcE",
+          "name": "MongoDB account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-embedding-001"
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsGoogleGemini",
+      "typeVersion": 1,
+      "position": [1296, 1712],
+      "id": "gemini-embeddings",
+      "name": "Gemini Embeddings",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "ZAOAdLszpQe1usS9",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const { MongoClient } = require('mongodb');\nconst { GoogleGenerativeAI } = require('@google/generative-ai');\n\n// Get input\nconst query = $input.item.json.chatInput;\nconst organizationId = $input.item.json.organizationId;\nconst departmentId = $input.item.json.departmentId;\nconst fileId = $input.item.json.fileId;\n\n// Generate embedding\nconst genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);\nconst embedModel = genAI.getGenerativeModel({ model: 'text-embedding-004' });\nconst embedResult = await embedModel.embedContent(query);\nconst queryVector = embedResult.embedding.values;\n\n// Connect to MongoDB\nconst client = new MongoClient(process.env.MONGODB_URI);\nawait client.connect();\nconst db = client.db('ragchatbot');\n\n// STEP 1: Try dept-specific search first (if user has dept)\nlet results = [];\n\nif (departmentId) {\n  const deptFilter = {\n    organizationId: organizationId,\n    $or: [\n      { departmentId: departmentId },\n      { departmentId: null }\n    ]\n  };\n  \n  if (fileId) {\n    deptFilter.fileId = fileId;\n  }\n  \n  const deptPipeline = [\n    {\n      $vectorSearch: {\n        index: 'rag_vector_search_1',\n        path: 'embedding',\n        queryVector: queryVector,\n        numCandidates: 50,\n        limit: 5\n      }\n    },\n    { $match: deptFilter },\n    {\n      $project: {\n        text: 1,\n        fileName: 1,\n        departmentId: 1,\n        score: { $meta: 'vectorSearchScore' },\n        _id: 0\n      }\n    }\n  ];\n  \n  results = await db.collection('embedding_files').aggregate(deptPipeline).toArray();\n  \n  console.log(`Dept-specific search found ${results.length} results`);\n}\n\n// STEP 2: Fallback to org-wide search if no dept results\nif (results.length === 0) {\n  console.log('Falling back to org-wide search');\n  \n  const orgFilter = { organizationId: organizationId };\n  if (fileId) {\n    orgFilter.fileId = fileId;\n  }\n  \n  const orgPipeline = [\n    {\n      $vectorSearch: {\n        index: 'rag_vector_search_1',\n        path: 'embedding',\n        queryVector: queryVector,\n        numCandidates: 50,\n        limit: 5\n      }\n    },\n    { $match: orgFilter },\n    {\n      $project: {\n        text: 1,\n        fileName: 1,\n        departmentId: 1,\n        score: { $meta: 'vectorSearchScore' },\n        _id: 0\n      }\n    }\n  ];\n  \n  results = await db.collection('embedding_files').aggregate(orgPipeline).toArray();\n  \n  console.log(`Org-wide search found ${results.length} results`);\n}\n\nawait client.close();\n\n// Format for AI Agent\nreturn results.map(r => ({\n  pageContent: r.text,\n  metadata: {\n    fileName: r.fileName,\n    score: r.score,\n    departmentId: r.departmentId\n  }\n}));"
+      },
+      "id": "fallback-search",
+      "name": "Fallback Vector Search",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1520, 1504]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "doc1",
+              "name": "documents",
+              "value": "={{ $json }}",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "format-docs",
+      "name": "Format for AI",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1744, 1504]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $('Format History').item.json.chatInput }}",
+        "options": {
+          "systemMessage": "You are Genie from GenCode, a helpful AI assistant with access to a knowledge base from uploaded documents.\n\n## Response Guidelines\n\n**Language**: Always respond in the SAME language as the user's question (English, Malay, Chinese, Tamil, etc.)\n\n**Format**: Use markdown formatting for better readability:\n- **Bold** for important terms\n- *Italic* for emphasis\n- `code` for technical terms\n- Bullet points for lists\n- Numbered lists for steps\n\n## Response Style - IMPORTANT\n\n**Conversational & Interactive Approach:**\n1. **Initial Response**: Provide a brief, concise answer (2-3 sentences max)\n2. **Follow-up Prompt**: End with an engaging question to encourage interaction\n3. **Detailed Response**: If user asks for more details, provide comprehensive information\n\n4. **DO NOT mention**:\n   - ❌ Page numbers, PDF names, source files, tool names\n   - ✅ Just provide the information naturally\n\n## Knowledge Base Rules\n\n1. **General Questions**: Answer using your general knowledge\n2. **Document-Specific Questions**: Use retrieved context to answer\n3. **CRITICAL**: Synthesize information naturally, don't return raw data\n4. **DO NOT** search external sources or make up information\n\nBe helpful, conversational, and always encourage interaction!\n\nRemember: **Always respond in the SAME language as the user's question!**",
+          "contextWindowLength": 12000
+        },
+        "hasOutputParser": false
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.6,
+      "position": [1968, 1504],
+      "id": "llm-chain",
+      "name": "LLM Chain"
+    },
+    {
+      "parameters": {
+        "options": {
+          "maxOutputTokens": 2048,
+          "temperature": 0.7
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [1968, 1712],
+      "id": "gemini-model",
+      "name": "Gemini 2.0 Flash",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "ZAOAdLszpQe1usS9",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Format History').item.json.sessionId }}",
+        "collectionName": "messages",
+        "databaseName": "ragchatbot",
+        "contextWindowLength": 50
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryMongoDbChat",
+      "typeVersion": 1,
+      "position": [1968, 1920],
+      "id": "memory",
+      "name": "MongoDB Chat Memory",
+      "credentials": {
+        "mongoDb": {
+          "id": "DTUm7hRi7TfDKEcE",
+          "name": "MongoDB account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "merge-context",
+      "name": "Merge Context",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1744, 1712]
+    },
+    {
+      "parameters": {
+        "jsCode": "const llmOutput = $input.item.json.response || $input.item.json.text || $input.item.json.output || 'No response';\n\nreturn {\n  response: llmOutput\n};"
+      },
+      "id": "format-response",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2192, 1504]
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [624, 1504],
+      "id": "manual-trigger",
+      "name": "Manual Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    \"body\": {\n      \"message\": \"Hi, I have Yamaha R15 and I want service my motorbike. my mileage is 5,000. When is my next service and how much will it cost?\",\n      \"userId\": \"6982da7396d7c5095b63dff4\",\n      \"organizationId\": \"6978696e1c812aa6b6853bc4\",\n      \"departmentId\": \"6982d9f796d7c5095b63dff1\",\n      \"sessionId\": \"6983f71c96d7c5095b63e0ad\",\n      \"fileId\": null\n    }\n  }\n]"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [624, 1712],
+      "id": "test-data",
+      "name": "Test Data"
+    }
+  ],
+  "connections": {
+    "Parse Input": {
+      "main": [[{ "node": "Format History", "type": "main", "index": 0 }]]
+    },
+    "Format History": {
+      "main": [
+        [
+          { "node": "Fallback Vector Search", "type": "main", "index": 0 },
+          { "node": "Merge Context", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Fallback Vector Search": {
+      "main": [[{ "node": "Format for AI", "type": "main", "index": 0 }]]
+    },
+    "Format for AI": {
+      "main": [[{ "node": "Merge Context", "type": "main", "index": 0 }]]
+    },
+    "Merge Context": {
+      "main": [[{ "node": "LLM Chain", "type": "main", "index": 0 }]]
+    },
+    "LLM Chain": {
+      "main": [[{ "node": "Format Response", "type": "main", "index": 0 }]]
+    },
+    "Gemini 2.0 Flash": {
+      "ai_languageModel": [[{ "node": "LLM Chain", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "MongoDB Chat Memory": {
+      "ai_memory": [[{ "node": "LLM Chain", "type": "ai_memory", "index": 0 }]]
+    },
+    "Gemini Embeddings": {
+      "ai_embedding": [[{ "node": "Vector Store Load", "type": "ai_embedding", "index": 0 }]]
+    },
+    "Manual Trigger": {
+      "main": [[{ "node": "Test Data", "type": "main", "index": 0 }]]
+    },
+    "Test Data": {
+      "main": [[{ "node": "Parse Input", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {}
+}

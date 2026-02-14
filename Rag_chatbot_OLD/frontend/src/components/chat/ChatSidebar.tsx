@@ -1,4 +1,4 @@
-import { Plus, MessageSquare, FolderOpen, LogOut, Trash2, Users, Building2, FileCode, Settings, Key } from "lucide-react";
+import { Plus, MessageSquare, Settings, FolderOpen, LogOut, Trash2, Shield, Users, Building2, Users as UsersIcon, FileText, Download, Key, FileCode } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
@@ -17,15 +17,13 @@ interface ChatSidebarProps {
   onNewChat: () => void;
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
-  currentPage: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "text-embedded";
-  onNavigate: (page: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "text-embedded") => void;
+  currentPage: "chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments" | "deleted-chats" | "forms" | "download-tracking" | "api-management" | "text-embedded";
+  onNavigate: (page: "chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments" | "deleted-chats" | "forms" | "download-tracking" | "api-management" | "text-embedded") => void;
   onLogout: () => void;
   userEmail: string;
   userRole: string;
-  canUploadFiles: boolean;
-  userOrganizations: any[];
-  currentOrganizationId: string | null;
-  onOrganizationChange: (orgId: string) => void;
+  userOrganization: string;
+  userPermissions?: string[];
 }
 
 export const ChatSidebar = ({
@@ -38,10 +36,8 @@ export const ChatSidebar = ({
   onLogout,
   userEmail,
   userRole,
-  canUploadFiles,
-  userOrganizations,
-  currentOrganizationId,
-  onOrganizationChange,
+  userOrganization: _userOrganization,
+  userPermissions = [],
 }: ChatSidebarProps) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -59,17 +55,27 @@ export const ChatSidebar = ({
   };
 
   const isDeveloper = userRole.toLowerCase() === 'developer';
+  const canManageUsers = userPermissions.includes('user:manage') || isDeveloper;
+  const canManageDepts = userPermissions.includes('dept:manage') || isDeveloper;
+  const canManageOrgs = userPermissions.includes('org:manage') || isDeveloper;
+  const canManageRoles = userPermissions.includes('role:manage') || isDeveloper;
+  const canManageSettings = userPermissions.includes('setup:manage') || isDeveloper;
+  const canAccessFiles = userPermissions.includes('file:manage_access') || userPermissions.includes('file:upload') || isDeveloper;
   
-  // Role-based navigation access (simplified - only developer has full access)
+  // Role-based navigation access
   const navItems = [
     { id: "chat" as const, label: "Chat", icon: MessageSquare },
-    ...(canUploadFiles || isDeveloper ? [{ id: "files" as const, label: "Files", icon: FolderOpen }] : []),
-    ...(isDeveloper ? [{ id: "settings" as const, label: "Settings", icon: Settings }] : []),
-    ...(isDeveloper ? [{ id: "api" as const, label: "API", icon: Key }] : []),
-    ...(isDeveloper ? [{ id: "users" as const, label: "Users", icon: Users }] : []),
-    ...(isDeveloper ? [{ id: "organizations" as const, label: "Organizations", icon: Building2 }] : []),
+    ...(canAccessFiles ? [{ id: "files" as const, label: "Files", icon: FolderOpen }] : []),
+    { id: "forms" as const, label: "Forms", icon: FileText }, // Everyone can access forms
+    ...(canManageOrgs ? [{ id: "organizations" as const, label: "Organizations", icon: Building2 }] : []),
+    ...(canManageDepts ? [{ id: "departments" as const, label: "Departments", icon: UsersIcon }] : []),
+    ...(canManageRoles ? [{ id: "roles" as const, label: "Roles", icon: Shield }] : []),
+    ...(canManageUsers ? [{ id: "users" as const, label: "Users", icon: Users }] : []),
+    ...(canManageSettings ? [{ id: "settings" as const, label: "Settings", icon: Settings }] : []),
     ...(isDeveloper ? [{ id: "text-embedded" as const, label: "Text Embedded", icon: FileCode }] : []),
+    ...(isDeveloper ? [{ id: "api-management" as const, label: "API Management", icon: Key }] : []),
     ...(isDeveloper ? [{ id: "deleted-chats" as const, label: "Deleted Chats", icon: Trash2 }] : []),
+    ...(isDeveloper ? [{ id: "download-tracking" as const, label: "Download Tracking", icon: Download }] : []),
   ];
 
   // Extract name from email and get first letter for avatar
@@ -164,24 +170,6 @@ export const ChatSidebar = ({
           </Button>
         ))}
       </div>
-
-      {/* Organization Selector - Show for non-developer users */}
-      {/* Organization Selector - Show only if user has multiple orgs */}
-      {userRole !== 'developer' && userOrganizations.length > 1 && !isCollapsed && (
-        <div className="px-2 pb-2">
-          <select
-            value={currentOrganizationId || ''}
-            onChange={(e) => onOrganizationChange(e.target.value)}
-            className="w-full px-3 py-2 text-sm bg-background border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
-          >
-            {userOrganizations.map((org) => (
-              <option key={org._id} value={org._id}>
-                {org.name} ({org.type})
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
 
       {/* New Chat Button - Only show on chat page */}
       {currentPage === "chat" && (

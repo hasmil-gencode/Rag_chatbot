@@ -1,0 +1,81 @@
+{
+  "info": {
+    "_postman_id": "11863d96-4c32-453c-b7c1-520910f0f3b7",
+    "name": "Services",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "32185229",
+    "_collection_link": "https://go.postman.co/collection/32185229-11863d96-4c32-453c-b7c1-520910f0f3b7?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "Book Service (From e-Booking)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "app-token",
+            "value": "111",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"start_time\":\"2026-02-03 11:30:00\",\"finish_time\":\"2026-02-03 23:59:59\",\"model\":\"NVX\",\"plate\":\"VBA9824\",\"mileage\":\"7521\",\"comments\":\"TEST\\r\\nIN \\r\\nSTAGING\",\"service_types\":[\"1st Free Service\"],\"category\":\"2\",\"customer\":{\"ic_passport\":\"790612071922\",\"name\":\"JANNAH BINTI DERAMAN\",\"phone\":\"0103748233\"},\"agent_id\":\"1\",\"transfer_company_id\":\"378\",\"platform_source\":\"EBOOKING\",\"platform_company\":\"1\",\"company_id\":\"1\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base-url}}company/services/book",
+          "host": [
+            "{{base-url}}company"
+          ],
+          "path": [
+            "services",
+            "book"
+          ]
+        }
+      },
+      "response": []
+    }
+  ],
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "value",
+        "value": "Bqolc5jcVySyqnNZnXb0zlM0mN5epfaYFupThOOIq4",
+        "type": "string"
+      },
+      {
+        "key": "key",
+        "value": "app-key",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "packages": {},
+        "exec": [
+          ""
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "packages": {},
+        "exec": [
+          ""
+        ]
+      }
+    }
+  ]
+}

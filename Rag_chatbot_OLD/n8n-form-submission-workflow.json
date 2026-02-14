@@ -1,0 +1,97 @@
+{
+  "name": "Form Submission Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "form-submission-handler",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [880, 400],
+      "id": "webhook-form",
+      "name": "Webhook - Form Submission"
+    },
+    {
+      "parameters": {
+        "mode": "chooseBranch",
+        "output": "={{ $json.formType }}"
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [1104, 400],
+      "id": "switch-formtype",
+      "name": "Switch - Form Type"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get form data\nconst formData = $input.item.json.data;\n\n// Add fixed fields for booking API\nreturn {\n  json: {\n    start_time: formData.start_time,\n    finish_time: formData.start_time, // Use same as start_time since we removed finish_time field\n    model: formData.model,\n    plate: formData.plate,\n    mileage: formData.mileage,\n    service_types: formData.service_types,\n    customer: formData.customer,\n    comments: formData.comments || '',\n    // Fixed fields\n    category: \"2\",\n    agent_id: \"1\",\n    transfer_company_id: \"378\",\n    platform_source: \"CHATBOT\",\n    platform_company: \"1\",\n    company_id: \"1\"\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1328, 400],
+      "id": "function-booking",
+      "name": "Add Fixed Fields"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.BOOKING_API_URL}}/company/services/book",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "app-token",
+              "value": "111"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1552, 400],
+      "id": "http-booking-api",
+      "name": "HTTP Request - Booking API",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "booking-api-key",
+          "name": "Booking API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, message: 'Booking submitted successfully' } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1776, 400],
+      "id": "respond-success",
+      "name": "Respond - Success"
+    }
+  ],
+  "connections": {
+    "Webhook - Form Submission": {
+      "main": [[{ "node": "Switch - Form Type", "type": "main", "index": 0 }]]
+    },
+    "Switch - Form Type": {
+      "main": [[{ "node": "Add Fixed Fields", "type": "main", "index": 0 }]]
+    },
+    "Add Fixed Fields": {
+      "main": [[{ "node": "HTTP Request - Booking API", "type": "main", "index": 0 }]]
+    },
+    "HTTP Request - Booking API": {
+      "main": [[{ "node": "Respond - Success", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {}
+}

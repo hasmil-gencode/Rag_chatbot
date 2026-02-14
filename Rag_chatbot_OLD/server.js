@@ -8,7 +8,6 @@ import FormData from 'form-data';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import fs from 'fs';
-import crypto from 'crypto';
 import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { GoogleAuth } from 'google-auth-library';
@@ -26,8 +25,8 @@ let db;
 const client = new MongoClient(MONGODB_URI);
 
 await client.connect();
-db = client.db('ragchatbot_stag');
-console.log('Connected to MongoDB (ragchatbot_stag)');
+db = client.db('ragchatbot');
+console.log('Connected to MongoDB');
 
 // Initialize default settings
 const settingsExists = await db.collection('settings').findOne({ _id: 'config' });
@@ -104,17 +103,27 @@ const auth = async (req, res, next) => {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     
-    // Get user
+    // Get user with roles and permissions
     const user = await db.collection('users').findOne({ _id: new ObjectId(decoded.id) });
     if (!user || user.status !== 'active') {
       return res.status(401).json({ error: 'User not found or inactive' });
     }
     
+    // Get user's roles and permissions
+    const roles = await db.collection('roles').find({ 
+      _id: { $in: user.roles.map(r => new ObjectId(r)) } 
+    }).toArray();
+    
+    const permissions = [...new Set(roles.flatMap(r => r.permissions))];
+    
     req.user = {
       id: user._id,
       email: user.email,
       fullName: user.fullName,
-      role: user.role
+      organizationId: user.organizationId,
+      roles: roles.map(r => r.name),
+      role: roles[0]?.name.toLowerCase() || 'user', // Primary role for easy checking
+      permissions
     };
     
     next();
@@ -124,15 +133,23 @@ const auth = async (req, res, next) => {
   }
 };
 
-// Permission check middleware (simplified for developer-only)
+// Permission check middleware
 const hasPermission = (...requiredPermissions) => {
   return (req, res, next) => {
-    // Only developer has all permissions
-    if (req.user.role === 'developer') {
+    // Developer role has all permissions
+    if (req.user.roles.includes('Developer')) {
       return next();
     }
     
-    return res.status(403).json({ error: 'Insufficient permissions' });
+    const hasAllPermissions = requiredPermissions.every(p => 
+      req.user.permissions.includes(p)
+    );
+    
+    if (!hasAllPermissions) {
+      return res.status(403).json({ error: 'Insufficient permissions' });
+    }
+    
+    next();
   };
 };
 
@@ -144,10 +161,16 @@ app.post('/api/login', async (req, res) => {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
   
+  // Get user's roles and permissions
+  const roles = await db.collection('roles').find({ 
+    _id: { $in: user.roles.map(r => new ObjectId(r)) } 
+  }).toArray();
+  
+  const permissions = [...new Set(roles.flatMap(r => r.permissions))];
+  
   const token = jwt.sign({ 
     id: user._id, 
-    email: user.email,
-    role: user.role
+    email: user.email
   }, JWT_SECRET);
   
   res.json({ 
@@ -157,7 +180,8 @@ app.post('/api/login', async (req, res) => {
       id: user._id.toString(), 
       email: user.email,
       fullName: user.fullName,
-      role: user.role
+      roles: roles.map(r => r.name),
+      permissions
     } 
   });
 });
@@ -172,294 +196,18 @@ app.get('/api/user/me', auth, async (req, res) => {
       id: user._id,
       email: user.email,
       fullName: user.fullName,
-      role: user.role,
-      canUploadFiles: user.canUploadFiles !== false
+      organizationId: user.organizationId || null,
+      departmentId: user.departmentId || null
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to get user info' });
   }
 });
 
-// ===== PHASE 2: Multi-Org Hierarchy APIs =====
-
-// Create user (Developer only)
-app.post('/api/users', auth, hasPermission(), async (req, res) => {
-  try {
-    const { email, password, fullName, canUploadFiles } = req.body;
-    
-    const existing = await db.collection('users').findOne({ email });
-    if (existing) return res.status(400).json({ error: 'User already exists' });
-    
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const result = await db.collection('users').insertOne({
-      email,
-      password: hashedPassword,
-      fullName,
-      role: 'user',
-      status: 'active',
-      canUploadFiles: canUploadFiles !== false,
-      createdBy: req.user.id,
-      createdAt: new Date()
-    });
-    
-    res.json({ success: true, userId: result.insertedId });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to create user' });
-  }
-});
-
-// Create organization/entity/department
-app.post('/api/organizations', auth, hasPermission(), async (req, res) => {
-  try {
-    const { name, type, parentId } = req.body; // type: 'organization' | 'entity' | 'department'
-    
-    let path = [name];
-    if (parentId) {
-      const parent = await db.collection('organizations').findOne({ _id: new ObjectId(parentId) });
-      if (!parent) return res.status(404).json({ error: 'Parent not found' });
-      path = [...parent.path, name];
-    }
-    
-    const result = await db.collection('organizations').insertOne({
-      name,
-      type,
-      parentId: parentId ? new ObjectId(parentId) : null,
-      path,
-      createdBy: req.user.id,
-      createdAt: new Date()
-    });
-    
-    res.json({ success: true, organizationId: result.insertedId });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to create organization' });
-  }
-});
-
-// Assign user to organizations (Developer only)
-app.post('/api/user-assignments', auth, hasPermission(), async (req, res) => {
-  try {
-    const { userId, organizationIds } = req.body; // organizationIds is array
-    
-    // Remove existing assignments
-    await db.collection('user_assignments').deleteMany({ userId: userId });
-    
-    // Add new assignments
-    const assignments = organizationIds.map(orgId => ({
-      userId: userId, // Store as string for n8n compatibility
-      organizationId: new ObjectId(orgId),
-      assignedBy: req.user.id,
-      assignedAt: new Date()
-    }));
-    
-    if (assignments.length > 0) {
-      await db.collection('user_assignments').insertMany(assignments);
-    }
-    
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to assign user' });
-  }
-});
-
-// Get user's assigned organizations
-app.get('/api/my-organizations', auth, async (req, res) => {
-  try {
-    const assignments = await db.collection('user_assignments')
-      .find({ userId: req.user.id })
-      .toArray();
-    
-    const orgIds = assignments.map(a => a.organizationId);
-    const organizations = await db.collection('organizations')
-      .find({ _id: { $in: orgIds } })
-      .toArray();
-    
-    res.json({ organizations });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get organizations' });
-  }
-});
-
-// Get user's organizations with hierarchy (assigned + all children)
-app.get('/api/my-organizations-hierarchy', auth, async (req, res) => {
-  try {
-    console.log('=== my-organizations-hierarchy called ===');
-    const userId = req.user.id.toString(); // Convert ObjectId to string
-    console.log('User ID:', userId);
-    
-    // Get directly assigned orgs
-    const assignments = await db.collection('user_assignments')
-      .find({ userId: userId })
-      .toArray();
-    console.log('Assignments found:', assignments.length);
-    
-    const assignedOrgIds = assignments.map(a => a.organizationId);
-    console.log('Assigned org IDs:', assignedOrgIds);
-    
-    const assignedOrgs = await db.collection('organizations')
-      .find({ _id: { $in: assignedOrgIds } })
-      .toArray();
-    console.log('Assigned orgs:', assignedOrgs.map(o => o.name));
-    
-    // For each assigned org, find all children
-    const allOrgIds = new Set(assignedOrgIds.map(id => id.toString()));
-    
-    for (const org of assignedOrgs) {
-      // Find all orgs where path contains this org's name
-      const children = await db.collection('organizations')
-        .find({ path: org.name })
-        .toArray();
-      console.log(`Children of ${org.name}:`, children.length);
-      
-      children.forEach(child => allOrgIds.add(child._id.toString()));
-    }
-    
-    // Get all orgs (assigned + children)
-    const allOrgs = await db.collection('organizations')
-      .find({ _id: { $in: Array.from(allOrgIds).map(id => new ObjectId(id)) } })
-      .toArray();
-    
-    console.log('Final orgs:', allOrgs.map(o => o.name));
-    res.json({ organizations: allOrgs });
-  } catch (error) {
-    console.error('Error in my-organizations-hierarchy:', error);
-    res.status(500).json({ error: 'Failed to get organizations hierarchy' });
-  }
-});
-
-// Get all organizations (Developer only)
-app.get('/api/organizations', auth, hasPermission(), async (req, res) => {
-  try {
-    const organizations = await db.collection('organizations').find({}).toArray();
-    res.json({ organizations });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get organizations' });
-  }
-});
-
-// Update organization (Developer only)
-app.put('/api/organizations/:id', auth, hasPermission(), async (req, res) => {
-  try {
-    const { name, type, parentId } = req.body;
-    
-    let path = [name];
-    if (parentId) {
-      const parent = await db.collection('organizations').findOne({ _id: new ObjectId(parentId) });
-      if (!parent) return res.status(404).json({ error: 'Parent not found' });
-      path = [...parent.path, name];
-    }
-    
-    await db.collection('organizations').updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: { name, path, updatedAt: new Date() } }
-    );
-    
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update organization' });
-  }
-});
-
-// Delete organization (Developer only)
-app.delete('/api/organizations/:id', auth, hasPermission(), async (req, res) => {
-  try {
-    await db.collection('organizations').deleteOne({ _id: new ObjectId(req.params.id) });
-    // Also remove user assignments
-    await db.collection('user_assignments').deleteMany({ organizationId: new ObjectId(req.params.id) });
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete organization' });
-  }
-});
-
-// Get all users (Developer only)
-app.get('/api/users', auth, hasPermission(), async (req, res) => {
-  try {
-    const users = await db.collection('users').find({}).toArray();
-    res.json(users);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get users' });
-  }
-});
-
-// Update user (Developer only)
-app.put('/api/users/:id', auth, hasPermission(), async (req, res) => {
-  try {
-    const { fullName, password, canUploadFiles } = req.body;
-    const updateData = { fullName, updatedAt: new Date() };
-    
-    if (password) {
-      updateData.password = await bcrypt.hash(password, 10);
-    }
-    
-    if (canUploadFiles !== undefined) {
-      updateData.canUploadFiles = canUploadFiles;
-    }
-    
-    await db.collection('users').updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: updateData }
-    );
-    
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update user' });
-  }
-});
-
-// Get user assignments
-app.get('/api/user-assignments/:userId', auth, hasPermission(), async (req, res) => {
-  try {
-    const assignments = await db.collection('user_assignments')
-      .find({ userId: new ObjectId(req.params.userId) })
-      .toArray();
-    res.json(assignments);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get user assignments' });
-  }
-});
-
-// Delete user (Developer only)
-app.delete('/api/users/:id', auth, hasPermission(), async (req, res) => {
-  try {
-    const user = await db.collection('users').findOne({ _id: new ObjectId(req.params.id) });
-    if (user?.role === 'developer') {
-      return res.status(403).json({ error: 'Cannot delete developer account' });
-    }
-    await db.collection('users').deleteOne({ _id: new ObjectId(req.params.id) });
-    // Also remove user assignments
-    await db.collection('user_assignments').deleteMany({ userId: new ObjectId(req.params.id) });
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete user' });
-  }
-});
-
-// Switch active organization context
-app.post('/api/switch-organization', auth, async (req, res) => {
-  try {
-    const { organizationId } = req.body;
-    
-    // Verify user has access to this org
-    const assignment = await db.collection('user_assignments').findOne({
-      userId: new ObjectId(req.user.id),
-      organizationId: new ObjectId(organizationId)
-    });
-    
-    if (!assignment && req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'No access to this organization' });
-    }
-    
-    // Store in session or return to frontend to store
-    res.json({ success: true, currentOrganizationId: organizationId });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to switch organization' });
-  }
-});
-
 // Chat
 app.post('/api/chat', auth, async (req, res) => {
   try {
-    const { message, sessionId, fileId, currentOrganizationId } = req.body;
+    const { message, sessionId, fileId } = req.body;
     const chatSessionId = sessionId || new ObjectId().toString();
     
     // Get user info for startedBy
@@ -467,11 +215,11 @@ app.post('/api/chat', auth, async (req, res) => {
     const startedByEmail = user?.email || 'Unknown';
     const startedByName = startedByEmail.split('@')[0];
     
-    // Save user message with current org context
+    // Save user message
     await db.collection('messages').insertOne({
       userId: req.user.id,
       sessionId: chatSessionId,
-      currentOrganizationId: currentOrganizationId ? new ObjectId(currentOrganizationId) : null,
+      organizationId: req.user.organizationId,
       startedBy: startedByName,
       startedByEmail: startedByEmail,
       role: 'user',
@@ -482,11 +230,12 @@ app.post('/api/chat', auth, async (req, res) => {
     // Get webhook URL from settings
     const webhooks = await getWebhookUrls();
 
-    // Send to n8n with sessionId, fileId, currentOrganizationId and timeout
+    // Send to n8n with sessionId, fileId, org/dept and timeout
     const { data } = await axios.post(webhooks.chat, { 
       message, 
       userId: req.user.id,
-      currentOrganizationId: currentOrganizationId || null,
+      organizationId: user?.organizationId || null,
+      departmentId: user?.departmentId || null,
       sessionId: chatSessionId,
       fileId: fileId || null
     }, {
@@ -497,7 +246,7 @@ app.post('/api/chat', auth, async (req, res) => {
     await db.collection('messages').insertOne({
       userId: req.user.id,
       sessionId: chatSessionId,
-      currentOrganizationId: currentOrganizationId ? new ObjectId(currentOrganizationId) : null,
+      organizationId: req.user.organizationId,
       startedBy: startedByName,
       startedByEmail: startedByEmail,
       role: 'bot',
@@ -548,60 +297,48 @@ app.get('/api/messages', auth, async (req, res) => {
 
 // Get chat sessions
 app.get('/api/sessions', auth, async (req, res) => {
-  try {
-    const { currentOrganizationId } = req.query;
-    
-    // Build match query
-    let matchQuery = {};
-    
-    if (req.user.role === 'developer') {
-      // Developer sees all sessions
-      if (currentOrganizationId) {
-        matchQuery.currentOrganizationId = new ObjectId(currentOrganizationId);
-      }
-    } else {
-      // Users see only their own sessions in current org
-      matchQuery.userId = req.user.id;
-      if (currentOrganizationId) {
-        matchQuery.currentOrganizationId = new ObjectId(currentOrganizationId);
-      }
-    }
-    
-    const sessions = await db.collection('messages')
-      .aggregate([
-        { $match: matchQuery },
-        { $sort: { createdAt: 1 } },
-        { $group: {
-          _id: '$sessionId',
-          firstMessage: { $first: '$content' },
-          lastMessageAt: { $last: '$createdAt' },
-          messageCount: { $sum: 1 },
-          startedBy: { $first: '$startedBy' },
-          startedByEmail: { $first: '$startedByEmail' }
-        }},
-        { $sort: { lastMessageAt: -1 } },
-        { $limit: 50 }
-      ]).toArray();
-    
-    res.json(sessions.map(s => ({
-      id: s._id,
-      title: (s.firstMessage || 'New chat').substring(0, 50),
-      lastMessageAt: s.lastMessageAt,
-      messageCount: s.messageCount,
-      startedBy: s.startedBy || s.startedByEmail,
-      startedByEmail: s.startedByEmail
-    })));
-  } catch (error) {
-    console.error('Get sessions error:', error);
-    res.status(500).json({ error: error.message });
+  // Only developer can see all sessions in org, others see own only
+  let matchQuery;
+  
+  if (req.user.role === 'developer') {
+    matchQuery = { organizationId: req.user.organizationId };
+  } else {
+    matchQuery = { userId: req.user.id };
   }
+    
+  const sessions = await db.collection('messages')
+    .aggregate([
+      { $match: matchQuery },
+      { $sort: { createdAt: 1 } },
+      { $group: {
+        _id: '$sessionId',
+        firstMessage: { $first: '$content' },
+        lastMessageAt: { $last: '$createdAt' },
+        messageCount: { $sum: 1 },
+        startedBy: { $first: '$startedBy' },
+        startedByEmail: { $first: '$startedByEmail' }
+      }},
+      { $sort: { lastMessageAt: -1 } },
+      { $limit: 50 }
+    ]).toArray();
+  
+  res.json(sessions.map(s => ({
+    id: s._id,
+    title: (s.firstMessage || 'New chat').substring(0, 50),
+    lastMessageAt: s.lastMessageAt,
+    messageCount: s.messageCount,
+    startedBy: s.startedBy || s.startedByEmail,
+    startedByEmail: s.startedByEmail
+  })));
 });
 
 // Delete chat session
-app.delete('/api/sessions/:id', auth, async (req, res) => {
+app.delete('/api/sessions/:id', auth, hasPermission('chat:delete'), async (req, res) => {
   try {
     // Developer can delete any session, others can only delete their own
-    const matchQuery = req.user.role === 'developer'
+    const canDeleteAll = req.user.roles.includes('Developer');
+    
+    const matchQuery = canDeleteAll
       ? { sessionId: req.params.id }
       : { sessionId: req.params.id, userId: req.user.id };
       
@@ -613,7 +350,8 @@ app.delete('/api/sessions/:id', auth, async (req, res) => {
     
     // Get all messages in this session before deleting
     const messagesToDelete = await db.collection('messages').find({
-      sessionId: req.params.id
+      sessionId: req.params.id,
+      userId: req.user.id
     }).toArray();
     
     // Save to deleted_messages collection for audit trail
@@ -726,9 +464,41 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     const uploaderEmail = user?.email || 'Unknown';
     const uploaderName = uploaderEmail.split('@')[0];
     
-    // Get sharedWith from request (array of org IDs)
-    const sharedWith = req.body.sharedWith ? JSON.parse(req.body.sharedWith) : [];
+    // Get target org/dept from request
+    const targetOrganization = req.body.organizationId;
+    const targetDepartment = req.body.departmentId;
     const fileType = req.body.type || 'document'; // 'document' or 'form'
+    
+    // Determine organization and department for file
+    let fileOrganizationId = user?.organizationId || null;
+    let fileDepartmentId = user?.departmentId || null;
+    let isAllOrganizations = false;
+    let isAllDepartments = false;
+    
+    // Check user permissions
+    const hasFileManageAccess = req.user.permissions.includes('file:manage_access');
+    
+    if (hasFileManageAccess) {
+      // Admin/Developer can upload to any org/dept
+      if (targetOrganization === 'all') {
+        isAllOrganizations = true;
+        fileOrganizationId = null;
+      } else if (targetOrganization) {
+        fileOrganizationId = new ObjectId(targetOrganization);
+      } else if (!fileOrganizationId) {
+        // If admin has no org and didn't select one, default to "All Organizations"
+        isAllOrganizations = true;
+        fileOrganizationId = null;
+      }
+      
+      if (targetDepartment === 'all') {
+        isAllDepartments = true;
+        fileDepartmentId = null;
+      } else if (targetDepartment) {
+        fileDepartmentId = new ObjectId(targetDepartment);
+      }
+    }
+    // else: Manager/User can only upload to their own org/dept
     
     let fileUrl;
     
@@ -759,17 +529,19 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       fileUrl = `file://${req.file.path}`;
     }
     
-    // Save file metadata with sharedWith array
+    // Save file metadata
     const file = {
       userId: req.user.id,
-      sharedWith: sharedWith.map(id => new ObjectId(id)), // Array of org IDs
+      organizationId: fileOrganizationId,
+      departmentId: fileDepartmentId,
       type: fileType,
       isDownloadable: fileType === 'form',
       isVectorized: fileType === 'document',
+      isAllOrganizations,
+      isAllDepartments,
       uploadedBy: uploaderName,
       uploadedByEmail: uploaderEmail,
       name: req.file.originalname,
-      size: req.file.size, // File size in bytes
       url: fileUrl,
       uploadedAt: new Date()
     };
@@ -785,9 +557,9 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         const response = await axios.post(webhooks.upload, {
           fileId: result.insertedId.toString(),
           userId: req.user.id,
-          sharedWith: sharedWith,
+          organizationId: fileOrganizationId ? fileOrganizationId.toString() : null,
+          departmentId: fileDepartmentId ? fileDepartmentId.toString() : null,
           fileName: req.file.originalname,
-          fileSize: req.file.size, // Send file size to n8n
           fileUrl: fileUrl
         }, {
           timeout: 300000 // 5 minutes
@@ -899,92 +671,54 @@ app.post('/api/files/check-downloadable', auth, async (req, res) => {
 
 // List files
 app.get('/api/files', auth, async (req, res) => {
-  try {
-    console.log('=== GET /api/files ===');
-    console.log('User:', req.user.email, 'Role:', req.user.role);
-    console.log('Query organizationId:', req.query.organizationId);
+  let query = {
+    type: 'document' // Only show documents, not forms
+  };
+  
+  if (req.user.role === 'admin' || req.user.role === 'developer' || req.user.role === 'manager' || req.user.role === 'user') {
+    // All roles see files in their org OR files marked for all orgs
+    query.$or = [
+      { organizationId: req.user.organizationId },
+      { isAllOrganizations: true }
+    ];
+  }
     
-    let query = {
-      type: 'document' // Only show documents, not forms
-    };
+  const files = await db.collection('files')
+    .find(query)
+    .sort({ uploadedAt: -1 })
+    .toArray();
     
-    // Developer sees all files
-    if (req.user.role !== 'developer') {
-      const userId = req.user.id.toString();
-      
-      // Get all user's assigned orgs
-      const assignments = await db.collection('user_assignments')
-        .find({ userId: userId })
-        .toArray();
-      
-      if (assignments.length === 0) {
-        console.log('User has no org assignments');
-        return res.json([]);
-      }
-      
-      const assignedOrgIds = assignments.map(a => a.organizationId.toString());
-      console.log('User assigned to orgs:', assignedOrgIds);
-      
-      // Get all assigned orgs
-      const assignedOrgs = await db.collection('organizations')
-        .find({ _id: { $in: assignments.map(a => a.organizationId) } })
-        .toArray();
-      
-      // For each assigned org, get all children
-      const allOrgIds = new Set(assignedOrgIds);
-      
-      for (const org of assignedOrgs) {
-        const children = await db.collection('organizations')
-          .find({ path: org.name })
-          .toArray();
-        children.forEach(c => allOrgIds.add(c._id.toString()));
-      }
-      
-      const hierarchyOrgIds = Array.from(allOrgIds);
-      console.log('Total accessible org IDs:', hierarchyOrgIds.length);
-      
-      // Files where sharedWith is empty OR includes any accessible org
-      // Convert string IDs to ObjectIds for query
-      query.$or = [
-        { sharedWith: { $size: 0 } }, // General files
-        { sharedWith: { $in: hierarchyOrgIds.map(id => new ObjectId(id)) } } // Org-specific files
-      ];
+  // Include uploader info and org info for admin
+  const filesWithInfo = await Promise.all(files.map(async (f) => {
+    let orgName = null;
+    if (f.organizationId) {
+      const org = await db.collection('organizations').findOne({ _id: new ObjectId(f.organizationId) });
+      orgName = org?.name || 'Unknown';
     }
     
-    console.log('Query:', JSON.stringify(query));
-    
-    const files = await db.collection('files')
-      .find(query)
-      .sort({ uploadedAt: -1 })
-      .toArray();
-    
-    console.log('Files found:', files.length);
-    
-    // Include uploader info and shared org names
-    const filesWithInfo = await Promise.all(files.map(async (f) => {
-      let sharedOrgNames = [];
-      if (f.sharedWith && f.sharedWith.length > 0) {
-        const orgs = await db.collection('organizations').find({ 
-          _id: { $in: f.sharedWith.map(id => new ObjectId(id)) } 
-        }).toArray();
-        sharedOrgNames = orgs.map(o => o.name);
+    // Get uploader role
+    let uploaderRole = null;
+    if (f.userId) {
+      const uploader = await db.collection('users').findOne({ _id: new ObjectId(f.userId) });
+      if (uploader && uploader.roles && uploader.roles.length > 0) {
+        const role = await db.collection('roles').findOne({ _id: new ObjectId(uploader.roles[0]) });
+        uploaderRole = role?.name || null;
       }
-      
-      return {
-        id: f._id,
-        name: f.name,
-        uploadedAt: f.uploadedAt,
-        uploadedBy: f.uploadedBy || 'Unknown',
-        userId: f.userId,
-        sharedWith: sharedOrgNames
-      };
-    }));
+    }
     
-    res.json(filesWithInfo);
-  } catch (error) {
-    console.error('Get files error:', error);
-    res.status(500).json({ error: error.message });
-  }
+    return {
+      id: f._id,
+      name: f.name,
+      uploadedAt: f.uploadedAt,
+      uploadedBy: f.uploadedBy || 'Unknown',
+      userId: f.userId,
+      uploaderRole: uploaderRole,
+      organizationName: f.isAllOrganizations ? 'All Organizations' : orgName,
+      isAllOrganizations: f.isAllOrganizations || false
+    };
+  }));
+  
+  res.json(filesWithInfo);
 });
 
 // Download file endpoint with tracking
@@ -1155,17 +889,12 @@ app.get('/api/forms', auth, async (req, res) => {
 // Delete file
 app.delete('/api/files/:id', auth, async (req, res) => {
   try {
-    const file = await db.collection('files').findOne({ _id: new ObjectId(req.params.id) });
+    const matchQuery = req.user.role === 'admin'
+      ? { _id: new ObjectId(req.params.id) }
+      : { _id: new ObjectId(req.params.id), userId: req.user.id };
+      
+    const file = await db.collection('files').findOne(matchQuery);
     if (!file) return res.status(404).json({ error: 'File not found' });
-    
-    // Only file uploader or developer can delete
-    // Convert both to string for comparison
-    const fileUserId = file.userId.toString();
-    const requestUserId = req.user.id.toString();
-    
-    if (fileUserId !== requestUserId && req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Not authorized to delete this file' });
-    }
     
     // Delete from S3 if URL is S3
     if (file.url.startsWith('https://') && file.url.includes('.s3.')) {
@@ -1186,6 +915,7 @@ app.delete('/api/files/:id', auth, async (req, res) => {
     await db.collection('files').deleteOne({ _id: new ObjectId(req.params.id) });
     
     // Delete from embedding_files collection
+    // fileId is at root level, not nested in metadata!
     console.log(`Deleting embeddings for fileId: ${req.params.id}`);
     
     const deleteResult = await db.collection('embedding_files').deleteMany({ 
@@ -1525,7 +1255,7 @@ app.get('/api/public-settings', async (req, res) => {
 });
 
 // Settings
-app.get('/api/settings', auth, hasPermission(), async (req, res) => {
+app.get('/api/settings', auth, hasPermission('system:manage_settings'), async (req, res) => {
   const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
   res.json({
     companyName: settings.companyName || 'GenBotChat',
@@ -1556,100 +1286,17 @@ app.get('/api/settings', auth, hasPermission(), async (req, res) => {
   });
 });
 
-app.post('/api/settings', auth, hasPermission(), async (req, res) => {
+app.post('/api/settings', auth, hasPermission('system:manage_settings'), async (req, res) => {
   await db.collection('settings').updateOne(
     { _id: 'config' },
     { $set: req.body },
     { upsert: true }
   );
   res.json({ success: true });
-});
-
-app.put('/api/settings', auth, hasPermission(), async (req, res) => {
-  await db.collection('settings').updateOne(
-    { _id: 'config' },
-    { $set: req.body },
-    { upsert: true }
-  );
-  res.json({ success: true });
-});
-
-// API Key Management (Developer only)
-app.get('/api/keys', auth, hasPermission(), async (req, res) => {
-  try {
-    const keys = await db.collection('api_keys').find().sort({ createdAt: -1 }).toArray();
-    
-    // Include user email for each key
-    const keysWithUser = await Promise.all(keys.map(async (key) => {
-      const user = await db.collection('users').findOne({ _id: key.userId });
-      return {
-        ...key,
-        userEmail: user?.email || 'Unknown'
-      };
-    }));
-    
-    res.json(keysWithUser);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get API keys' });
-  }
-});
-
-app.post('/api/keys', auth, hasPermission(), async (req, res) => {
-  try {
-    const { name, userId } = req.body;
-    
-    // Generate API key
-    const key = 'gk_' + crypto.randomBytes(32).toString('hex');
-    
-    const apiKey = {
-      key,
-      name,
-      userId: new ObjectId(userId),
-      isActive: true,
-      createdAt: new Date(),
-      lastUsedAt: null
-    };
-    
-    await db.collection('api_keys').insertOne(apiKey);
-    res.json({ success: true, key });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to create API key' });
-  }
-});
-
-app.patch('/api/keys/:id', auth, hasPermission(), async (req, res) => {
-  try {
-    const { isActive } = req.body;
-    await db.collection('api_keys').updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: { isActive } }
-    );
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to toggle API key' });
-  }
-});
-
-app.delete('/api/keys/:id', auth, hasPermission(), async (req, res) => {
-  try {
-    await db.collection('api_keys').deleteOne({ _id: new ObjectId(req.params.id) });
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete API key' });
-  }
-});
-
-app.get('/api/usage', auth, hasPermission(), async (req, res) => {
-  try {
-    const usage = await db.collection('api_usage').find().sort({ timestamp: -1 }).limit(100).toArray();
-    res.json(usage);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get API usage' });
-  }
 });
 
 // Upload logo
-app.post('/api/upload-logo', auth, hasPermission(), upload.single('logo'), async (req, res) => {
+app.post('/api/upload-logo', auth, hasPermission('system:manage_settings'), upload.single('logo'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });

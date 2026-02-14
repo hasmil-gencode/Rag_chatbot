@@ -4,10 +4,14 @@ import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { ChatArea } from "@/components/chat/ChatArea";
 import { FilesPage } from "@/components/chat/FilesPage";
 import { SettingsPage } from "@/components/chat/SettingsPage";
-import { ApiManagementPage } from "@/components/chat/ApiManagementPage";
+import { RolesPage } from "@/components/chat/RolesPage";
 import { UsersPage } from "@/components/chat/UsersPage";
 import { OrganizationsPage } from "@/components/chat/OrganizationsPage";
+import { DepartmentsPage } from "@/components/chat/DepartmentsPage";
 import { DeletedChatsPage } from "@/components/chat/DeletedChatsPage";
+import { FormsPage } from "@/components/chat/FormsPage";
+import { DownloadTrackingPage } from "@/components/chat/DownloadTrackingPage";
+import { ApiManagementPage } from "@/components/chat/ApiManagementPage";
 import { TextEmbeddedPage } from "@/components/chat/TextEmbeddedPage";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -31,16 +35,15 @@ interface ChatSession {
 const Index = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "text-embedded">("chat");
+  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "roles" | "users" | "organizations" | "departments" | "deleted-chats" | "forms" | "download-tracking" | "api-management" | "text-embedded">("chat");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [userEmail, setUserEmail] = useState<string>("");
   const [userRole, setUserRole] = useState<string>("");
-  const [canUploadFiles, setCanUploadFiles] = useState<boolean>(true);
-  const [userOrganizations, setUserOrganizations] = useState<any[]>([]);
-  const [currentOrganizationId, setCurrentOrganizationId] = useState<string | null>(null);
+  const [userOrganization, setUserOrganization] = useState<string>("");
+  const [userPermissions, setUserPermissions] = useState<string[]>([]);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
 
   // Login state
@@ -52,12 +55,14 @@ const Index = () => {
     const token = localStorage.getItem("token");
     const storedEmail = localStorage.getItem("userEmail");
     const storedRole = localStorage.getItem("userRole");
-    const storedOrgId = localStorage.getItem("currentOrganizationId");
+    const storedOrg = localStorage.getItem("userOrganization");
+    const storedPerms = localStorage.getItem("userPermissions");
     if (token) {
       setIsAuthenticated(true);
       if (storedEmail) setUserEmail(storedEmail);
       if (storedRole) setUserRole(storedRole);
-      if (storedOrgId) setCurrentOrganizationId(storedOrgId);
+      if (storedOrg) setUserOrganization(storedOrg);
+      if (storedPerms) setUserPermissions(JSON.parse(storedPerms));
       
       // Reset to chat page on load
       setCurrentPage("chat");
@@ -68,23 +73,7 @@ const Index = () => {
 
   const loadInitialData = async () => {
     try {
-      // Load user info
-      const userInfo = await api.getUserInfo();
-      setCanUploadFiles(userInfo.canUploadFiles !== false);
-      
-      // Load user's organizations
-      const orgsData = await api.getMyOrganizations();
-      setUserOrganizations(orgsData.organizations || []);
-      
-      // Set first org as current if none selected
-      if (!currentOrganizationId && orgsData.organizations?.length > 0) {
-        const firstOrgId = orgsData.organizations[0]._id;
-        setCurrentOrganizationId(firstOrgId);
-        localStorage.setItem("currentOrganizationId", firstOrgId);
-      }
-      
-      // Load sessions for current org
-      const sessionsData = await api.getSessions(currentOrganizationId);
+      const sessionsData = await api.getSessions();
       setSessions(sessionsData.map(s => {
         const date = new Date(s.lastMessageAt);
         const formattedDate = date.toLocaleDateString("en-MY", { 
@@ -115,17 +104,19 @@ const Index = () => {
       localStorage.setItem("token", data.token);
       localStorage.setItem("userId", data.user?.id || "");
       localStorage.setItem("userEmail", data.user?.email || email);
-      localStorage.setItem("userRole", data.user?.role || "user");
+      localStorage.setItem("userRole", data.user?.roles?.[0] || "user");
+      localStorage.setItem("userOrganization", data.user?.organizationName || "");
+      localStorage.setItem("userPermissions", JSON.stringify(data.user?.permissions || []));
       setUserEmail(data.user?.email || email);
-      setUserRole(data.user?.role || "user");
-      setIsAuthenticated(true);
-      
-      // Load user data after authentication
-      await loadInitialData();
+      setUserRole(data.user?.roles?.[0] || "user");
+      setUserOrganization(data.user?.organizationName || "");
+      setUserPermissions(data.user?.permissions || []);
       
       // Always redirect to chat page after login
       setCurrentPage("chat");
       
+      setIsAuthenticated(true);
+      await loadInitialData();
       toast.success("Welcome back!");
     } catch (error: any) {
       toast.error(error.message || "Login failed");
@@ -138,26 +129,16 @@ const Index = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("userEmail");
     localStorage.removeItem("userRole");
-    localStorage.removeItem("currentOrganizationId");
+    localStorage.removeItem("userOrganization");
+    localStorage.removeItem("userPermissions");
     setIsAuthenticated(false);
     setSessions([]);
     setMessages([]);
     setCurrentSessionId(null);
     setUserEmail("");
     setUserRole("");
-    setUserOrganizations([]);
-    setCurrentOrganizationId(null);
-  };
-
-  const handleOrganizationChange = async (orgId: string) => {
-    setCurrentOrganizationId(orgId);
-    localStorage.setItem("currentOrganizationId", orgId);
-    
-    // Reload sessions and files for new org
-    await loadInitialData();
-    
-    // Clear current chat
-    handleNewChat();
+    setUserOrganization("");
+    setUserPermissions([]);
   };
 
   const handleNewChat = () => {
@@ -216,7 +197,7 @@ const Index = () => {
     try {
       // Use ref for immediate session ID (avoids race condition)
       const sessionId = currentSessionIdRef.current;
-      const response = await api.sendMessage(content, sessionId || undefined, fileId || undefined, currentOrganizationId);
+      const response = await api.sendMessage(content, sessionId || undefined, fileId || undefined);
       
       // Update session ID immediately if this was first message
       if (!sessionId && response.sessionId) {
@@ -550,10 +531,8 @@ const Index = () => {
           onLogout={handleLogout}
           userEmail={userEmail}
           userRole={userRole}
-          canUploadFiles={canUploadFiles}
-          userOrganizations={userOrganizations}
-          currentOrganizationId={currentOrganizationId}
-          onOrganizationChange={handleOrganizationChange}
+          userOrganization={userOrganization}
+          userPermissions={userPermissions}
         />
       </div>
 
@@ -568,11 +547,15 @@ const Index = () => {
           />
         )}
         {currentPage === "files" && <FilesPage />}
-        {currentPage === "settings" && <SettingsPage />}
-        {currentPage === "api" && <ApiManagementPage />}
+        {currentPage === "forms" && <FormsPage />}
         {currentPage === "deleted-chats" && <DeletedChatsPage />}
+        {currentPage === "download-tracking" && <DownloadTrackingPage />}
         {currentPage === "organizations" && <OrganizationsPage />}
+        {currentPage === "departments" && <DepartmentsPage />}
+        {currentPage === "roles" && <RolesPage />}
         {currentPage === "users" && <UsersPage />}
+        {currentPage === "settings" && <SettingsPage />}
+        {currentPage === "api-management" && <ApiManagementPage />}
         {currentPage === "text-embedded" && <TextEmbeddedPage />}
       </div>
     </div>

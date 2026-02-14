@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  rag-chatbot-ui:
+    build: .
+    ports:
+      - "1223:3000"
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=${MONGODB_URI}
+      - JWT_SECRET=${JWT_SECRET}
+    volumes:
+      - ./uploads:/app/uploads
+      - ./public/logos:/app/public/logos
+    restart: unless-stopped

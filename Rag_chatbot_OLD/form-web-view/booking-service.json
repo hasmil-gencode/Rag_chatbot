@@ -1,0 +1,68 @@
+{
+  "title": "Motor Service Booking",
+  "formType": "booking-service",
+  "fields": [
+    {
+      "name": "start_time",
+      "label": "Appointment Date & Time",
+      "type": "datetime-local",
+      "required": true
+    },
+    {
+      "name": "model",
+      "label": "Motor Model",
+      "type": "text",
+      "required": true,
+      "placeholder": "e.g., NVX"
+    },
+    {
+      "name": "plate",
+      "label": "Plate Number",
+      "type": "text",
+      "required": true,
+      "placeholder": "e.g., VBA9824"
+    },
+    {
+      "name": "mileage",
+      "label": "Mileage (km)",
+      "type": "number",
+      "required": true
+    },
+    {
+      "name": "service_types",
+      "label": "Service Type",
+      "type": "select",
+      "required": true,
+      "options": [
+        "1st Free Service",
+        "Regular Service",
+        "Repair",
+        "Inspection"
+      ]
+    },
+    {
+      "name": "customer.ic_passport",
+      "label": "IC/Passport",
+      "type": "text",
+      "required": true
+    },
+    {
+      "name": "customer.name",
+      "label": "Full Name",
+      "type": "text",
+      "required": true
+    },
+    {
+      "name": "customer.phone",
+      "label": "Phone Number",
+      "type": "tel",
+      "required": true
+    },
+    {
+      "name": "comments",
+      "label": "Comments/Notes",
+      "type": "textarea",
+      "required": false
+    }
+  ]
+}
