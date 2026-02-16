@@ -110,7 +110,7 @@ export const UsersPage = () => {
       </div>
 
       {showForm && (
-        <div className="mb-6 p-4 border rounded-lg bg-card">
+        <div className="mb-6 p-4 border rounded-lg bg-card max-h-[80vh] overflow-y-auto">
           <h2 className="text-lg font-semibold mb-4">{editingUser ? 'Edit User' : 'Create New User'}</h2>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>

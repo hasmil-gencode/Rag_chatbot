@@ -1,4 +1,4 @@
-import { Plus, MessageSquare, FolderOpen, LogOut, Trash2, Users, Building2, FileCode, Settings, Key } from "lucide-react";
+import { Plus, MessageSquare, FolderOpen, LogOut, Trash2, Users, Building2, FileCode, Settings, Key, Layers, FileText, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
@@ -17,8 +17,8 @@ interface ChatSidebarProps {
   onNewChat: () => void;
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
-  currentPage: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "text-embedded";
-  onNavigate: (page: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "text-embedded") => void;
+  currentPage: "chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded";
+  onNavigate: (page: "chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded") => void;
   onLogout: () => void;
   userEmail: string;
   userRole: string;
@@ -64,8 +64,11 @@ export const ChatSidebar = ({
   const navItems = [
     { id: "chat" as const, label: "Chat", icon: MessageSquare },
     ...(canUploadFiles || isDeveloper ? [{ id: "files" as const, label: "Files", icon: FolderOpen }] : []),
+    ...(isDeveloper ? [{ id: "forms" as const, label: "Forms", icon: FileText }] : []),
+    ...(isDeveloper ? [{ id: "download-tracking" as const, label: "Download Tracking", icon: Download }] : []),
     ...(isDeveloper ? [{ id: "settings" as const, label: "Settings", icon: Settings }] : []),
     ...(isDeveloper ? [{ id: "api" as const, label: "API", icon: Key }] : []),
+    ...(isDeveloper ? [{ id: "groups" as const, label: "Groups", icon: Layers }] : []),
     ...(isDeveloper ? [{ id: "users" as const, label: "Users", icon: Users }] : []),
     ...(isDeveloper ? [{ id: "organizations" as const, label: "Organizations", icon: Building2 }] : []),
     ...(isDeveloper ? [{ id: "text-embedded" as const, label: "Text Embedded", icon: FileCode }] : []),

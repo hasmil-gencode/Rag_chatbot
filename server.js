@@ -476,6 +476,8 @@ app.post('/api/chat', auth, async (req, res) => {
       startedByEmail: startedByEmail,
       role: 'user',
       content: message,
+      chatType: 'browser',
+      chatName: 'normal',
       createdAt: new Date()
     });
 
@@ -502,6 +504,8 @@ app.post('/api/chat', auth, async (req, res) => {
       startedByEmail: startedByEmail,
       role: 'bot',
       content: data.response,
+      chatType: 'browser',
+      chatName: 'normal',
       createdAt: new Date()
     });
 
@@ -512,6 +516,136 @@ app.post('/api/chat', auth, async (req, res) => {
       error: 'Failed to get response. Please check n8n webhook configuration.',
       details: error.message 
     });
+  }
+});
+
+// API Key authentication middleware
+async function authenticateApiKey(req, res, next) {
+  const apiKey = req.headers['x-api-key'];
+  
+  if (!apiKey) {
+    return res.status(401).json({ error: 'API key required' });
+  }
+
+  try {
+    const keyDoc = await db.collection('api_keys').findOne({ key: apiKey });
+    
+    if (!keyDoc) {
+      return res.status(401).json({ error: 'Invalid API key' });
+    }
+
+    if (!keyDoc.isActive) {
+      return res.status(403).json({ error: 'API key is disabled' });
+    }
+
+    // Update last used
+    await db.collection('api_keys').updateOne(
+      { _id: keyDoc._id },
+      { $set: { lastUsedAt: new Date() } }
+    );
+
+    // Set user context from API key
+    req.user = {
+      id: keyDoc.userId,
+      role: 'user' // API keys are always user role
+    };
+    req.apiKey = keyDoc;
+    next();
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Public chat API endpoint (uses API key)
+app.post('/api/v1/chat', authenticateApiKey, async (req, res) => {
+  try {
+    const { message, sessionId } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    // Log API usage
+    await db.collection('api_usage').insertOne({
+      apiKeyId: req.apiKey._id,
+      endpoint: '/api/v1/chat',
+      method: 'POST',
+      timestamp: new Date(),
+      responseStatus: 200,
+      ipAddress: req.ip
+    });
+
+    const chatSessionId = sessionId || new ObjectId().toString();
+    
+    // Get user info
+    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const startedByEmail = user?.email || 'API User';
+    const startedByName = startedByEmail.split('@')[0];
+    
+    // Get user's organizations for context
+    const userAssignments = await db.collection('user_assignments').find({ 
+      userId: req.user.id.toString() 
+    }).toArray();
+    
+    let currentOrganizationId = null;
+    if (userAssignments.length > 0) {
+      currentOrganizationId = userAssignments[0].organizationId;
+    }
+
+    // Save user message
+    await db.collection('messages').insertOne({
+      userId: req.user.id,
+      sessionId: chatSessionId,
+      currentOrganizationId: currentOrganizationId ? new ObjectId(currentOrganizationId) : null,
+      startedBy: startedByName,
+      startedByEmail: startedByEmail,
+      role: 'user',
+      content: message,
+      chatType: 'API',
+      chatName: req.apiKey.name,
+      source: 'api',
+      apiKeyId: req.apiKey._id,
+      createdAt: new Date()
+    });
+
+    // Get webhook URL
+    const webhooks = await getWebhookUrls();
+
+    // Send to n8n
+    const { data } = await axios.post(webhooks.chat, { 
+      message, 
+      userId: req.user.id.toString(),
+      currentOrganizationId: currentOrganizationId,
+      sessionId: chatSessionId,
+      fileId: null
+    }, {
+      timeout: 60000
+    });
+
+    // Save bot response
+    await db.collection('messages').insertOne({
+      userId: req.user.id,
+      sessionId: chatSessionId,
+      currentOrganizationId: currentOrganizationId ? new ObjectId(currentOrganizationId) : null,
+      startedBy: startedByName,
+      startedByEmail: startedByEmail,
+      role: 'bot',
+      content: data.response,
+      chatType: 'API',
+      chatName: req.apiKey.name,
+      source: 'api',
+      apiKeyId: req.apiKey._id,
+      createdAt: new Date()
+    });
+
+    res.json({ 
+      response: data.response,
+      sessionId: chatSessionId 
+    });
+
+  } catch (error) {
+    console.error('API chat error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -730,6 +864,43 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     const sharedWith = req.body.sharedWith ? JSON.parse(req.body.sharedWith) : [];
     const fileType = req.body.type || 'document'; // 'document' or 'form'
     
+    // Check storage limit for user's group and get groupId
+    let userGroupId = null;
+    const userId = req.user.id.toString(); // Convert to string
+    const userAssignments = await db.collection('user_assignments').find({ 
+      userId: userId 
+    }).toArray();
+    
+    if (userAssignments.length > 0) {
+      const userOrgIds = userAssignments.map(a => a.organizationId);
+      const userOrgs = await db.collection('organizations').find({
+        _id: { $in: userOrgIds.map(id => new ObjectId(id)) }
+      }).toArray();
+      
+      // Find group from any of user's orgs
+      const groupId = userOrgs.find(o => o.groupId)?.groupId;
+      
+      if (groupId) {
+        userGroupId = groupId; // Save for file metadata
+        const group = await db.collection('groups').findOne({ _id: groupId });
+        
+        if (group) {
+          // Calculate current usage from files with this groupId
+          const files = await db.collection('files').find({ groupId: groupId }).toArray();
+          const currentUsage = files.reduce((sum, f) => sum + (f.size || 0), 0);
+          const limitBytes = group.storageLimitGB * 1024 * 1024 * 1024;
+          
+          if (currentUsage + req.file.size > limitBytes) {
+            // Delete uploaded file
+            fs.unlinkSync(req.file.path);
+            return res.status(400).json({ 
+              error: `Storage limit exceeded. Limit: ${group.storageLimitGB}GB, Used: ${(currentUsage / 1024 / 1024 / 1024).toFixed(2)}GB` 
+            });
+          }
+        }
+      }
+    }
+    
     let fileUrl;
     
     if (s3Client && settings.s3Bucket) {
@@ -762,6 +933,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     // Save file metadata with sharedWith array
     const file = {
       userId: req.user.id,
+      groupId: userGroupId, // Group ID for storage tracking
       sharedWith: sharedWith.map(id => new ObjectId(id)), // Array of org IDs
       type: fileType,
       isDownloadable: fileType === 'form',
@@ -897,6 +1069,77 @@ app.post('/api/files/check-downloadable', auth, async (req, res) => {
   }
 });
 
+// Get storage info for user's group
+app.get('/api/storage-info', auth, async (req, res) => {
+  try {
+    console.log('=== STORAGE INFO ===');
+    console.log('User ID:', req.user.id, typeof req.user.id);
+    
+    // Convert to string for query
+    const userId = req.user.id.toString();
+    
+    const userAssignments = await db.collection('user_assignments').find({ 
+      userId: userId 
+    }).toArray();
+    
+    console.log('User assignments:', userAssignments.length);
+    
+    if (userAssignments.length === 0) {
+      console.log('No assignments, returning 0/0');
+      return res.json({ used: 0, limit: 0 });
+    }
+    
+    const userOrgIds = userAssignments.map(a => a.organizationId);
+    console.log('User org IDs:', userOrgIds);
+    
+    const userOrgs = await db.collection('organizations').find({
+      _id: { $in: userOrgIds.map(id => typeof id === 'string' ? new ObjectId(id) : id) }
+    }).toArray();
+    
+    console.log('User orgs:', userOrgs.map(o => ({ name: o.name, groupId: o.groupId })));
+    
+    const groupId = userOrgs.find(o => o.groupId)?.groupId;
+    
+    console.log('Found groupId:', groupId);
+    
+    if (!groupId) {
+      console.log('No groupId, returning 0/0');
+      return res.json({ used: 0, limit: 0 });
+    }
+    
+    // Convert groupId to ObjectId if it's a string
+    const groupObjectId = typeof groupId === 'string' ? new ObjectId(groupId) : groupId;
+    
+    console.log('Group ObjectId:', groupObjectId);
+    
+    const group = await db.collection('groups').findOne({ _id: groupObjectId });
+    console.log('Group found:', group ? group.name : 'NOT FOUND');
+    
+    if (!group) {
+      console.log('Group not found, returning 0/0');
+      return res.json({ used: 0, limit: 0 });
+    }
+    
+    const files = await db.collection('files').find({ 
+      groupId: { $in: [groupObjectId, groupId.toString()] } // Match both formats
+    }).toArray();
+    
+    console.log('Files found:', files.length);
+    
+    const usedBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
+    
+    console.log('Used bytes:', usedBytes, 'Limit GB:', group.storageLimitGB);
+    
+    res.json({ 
+      used: usedBytes,
+      limit: group.storageLimitGB 
+    });
+  } catch (error) {
+    console.error('Storage info error:', error);
+    res.status(500).json({ error: 'Failed to get storage info' });
+  }
+});
+
 // List files
 app.get('/api/files', auth, async (req, res) => {
   try {
@@ -930,10 +1173,19 @@ app.get('/api/files', auth, async (req, res) => {
         .find({ _id: { $in: assignments.map(a => a.organizationId) } })
         .toArray();
       
-      // For each assigned org, get all children
+      // For each assigned org, get all parents AND children
       const allOrgIds = new Set(assignedOrgIds);
       
       for (const org of assignedOrgs) {
+        // Add all orgs in the path (parents)
+        if (org.path && Array.isArray(org.path)) {
+          const parents = await db.collection('organizations')
+            .find({ name: { $in: org.path } })
+            .toArray();
+          parents.forEach(p => allOrgIds.add(p._id.toString()));
+        }
+        
+        // Add all children
         const children = await db.collection('organizations')
           .find({ path: org.name })
           .toArray();
@@ -983,6 +1235,58 @@ app.get('/api/files', auth, async (req, res) => {
     res.json(filesWithInfo);
   } catch (error) {
     console.error('Get files error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get forms (type='form')
+app.get('/api/forms', auth, async (req, res) => {
+  try {
+    let query = { type: 'form' };
+    
+    // Developer sees all forms
+    if (req.user.role !== 'developer') {
+      const userId = req.user.id.toString();
+      const userAssignments = await db.collection('user_assignments').find({ userId }).toArray();
+      
+      if (userAssignments.length === 0) {
+        return res.json([]);
+      }
+      
+      const userOrgIds = userAssignments.map(a => a.organizationId);
+      const allAccessibleOrgs = await getAllChildrenOrgs(userOrgIds);
+      
+      query.$or = [
+        { sharedWith: { $size: 0 } },
+        { sharedWith: { $in: allAccessibleOrgs.map(id => id.toString()) } }
+      ];
+    }
+    
+    const forms = await db.collection('files').find(query).sort({ uploadedAt: -1 }).toArray();
+    
+    // Include shared org names
+    const formsWithInfo = await Promise.all(forms.map(async (f) => {
+      let sharedOrgNames = [];
+      if (f.sharedWith && f.sharedWith.length > 0) {
+        const orgs = await db.collection('organizations').find({ 
+          _id: { $in: f.sharedWith.map(id => new ObjectId(id)) } 
+        }).toArray();
+        sharedOrgNames = orgs.map(o => o.name);
+      }
+      
+      return {
+        _id: f._id,
+        name: f.name,
+        uploadedAt: f.uploadedAt,
+        uploadedBy: f.uploadedBy || 'Unknown',
+        userId: f.userId,
+        sharedWith: sharedOrgNames
+      };
+    }));
+    
+    res.json(formsWithInfo);
+  } catch (error) {
+    console.error('Get forms error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1648,6 +1952,106 @@ app.get('/api/usage', auth, hasPermission(), async (req, res) => {
   }
 });
 
+// Group Management (Developer only)
+app.get('/api/groups', auth, hasPermission(), async (req, res) => {
+  try {
+    const groups = await db.collection('groups').find().toArray();
+    
+    // Add org names and calculate used storage
+    const groupsWithDetails = await Promise.all(groups.map(async (group) => {
+      // Get org names
+      const orgs = await db.collection('organizations').find({ 
+        groupId: group._id 
+      }).toArray();
+      
+      // Calculate total file size for this group (simple query by groupId)
+      const files = await db.collection('files').find({ groupId: group._id }).toArray();
+      const usedStorage = files.reduce((sum, f) => sum + (f.size || 0), 0);
+      
+      return {
+        ...group,
+        orgNames: orgs.map(o => o.name),
+        organizationIds: orgs.map(o => o._id.toString()),
+        usedStorage
+      };
+    }));
+    
+    res.json(groupsWithDetails);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get groups' });
+  }
+});
+
+app.post('/api/groups', auth, hasPermission(), async (req, res) => {
+  try {
+    const { name, storageLimitGB, organizationIds } = req.body;
+    
+    const group = {
+      name,
+      storageLimitGB,
+      createdAt: new Date()
+    };
+    
+    const result = await db.collection('groups').insertOne(group);
+    
+    // Update organizations with groupId
+    if (organizationIds && organizationIds.length > 0) {
+      await db.collection('organizations').updateMany(
+        { _id: { $in: organizationIds.map(id => new ObjectId(id)) } },
+        { $set: { groupId: result.insertedId } }
+      );
+    }
+    
+    res.json({ success: true, groupId: result.insertedId });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to create group' });
+  }
+});
+
+app.put('/api/groups/:id', auth, hasPermission(), async (req, res) => {
+  try {
+    const { name, storageLimitGB, organizationIds } = req.body;
+    
+    await db.collection('groups').updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: { name, storageLimitGB } }
+    );
+    
+    // Remove groupId from all orgs first
+    await db.collection('organizations').updateMany(
+      { groupId: new ObjectId(req.params.id) },
+      { $set: { groupId: null } }
+    );
+    
+    // Set new groupId for selected orgs
+    if (organizationIds && organizationIds.length > 0) {
+      await db.collection('organizations').updateMany(
+        { _id: { $in: organizationIds.map(id => new ObjectId(id)) } },
+        { $set: { groupId: new ObjectId(req.params.id) } }
+      );
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update group' });
+  }
+});
+
+app.delete('/api/groups/:id', auth, hasPermission(), async (req, res) => {
+  try {
+    // Remove groupId from all orgs in this group
+    await db.collection('organizations').updateMany(
+      { groupId: new ObjectId(req.params.id) },
+      { $set: { groupId: null } }
+    );
+    
+    await db.collection('groups').deleteOne({ _id: new ObjectId(req.params.id) });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete group' });
+  }
+});
+
 // Upload logo
 app.post('/api/upload-logo', auth, hasPermission(), upload.single('logo'), async (req, res) => {
   try {
@@ -2234,131 +2638,6 @@ app.get('/api/usage', auth, async (req, res) => {
 // ============= PUBLIC API ENDPOINTS =============
 
 // API Key authentication middleware
-async function authenticateApiKey(req, res, next) {
-  const apiKey = req.headers['x-api-key'];
-  
-  if (!apiKey) {
-    return res.status(401).json({ error: 'API key required' });
-  }
-
-  try {
-    const keyDoc = await db.collection('apiKeys').findOne({ key: apiKey });
-    
-    if (!keyDoc) {
-      return res.status(401).json({ error: 'Invalid API key' });
-    }
-
-    if (!keyDoc.isActive) {
-      return res.status(403).json({ error: 'API key is disabled' });
-    }
-
-    // Update last used
-    await db.collection('apiKeys').updateOne(
-      { _id: keyDoc._id },
-      { $set: { lastUsedAt: new Date() } }
-    );
-
-    req.apiKey = keyDoc;
-    next();
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-}
-
-// Public chat API endpoint
-app.post('/api/v1/chat', authenticateApiKey, async (req, res) => {
-  try {
-    const { message, sessionId } = req.body;
-
-    if (!message) {
-      return res.status(400).json({ error: 'Message is required' });
-    }
-
-    // Log API usage
-    await db.collection('apiUsage').insertOne({
-      apiKeyId: req.apiKey._id,
-      userId: req.apiKey.userId,
-      endpoint: '/api/v1/chat',
-      method: 'POST',
-      requestBody: { message, sessionId },
-      responseStatus: null, // Will update later
-      timestamp: new Date(),
-      ipAddress: req.ip
-    });
-
-    // Get or create session
-    let currentSessionId = sessionId;
-    if (!currentSessionId) {
-      const newSession = {
-        userId: req.apiKey.userId,
-        title: message.substring(0, 50),
-        createdAt: new Date(),
-        lastMessageAt: new Date(),
-        source: 'api',
-        apiKeyId: req.apiKey._id
-      };
-      const result = await db.collection('sessions').insertOne(newSession);
-      currentSessionId = result.insertedId.toString();
-    }
-
-    // Save user message
-    const userMessage = {
-      sessionId: currentSessionId,
-      userId: req.apiKey.userId,
-      role: 'user',
-      content: message,
-      createdAt: new Date(),
-      source: 'api',
-      apiKeyId: req.apiKey._id
-    };
-    await db.collection('messages').insertOne(userMessage);
-
-    // Get n8n webhook URL
-    const settings = await db.collection('settings').findOne({ _id: 'config' });
-    const webhookUrl = settings?.chatWebhook;
-
-    if (!webhookUrl) {
-      return res.status(500).json({ error: 'Webhook not configured' });
-    }
-
-    // Call n8n
-    const n8nResponse = await axios.post(webhookUrl, {
-      sessionId: currentSessionId,
-      message: message,
-      userId: req.apiKey.userId.toString()
-    });
-
-    const botReply = n8nResponse.data.output || n8nResponse.data.response || 'No response';
-
-    // Save bot message
-    const botMessage = {
-      sessionId: currentSessionId,
-      userId: req.apiKey.userId,
-      role: 'assistant',
-      content: botReply,
-      createdAt: new Date(),
-      source: 'api',
-      apiKeyId: req.apiKey._id
-    };
-    await db.collection('messages').insertOne(botMessage);
-
-    // Update session
-    await db.collection('sessions').updateOne(
-      { _id: new ObjectId(currentSessionId) },
-      { $set: { lastMessageAt: new Date() } }
-    );
-
-    res.json({
-      reply: botReply,
-      sessionId: currentSessionId
-    });
-
-  } catch (error) {
-    console.error('API chat error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // Text embedding endpoints (Developer only)
 app.get('/api/text-embeddings', auth, async (req, res) => {
   try {
@@ -2422,6 +2701,7 @@ app.post('/api/text-embeddings', auth, async (req, res) => {
       embedding: embedding,
       fileName: fileName?.trim() || 'Custom Knowledge',
       fileId: null,
+      sharedWith: ["PUBLIC"], // Accessible to all
       organizationId: null,
       departmentId: null,
       uploadedAt: new Date()

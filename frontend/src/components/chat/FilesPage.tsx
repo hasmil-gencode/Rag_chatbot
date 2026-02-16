@@ -11,6 +11,7 @@ export const FilesPage = () => {
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [selectedOrgs, setSelectedOrgs] = useState<string[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [storageInfo, setStorageInfo] = useState<{ used: number; limit: number } | null>(null);
   const userRole = localStorage.getItem('userRole') || 'user';
   const userId = localStorage.getItem('userId') || '';
   const isDeveloper = userRole.toLowerCase() === 'developer';
@@ -18,6 +19,7 @@ export const FilesPage = () => {
   useEffect(() => {
     loadFiles();
     loadOrganizations();
+    loadStorageInfo();
   }, []);
 
   const loadFiles = async () => {
@@ -45,6 +47,16 @@ export const FilesPage = () => {
     }
   };
 
+  const loadStorageInfo = async () => {
+    try {
+      const data = await api.getStorageInfo();
+      console.log('Storage info loaded:', data);
+      setStorageInfo(data);
+    } catch (error) {
+      console.error('Error loading storage info:', error);
+    }
+  };
+
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -53,6 +65,7 @@ export const FilesPage = () => {
     try {
       await api.uploadFile(file, selectedOrgs);
       await loadFiles();
+      await loadStorageInfo(); // Refresh storage info
       setSelectedOrgs([]);
       toast.success("File uploaded successfully");
     } catch (error: any) {
@@ -68,14 +81,39 @@ export const FilesPage = () => {
     try {
       await api.deleteFile(id);
       await loadFiles();
+      await loadStorageInfo(); // Refresh storage info
       toast.success("File deleted");
     } catch (error: any) {
       toast.error(error.message);
     }
   };
 
+  const formatSize = (bytes: number) => {
+    const gb = bytes / 1024 / 1024 / 1024;
+    return gb.toFixed(6); // Show 6 decimal places
+  };
+
   return (
     <div className="p-6">
+      {storageInfo && storageInfo.limit > 0 && (
+        <div className="mb-4 p-4 bg-muted rounded-lg">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium">Storage Usage:</span>
+            <span className="text-sm">
+              {formatSize(storageInfo.used)} GB / {storageInfo.limit} GB
+              <span className="text-xs text-muted-foreground ml-2">
+                ({((storageInfo.used / (storageInfo.limit * 1024 * 1024 * 1024)) * 100).toFixed(6)}%)
+              </span>
+            </span>
+          </div>
+          <div className="mt-2 w-full bg-background rounded-full h-2">
+            <div 
+              className="bg-primary h-2 rounded-full transition-all"
+              style={{ width: `${Math.min((storageInfo.used / (storageInfo.limit * 1024 * 1024 * 1024)) * 100, 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
       <Card>
         <CardHeader>
           <CardTitle>Upload Files</CardTitle>
@@ -86,7 +124,7 @@ export const FilesPage = () => {
             <div className="space-y-4">
               <div className="max-w-md mx-auto">
                 <Label>Share with Organizations</Label>
-                <div className="border rounded-md p-3 mt-1 max-h-48 overflow-y-auto space-y-2">
+                <div className="border rounded-md p-3 mt-1 max-h-32 overflow-y-auto space-y-2">
                   {organizations.map((org) => (
                     <label key={org._id} className="flex items-center gap-2 cursor-pointer hover:bg-muted p-1 rounded">
                       <input
@@ -137,8 +175,8 @@ export const FilesPage = () => {
         <CardContent className="space-y-2">{/* File list */}
 
           {/* Files List */}
-          <div className="border rounded-lg overflow-hidden">
-            <table className="w-full">
+          <div className="border rounded-lg overflow-x-auto">
+            <table className="w-full min-w-[600px]">
               <thead className="bg-muted">
                 <tr>
                   <th className="px-4 py-3 text-left">Name</th>

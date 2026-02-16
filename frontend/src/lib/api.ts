@@ -203,6 +203,32 @@ class API {
     return json
   }
 
+  // Forms Management
+  async getForms() {
+    const res = await fetch(`${API_BASE}/forms`, {
+      headers: this.getHeaders(),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to get forms')
+    return json
+  }
+
+  async uploadForm(file: File, sharedWith: string[]) {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('type', 'form')
+    formData.append('sharedWith', JSON.stringify(sharedWith))
+    
+    const res = await fetch(`${API_BASE}/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      body: formData,
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Upload failed')
+    return json
+  }
+
   // ============= RBAC =============
   async getPermissions() {
     const res = await fetch(`${API_BASE}/permissions`, {
@@ -405,8 +431,59 @@ class API {
     return json
   }
 
+  // Group Management
+  async getGroups() {
+    const res = await fetch(`${API_BASE}/groups`, {
+      headers: this.getHeaders(),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to get groups')
+    return json
+  }
+
+  async createGroup(data: { name: string; storageLimitGB: number; organizationIds: string[] }) {
+    const res = await fetch(`${API_BASE}/groups`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(data),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to create group')
+    return json
+  }
+
+  async updateGroup(id: string, data: { name: string; storageLimitGB: number; organizationIds: string[] }) {
+    const res = await fetch(`${API_BASE}/groups/${id}`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify(data),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to update group')
+    return json
+  }
+
+  async deleteGroup(id: string) {
+    const res = await fetch(`${API_BASE}/groups/${id}`, {
+      method: 'DELETE',
+      headers: this.getHeaders(),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to delete group')
+    return json
+  }
+
   // ===== Phase 5: Multi-Org APIs =====
   
+  async getStorageInfo() {
+    const res = await fetch(`${API_BASE}/storage-info`, {
+      headers: this.getHeaders(),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to get storage info')
+    return json
+  }
+
   async getMyOrganizations() {
     const res = await fetch(`${API_BASE}/my-organizations`, {
       headers: this.getHeaders(),

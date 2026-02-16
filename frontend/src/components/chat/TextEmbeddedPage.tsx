@@ -55,6 +55,7 @@ export const TextEmbeddedPage = () => {
       });
 
       const result = await response.json();
+      console.log('Embed response:', response.status, result);
       
       if (response.ok) {
         toast.success("Text embedded successfully!");

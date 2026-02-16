@@ -5,6 +5,9 @@ import { ChatArea } from "@/components/chat/ChatArea";
 import { FilesPage } from "@/components/chat/FilesPage";
 import { SettingsPage } from "@/components/chat/SettingsPage";
 import { ApiManagementPage } from "@/components/chat/ApiManagementPage";
+import { GroupsPage } from "@/components/chat/GroupsPage";
+import { FormsPage } from "@/components/chat/FormsPage";
+import { DownloadTrackingPage } from "@/components/chat/DownloadTrackingPage";
 import { UsersPage } from "@/components/chat/UsersPage";
 import { OrganizationsPage } from "@/components/chat/OrganizationsPage";
 import { DeletedChatsPage } from "@/components/chat/DeletedChatsPage";
@@ -31,7 +34,7 @@ interface ChatSession {
 const Index = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "text-embedded">("chat");
+  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded">("chat");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
@@ -570,6 +573,9 @@ const Index = () => {
         {currentPage === "files" && <FilesPage />}
         {currentPage === "settings" && <SettingsPage />}
         {currentPage === "api" && <ApiManagementPage />}
+        {currentPage === "groups" && <GroupsPage />}
+        {currentPage === "forms" && <FormsPage />}
+        {currentPage === "download-tracking" && <DownloadTrackingPage />}
         {currentPage === "deleted-chats" && <DeletedChatsPage />}
         {currentPage === "organizations" && <OrganizationsPage />}
         {currentPage === "users" && <UsersPage />}
