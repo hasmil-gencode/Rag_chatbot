@@ -146,6 +146,7 @@ const Index = () => {
     setSessions([]);
     setMessages([]);
     setCurrentSessionId(null);
+    currentSessionIdRef.current = null; // Clear session ref
     setUserEmail("");
     setUserRole("");
     setUserOrganizations([]);
