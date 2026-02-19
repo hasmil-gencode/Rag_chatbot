@@ -91,24 +91,27 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
     const handleTTSEnd = () => {
       isTTSPlayingRef.current = false;
       
-      // Re-enable continuous mode
-      localStorage.removeItem('ttsBlocking');
-      localStorage.removeItem('waitingForTTS');
-      
-      // Update UI to show listening again
-      setMessage('Listening...');
-      localStorage.setItem('continuousModeMessage', 'Listening...');
-      
-      // Restart Browser recognition if exists
-      if (localStorage.getItem('continuousMode') === 'true' && recognitionRef.current) {
-        try {
-          setTimeout(() => {
-            if (recognitionRef.current && localStorage.getItem('continuousMode') === 'true') {
-              recognitionRef.current.start();
-            }
-          }, 200);
-        } catch (e) {
-          console.error('Error restarting recognition:', e);
+      // Only handle continuous mode logic if continuous mode is active
+      if (localStorage.getItem('continuousMode') === 'true') {
+        // Re-enable continuous mode
+        localStorage.removeItem('ttsBlocking');
+        localStorage.removeItem('waitingForTTS');
+        
+        // Update UI to show listening again
+        setMessage('Listening...');
+        localStorage.setItem('continuousModeMessage', 'Listening...');
+        
+        // Restart Browser recognition if exists
+        if (recognitionRef.current) {
+          try {
+            setTimeout(() => {
+              if (recognitionRef.current && localStorage.getItem('continuousMode') === 'true') {
+                recognitionRef.current.start();
+              }
+            }, 200);
+          } catch (e) {
+            console.error('Error restarting recognition:', e);
+          }
         }
       }
       
