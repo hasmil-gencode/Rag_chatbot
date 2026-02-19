@@ -35,12 +35,10 @@ export const FilesPage = () => {
 
   const loadOrganizations = async () => {
     try {
-      console.log('Loading organizations, isDeveloper:', isDeveloper);
       // Developer sees all orgs, regular users see assigned orgs + children
       const data = isDeveloper 
         ? await api.getAllOrganizations()
         : await api.getMyOrganizationsHierarchy();
-      console.log('Organizations loaded:', data);
       setOrganizations(data.organizations || []);
     } catch (error) {
       console.error('Error loading organizations:', error);
@@ -50,7 +48,6 @@ export const FilesPage = () => {
   const loadStorageInfo = async () => {
     try {
       const data = await api.getStorageInfo();
-      console.log('Storage info loaded:', data);
       setStorageInfo(data);
     } catch (error) {
       console.error('Error loading storage info:', error);

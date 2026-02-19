@@ -85,6 +85,17 @@ class API {
     return json
   }
 
+  async changePasswordFirstLogin(tempToken: string, newPassword: string) {
+    const res = await fetch(`${API_BASE}/change-password-first-login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken, newPassword }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to change password')
+    return json
+  }
+
   async register(data: LoginData) {
     const res = await fetch(`${API_BASE}/register`, {
       method: 'POST',
@@ -303,6 +314,17 @@ class API {
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to delete user')
+    return json
+  }
+
+  async resetUserPassword(userId: string, defaultPassword: string) {
+    const res = await fetch(`${API_BASE}/users/${userId}/reset-password`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ defaultPassword }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to reset password')
     return json
   }
 

@@ -51,6 +51,12 @@ const Index = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  
+  // Password change state
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+  const [tempToken, setTempToken] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -116,6 +122,14 @@ const Index = () => {
     try {
       const data = await api.login({ email, password });
 
+      // Check if user must change password
+      if (data.mustChangePassword) {
+        setTempToken(data.tempToken);
+        setShowChangePasswordModal(true);
+        setIsLoading(false);
+        return;
+      }
+
       localStorage.setItem("token", data.token);
       localStorage.setItem("userId", data.user?.id || "");
       localStorage.setItem("userEmail", data.user?.email || email);
@@ -133,6 +147,50 @@ const Index = () => {
       toast.success("Welcome back!");
     } catch (error: any) {
       toast.error(error.message || "Login failed");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (newPassword.length < 8) {
+      toast.error("Password must be at least 8 characters");
+      return;
+    }
+    
+    if (newPassword !== confirmPassword) {
+      toast.error("Passwords do not match");
+      return;
+    }
+    
+    setIsLoading(true);
+    try {
+      const data = await api.changePasswordFirstLogin(tempToken, newPassword);
+      
+      // Complete login with new token
+      localStorage.setItem("token", data.token);
+      localStorage.setItem("userId", data.user?.id || "");
+      localStorage.setItem("userEmail", data.user?.email || email);
+      localStorage.setItem("userRole", data.user?.role || "user");
+      setUserEmail(data.user?.email || email);
+      setUserRole(data.user?.role || "user");
+      setIsAuthenticated(true);
+      
+      // Close modal and reset state
+      setShowChangePasswordModal(false);
+      setTempToken("");
+      setNewPassword("");
+      setConfirmPassword("");
+      
+      // Load user data
+      await loadInitialData();
+      setCurrentPage("chat");
+      
+      toast.success("Password changed successfully! Welcome!");
+    } catch (error: any) {
+      toast.error(error.message || "Failed to change password");
     } finally {
       setIsLoading(false);
     }
@@ -407,6 +465,98 @@ const Index = () => {
           </div>
         </div>
       </div>
+
+      {/* Change Password Modal */}
+      {showChangePasswordModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-8 max-w-md w-full mx-4">
+            <h2 className="text-2xl font-bold text-slate-900 mb-2">Set Your New Password</h2>
+            <p className="text-slate-600 mb-6">
+              For security reasons, you must change your password before continuing.
+            </p>
+            
+            <form onSubmit={handleChangePassword} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  New Password
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    placeholder="At least 8 characters"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="w-full h-12 px-4 pr-12 bg-white text-slate-900 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                    minLength={8}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    {showPassword ? (
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                      </svg>
+                    ) : (
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Confirm Password
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    placeholder="Re-enter your password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="w-full h-12 px-4 pr-12 bg-white text-slate-900 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                    minLength={8}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    {showPassword ? (
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                      </svg>
+                    ) : (
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={isLoading}
+              >
+                {isLoading ? "Changing Password..." : "Change Password & Continue"}
+              </button>
+            </form>
+
+            <p className="text-xs text-slate-500 mt-4 text-center">
+              Your password must be different from the default password and at least 8 characters long.
+            </p>
+          </div>
+        </div>
+      )}
       </>
     );
   }

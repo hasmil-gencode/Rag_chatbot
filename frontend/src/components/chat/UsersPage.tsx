@@ -1,13 +1,17 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import { Plus, Trash2, Edit } from "lucide-react";
+import { Plus, Trash2, Edit, KeyRound } from "lucide-react";
 
 export const UsersPage = () => {
   const [users, setUsers] = useState<any[]>([]);
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editingUser, setEditingUser] = useState<any>(null);
+  const [showResetPasswordModal, setShowResetPasswordModal] = useState(false);
+  const [resetUserId, setResetUserId] = useState<string>("");
+  const [resetUserEmail, setResetUserEmail] = useState<string>("");
+  const [defaultPassword, setDefaultPassword] = useState<string>("");
   
   const [formData, setFormData] = useState({
     email: "",
@@ -94,6 +98,29 @@ export const UsersPage = () => {
     try {
       await api.deleteUser(userId);
       loadData();
+    } catch (error: any) {
+      alert(error.message);
+    }
+  };
+
+  const handleResetPassword = (userId: string, email: string) => {
+    setResetUserId(userId);
+    setResetUserEmail(email);
+    setDefaultPassword("");
+    setShowResetPasswordModal(true);
+  };
+
+  const handleConfirmResetPassword = async () => {
+    if (!defaultPassword || defaultPassword.length < 8) {
+      alert("Default password must be at least 8 characters");
+      return;
+    }
+    
+    try {
+      await api.resetUserPassword(resetUserId, defaultPassword);
+      alert(`Password reset successfully!\n\nUser: ${resetUserEmail}\nDefault Password: ${defaultPassword}\n\nUser must change password on next login.`);
+      setShowResetPasswordModal(false);
+      setDefaultPassword("");
     } catch (error: any) {
       alert(error.message);
     }
@@ -220,6 +247,14 @@ export const UsersPage = () => {
                       <Button
                         variant="ghost"
                         size="sm"
+                        onClick={() => handleResetPassword(user._id, user.email)}
+                        title="Reset Password"
+                      >
+                        <KeyRound className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         onClick={() => handleEdit(user)}
                       >
                         <Edit className="w-4 h-4" />
@@ -239,6 +274,52 @@ export const UsersPage = () => {
           </tbody>
         </table>
       </div>
+
+      {/* Reset Password Modal */}
+      {showResetPasswordModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h2 className="text-xl font-bold text-slate-900 mb-2">Reset Password</h2>
+            <p className="text-sm text-slate-600 mb-2">
+              User: <strong className="text-slate-900">{resetUserEmail}</strong>
+            </p>
+            <p className="text-sm text-slate-600 mb-4">
+              Set a default password. User will be required to change it on next login.
+            </p>
+            
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-slate-700 mb-2">Default Password</label>
+              <input
+                type="text"
+                placeholder="At least 8 characters"
+                value={defaultPassword}
+                onChange={(e) => setDefaultPassword(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-md bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                minLength={8}
+                autoFocus
+              />
+            </div>
+
+            <div className="flex gap-2">
+              <button 
+                onClick={handleConfirmResetPassword}
+                className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-md transition-colors"
+              >
+                Reset Password
+              </button>
+              <button 
+                onClick={() => {
+                  setShowResetPasswordModal(false);
+                  setDefaultPassword("");
+                }}
+                className="flex-1 px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-900 font-medium rounded-md transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       </div>
     </div>
   );
