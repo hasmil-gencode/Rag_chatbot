@@ -67,11 +67,12 @@ export const SettingsPage = () => {
   };
 
   return (
-    <div className="p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold">Settings</h1>
-        <p className="text-muted-foreground">Manage your application preferences and integrations</p>
-      </div>
+    <div className="h-full overflow-y-auto">
+      <div className="p-6">
+        <div className="mb-6">
+          <h1 className="text-2xl font-bold">Settings</h1>
+          <p className="text-muted-foreground">Manage your application preferences and integrations</p>
+        </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList>
@@ -409,6 +410,7 @@ export const SettingsPage = () => {
           </Card>
         </TabsContent>
       </Tabs>
+      </div>
     </div>
   );
 };

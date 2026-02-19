@@ -12,6 +12,7 @@ import { UsersPage } from "@/components/chat/UsersPage";
 import { OrganizationsPage } from "@/components/chat/OrganizationsPage";
 import { DeletedChatsPage } from "@/components/chat/DeletedChatsPage";
 import { TextEmbeddedPage } from "@/components/chat/TextEmbeddedPage";
+import { UserSettingsPage } from "@/components/chat/UserSettingsPage";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,7 +35,7 @@ interface ChatSession {
 const Index = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded">("chat");
+  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded" | "user-settings">("chat");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
@@ -241,12 +242,22 @@ const Index = () => {
         await loadInitialData();
       }
     } catch (error: any) {
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: `Error: ${error.message}`,
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      // Check if quota exceeded
+      if (error.message.includes('quota exceeded') || error.message.includes('429')) {
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: `⚠️ Your quota exceeded limit, please contact Admin.`,
+        };
+        setMessages(prev => [...prev, errorMessage]);
+      } else {
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: `Error: ${error.message}`,
+        };
+        setMessages(prev => [...prev, errorMessage]);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -581,6 +592,7 @@ const Index = () => {
         {currentPage === "organizations" && <OrganizationsPage />}
         {currentPage === "users" && <UsersPage />}
         {currentPage === "text-embedded" && <TextEmbeddedPage />}
+        {currentPage === "user-settings" && <UserSettingsPage />}
       </div>
     </div>
     </>

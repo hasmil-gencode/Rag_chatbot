@@ -71,7 +71,8 @@ export const FormsPage = () => {
   };
 
   return (
-    <div className="p-6">
+    <div className="h-full overflow-y-auto">
+      <div className="p-6">
       <Card>
         <CardHeader>
           <CardTitle>Upload Forms</CardTitle>
@@ -176,6 +177,7 @@ export const FormsPage = () => {
           )}
         </CardContent>
       </Card>
+      </div>
     </div>
   );
 };

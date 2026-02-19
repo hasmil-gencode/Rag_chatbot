@@ -1,4 +1,4 @@
-import { Plus, MessageSquare, FolderOpen, LogOut, Trash2, Users, Building2, FileCode, Settings, Key, Layers, FileText, Download } from "lucide-react";
+import { Plus, MessageSquare, FolderOpen, LogOut, Trash2, Users, Building2, FileCode, Settings, Key, Layers, FileText, Download, UserCog } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
@@ -17,8 +17,8 @@ interface ChatSidebarProps {
   onNewChat: () => void;
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
-  currentPage: "chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded";
-  onNavigate: (page: "chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded") => void;
+  currentPage: "chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded" | "user-settings";
+  onNavigate: (page: "chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded" | "user-settings") => void;
   onLogout: () => void;
   userEmail: string;
   userRole: string;
@@ -318,6 +318,15 @@ export const ChatSidebar = ({
                   <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
                 </svg>
               )}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => onNavigate('user-settings')}
+              className="text-sidebar-muted hover:text-sidebar-foreground flex-shrink-0 h-8 w-8 transition-all hover:bg-accent"
+              title="User Settings"
+            >
+              <UserCog className="w-4 h-4" />
             </Button>
             <Button
               variant="ghost"

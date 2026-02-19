@@ -78,11 +78,12 @@ export const OrganizationsPage = () => {
   };
 
   return (
-    <div className="p-6">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold">Organizations</h1>
-        <Button onClick={() => setShowForm(true)}>
-          <Plus className="w-4 h-4 mr-2" />
+    <div className="h-full overflow-y-auto">
+      <div className="p-6">
+        <div className="flex justify-between items-center mb-6">
+          <h1 className="text-2xl font-bold">Organizations</h1>
+          <Button onClick={() => setShowForm(true)}>
+            <Plus className="w-4 h-4 mr-2" />
           Create Organization
         </Button>
       </div>
@@ -273,6 +274,7 @@ export const OrganizationsPage = () => {
             </div>
           </div>
         )}
+      </div>
       </div>
     </div>
   );

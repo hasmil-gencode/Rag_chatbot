@@ -100,14 +100,15 @@ export const UsersPage = () => {
   };
 
   return (
-    <div className="p-6">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold">Users</h1>
-        <Button onClick={() => setShowForm(true)}>
-          <Plus className="w-4 h-4 mr-2" />
-          Create User
-        </Button>
-      </div>
+    <div className="h-full overflow-y-auto">
+      <div className="p-6">
+        <div className="flex justify-between items-center mb-6">
+          <h1 className="text-2xl font-bold">Users</h1>
+          <Button onClick={() => setShowForm(true)}>
+            <Plus className="w-4 h-4 mr-2" />
+            Create User
+          </Button>
+        </div>
 
       {showForm && (
         <div className="mb-6 p-4 border rounded-lg bg-card max-h-[80vh] overflow-y-auto">
@@ -237,6 +238,7 @@ export const UsersPage = () => {
             ))}
           </tbody>
         </table>
+      </div>
       </div>
     </div>
   );

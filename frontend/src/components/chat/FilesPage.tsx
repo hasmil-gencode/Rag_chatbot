@@ -94,25 +94,32 @@ export const FilesPage = () => {
   };
 
   return (
-    <div className="p-6">
+    <div className="h-full overflow-y-auto"><div className="p-6 space-y-4">
       {storageInfo && storageInfo.limit > 0 && (
-        <div className="mb-4 p-4 bg-muted rounded-lg">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">Storage Usage:</span>
-            <span className="text-sm">
-              {formatSize(storageInfo.used)} GB / {storageInfo.limit} GB
-              <span className="text-xs text-muted-foreground ml-2">
-                ({((storageInfo.used / (storageInfo.limit * 1024 * 1024 * 1024)) * 100).toFixed(6)}%)
-              </span>
-            </span>
-          </div>
-          <div className="mt-2 w-full bg-background rounded-full h-2">
-            <div 
-              className="bg-primary h-2 rounded-full transition-all"
-              style={{ width: `${Math.min((storageInfo.used / (storageInfo.limit * 1024 * 1024 * 1024)) * 100, 100)}%` }}
-            />
-          </div>
-        </div>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">Storage Usage:</span>
+                <span className="text-sm">
+                  {formatSize(storageInfo.used)} GB / {storageInfo.limit} GB
+                  <span className="text-xs text-muted-foreground ml-2">
+                    ({((storageInfo.used / (storageInfo.limit * 1024 * 1024 * 1024)) * 100).toFixed(6)}%)
+                  </span>
+                </span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                <div 
+                  className="bg-blue-600 h-3 rounded-full transition-all duration-300"
+                  style={{ 
+                    width: `${Math.max(Math.min((storageInfo.used / (storageInfo.limit * 1024 * 1024 * 1024)) * 100, 100), 1)}%`,
+                    minWidth: '4px'
+                  }}
+                />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       )}
       <Card>
         <CardHeader>
@@ -220,6 +227,7 @@ export const FilesPage = () => {
           </div>
         </CardContent>
       </Card>
+    </div>
     </div>
   );
 };

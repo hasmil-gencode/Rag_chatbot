@@ -183,30 +183,8 @@ app.get('/api/user/me', auth, async (req, res) => {
 // ===== PHASE 2: Multi-Org Hierarchy APIs =====
 
 // Create user (Developer only)
-app.post('/api/users', auth, hasPermission(), async (req, res) => {
-  try {
-    const { email, password, fullName, canUploadFiles } = req.body;
-    
-    const existing = await db.collection('users').findOne({ email });
-    if (existing) return res.status(400).json({ error: 'User already exists' });
-    
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const result = await db.collection('users').insertOne({
-      email,
-      password: hashedPassword,
-      fullName,
-      role: 'user',
-      status: 'active',
-      canUploadFiles: canUploadFiles !== false,
-      createdBy: req.user.id,
-      createdAt: new Date()
-    });
-    
-    res.json({ success: true, userId: result.insertedId });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to create user' });
-  }
-});
+// REMOVED DUPLICATE - Using the one at line 1855 with organization assignments
+
 
 // Create organization/entity/department
 app.post('/api/organizations', auth, hasPermission(), async (req, res) => {
@@ -240,23 +218,35 @@ app.post('/api/user-assignments', auth, hasPermission(), async (req, res) => {
   try {
     const { userId, organizationIds } = req.body; // organizationIds is array
     
+    console.log('=== ASSIGN USER TO ORGS ===');
+    console.log('userId:', userId, typeof userId);
+    console.log('organizationIds:', organizationIds);
+    
     // Remove existing assignments
-    await db.collection('user_assignments').deleteMany({ userId: userId });
+    const deleteResult = await db.collection('user_organization_assignments').deleteMany({ 
+      userId: new ObjectId(userId) 
+    });
+    console.log('Deleted', deleteResult.deletedCount, 'existing assignments');
     
     // Add new assignments
     const assignments = organizationIds.map(orgId => ({
-      userId: userId, // Store as string for n8n compatibility
+      userId: new ObjectId(userId),
+      userIdStr: userId, // String version for n8n
       organizationId: new ObjectId(orgId),
       assignedBy: req.user.id,
       assignedAt: new Date()
     }));
     
+    console.log('Creating', assignments.length, 'new assignments');
+    
     if (assignments.length > 0) {
-      await db.collection('user_assignments').insertMany(assignments);
+      const insertResult = await db.collection('user_organization_assignments').insertMany(assignments);
+      console.log('Inserted', insertResult.insertedCount, 'assignments');
     }
     
     res.json({ success: true });
   } catch (error) {
+    console.error('Assign user error:', error);
     res.status(500).json({ error: 'Failed to assign user' });
   }
 });
@@ -264,8 +254,8 @@ app.post('/api/user-assignments', auth, hasPermission(), async (req, res) => {
 // Get user's assigned organizations
 app.get('/api/my-organizations', auth, async (req, res) => {
   try {
-    const assignments = await db.collection('user_assignments')
-      .find({ userId: req.user.id })
+    const assignments = await db.collection('user_organization_assignments')
+      .find({ userId: new ObjectId(req.user.id) })
       .toArray();
     
     const orgIds = assignments.map(a => a.organizationId);
@@ -275,6 +265,7 @@ app.get('/api/my-organizations', auth, async (req, res) => {
     
     res.json({ organizations });
   } catch (error) {
+    console.error('Get my organizations error:', error);
     res.status(500).json({ error: 'Failed to get organizations' });
   }
 });
@@ -283,11 +274,11 @@ app.get('/api/my-organizations', auth, async (req, res) => {
 app.get('/api/my-organizations-hierarchy', auth, async (req, res) => {
   try {
     console.log('=== my-organizations-hierarchy called ===');
-    const userId = req.user.id.toString(); // Convert ObjectId to string
+    const userId = new ObjectId(req.user.id);
     console.log('User ID:', userId);
     
     // Get directly assigned orgs
-    const assignments = await db.collection('user_assignments')
+    const assignments = await db.collection('user_organization_assignments')
       .find({ userId: userId })
       .toArray();
     console.log('Assignments found:', assignments.length);
@@ -364,7 +355,7 @@ app.delete('/api/organizations/:id', auth, hasPermission(), async (req, res) => 
   try {
     await db.collection('organizations').deleteOne({ _id: new ObjectId(req.params.id) });
     // Also remove user assignments
-    await db.collection('user_assignments').deleteMany({ organizationId: new ObjectId(req.params.id) });
+    await db.collection('user_organization_assignments').deleteMany({ organizationId: new ObjectId(req.params.id) });
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to delete organization' });
@@ -409,7 +400,7 @@ app.put('/api/users/:id', auth, hasPermission(), async (req, res) => {
 // Get user assignments
 app.get('/api/user-assignments/:userId', auth, hasPermission(), async (req, res) => {
   try {
-    const assignments = await db.collection('user_assignments')
+    const assignments = await db.collection('user_organization_assignments')
       .find({ userId: new ObjectId(req.params.userId) })
       .toArray();
     res.json(assignments);
@@ -427,7 +418,7 @@ app.delete('/api/users/:id', auth, hasPermission(), async (req, res) => {
     }
     await db.collection('users').deleteOne({ _id: new ObjectId(req.params.id) });
     // Also remove user assignments
-    await db.collection('user_assignments').deleteMany({ userId: new ObjectId(req.params.id) });
+    await db.collection('user_organization_assignments').deleteMany({ userId: new ObjectId(req.params.id) });
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to delete user' });
@@ -440,7 +431,7 @@ app.post('/api/switch-organization', auth, async (req, res) => {
     const { organizationId } = req.body;
     
     // Verify user has access to this org
-    const assignment = await db.collection('user_assignments').findOne({
+    const assignment = await db.collection('user_organization_assignments').findOne({
       userId: new ObjectId(req.user.id),
       organizationId: new ObjectId(organizationId)
     });
@@ -466,6 +457,98 @@ app.post('/api/chat', auth, async (req, res) => {
     const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
     const startedByEmail = user?.email || 'Unknown';
     const startedByName = startedByEmail.split('@')[0];
+    
+    // Get user's groupId from their organization assignments
+    let groupId = user.groupId;
+    
+    if (!groupId) {
+      const assignments = await db.collection('user_organization_assignments').find({ 
+        userId: user._id
+      }).toArray();
+      
+      if (assignments.length > 0) {
+        const org = await db.collection('organizations').findOne({ 
+          _id: assignments[0].organizationId 
+        });
+        groupId = org?.groupId;
+      }
+    }
+    
+    // Check chat quota if user has groupId
+    if (groupId) {
+      const group = await db.collection('groups').findOne({ _id: groupId });
+      
+      if (group && group.chatQuota > 0) {
+        const currentMonth = new Date().toISOString().substring(0, 7); // "2026-02"
+        
+        // Check if need to reset (today is renew day)
+        const today = new Date().getDate();
+        if (today === group.renewDay) {
+          const lastReset = await db.collection('chat_resets').findOne({ 
+            groupId: group._id, 
+            month: currentMonth 
+          });
+          
+          if (!lastReset) {
+            // Reset counts AND bonus quota for this group
+            await db.collection('chat_counts').deleteMany({ 
+              groupId: group._id, 
+              month: { $lt: currentMonth } 
+            });
+            
+            await db.collection('chat_resets').insertOne({ 
+              groupId: group._id, 
+              month: currentMonth, 
+              resetAt: new Date() 
+            });
+            
+            // Reset bonus quota to 0
+            await db.collection('groups').updateOne(
+              { _id: group._id },
+              { $set: { bonusQuota: 0 } }
+            );
+          }
+        }
+        
+        // Calculate effective quota (base + bonus)
+        const effectiveQuota = group.chatQuota + (group.bonusQuota || 0);
+        
+        // Check quota
+        if (group.quotaType === 'individual') {
+          const userCount = await db.collection('chat_counts').findOne({ 
+            groupId: group._id, 
+            userId: user._id, 
+            month: currentMonth 
+          });
+          
+          const currentCount = userCount?.count || 0;
+          if (currentCount >= effectiveQuota) {
+            return res.status(429).json({ 
+              error: 'quota_exceeded',
+              message: 'Your quota exceeded limit, please contact Admin',
+              used: currentCount,
+              limit: effectiveQuota
+            });
+          }
+        } else {
+          // Total quota for entire group
+          const counts = await db.collection('chat_counts').find({ 
+            groupId: group._id, 
+            month: currentMonth 
+          }).toArray();
+          
+          const totalCount = counts.reduce((sum, c) => sum + c.count, 0);
+          if (totalCount >= effectiveQuota) {
+            return res.status(429).json({ 
+              error: 'quota_exceeded',
+              message: 'Your quota exceeded limit, please contact Admin',
+              used: totalCount,
+              limit: effectiveQuota
+            });
+          }
+        }
+      }
+    }
     
     // Save user message with current org context
     await db.collection('messages').insertOne({
@@ -508,6 +591,20 @@ app.post('/api/chat', auth, async (req, res) => {
       chatName: 'normal',
       createdAt: new Date()
     });
+
+    // Increment chat count if user has groupId
+    if (groupId) {
+      const currentMonth = new Date().toISOString().substring(0, 7);
+      await db.collection('chat_counts').updateOne(
+        { groupId: groupId, userId: user._id, month: currentMonth },
+        { 
+          $inc: { count: 1 },
+          $setOnInsert: { createdAt: new Date() },
+          $set: { updatedAt: new Date() }
+        },
+        { upsert: true }
+      );
+    }
 
     res.json({ response: data.response, sessionId: chatSessionId });
   } catch (error) {
@@ -583,7 +680,7 @@ app.post('/api/v1/chat', authenticateApiKey, async (req, res) => {
     const startedByName = startedByEmail.split('@')[0];
     
     // Get user's organizations for context
-    const userAssignments = await db.collection('user_assignments').find({ 
+    const userAssignments = await db.collection('user_organization_assignments').find({ 
       userId: req.user.id.toString() 
     }).toArray();
     
@@ -867,7 +964,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     // Check storage limit for user's group and get groupId
     let userGroupId = null;
     const userId = req.user.id.toString(); // Convert to string
-    const userAssignments = await db.collection('user_assignments').find({ 
+    const userAssignments = await db.collection('user_organization_assignments').find({ 
       userId: userId 
     }).toArray();
     
@@ -1075,10 +1172,10 @@ app.get('/api/storage-info', auth, async (req, res) => {
     console.log('=== STORAGE INFO ===');
     console.log('User ID:', req.user.id, typeof req.user.id);
     
-    // Convert to string for query
-    const userId = req.user.id.toString();
+    // Convert to ObjectId for query
+    const userId = new ObjectId(req.user.id);
     
-    const userAssignments = await db.collection('user_assignments').find({ 
+    const userAssignments = await db.collection('user_organization_assignments').find({ 
       userId: userId 
     }).toArray();
     
@@ -1153,12 +1250,14 @@ app.get('/api/files', auth, async (req, res) => {
     
     // Developer sees all files
     if (req.user.role !== 'developer') {
-      const userId = req.user.id.toString();
+      const userId = new ObjectId(req.user.id);
       
       // Get all user's assigned orgs
-      const assignments = await db.collection('user_assignments')
+      const assignments = await db.collection('user_organization_assignments')
         .find({ userId: userId })
         .toArray();
+      
+      console.log('Assignments found:', assignments.length);
       
       if (assignments.length === 0) {
         console.log('User has no org assignments');
@@ -1173,7 +1272,10 @@ app.get('/api/files', auth, async (req, res) => {
         .find({ _id: { $in: assignments.map(a => a.organizationId) } })
         .toArray();
       
-      // For each assigned org, get all parents AND children
+      console.log('Assigned orgs:', assignedOrgs.map(o => o.name));
+      
+      // For each assigned org, get all parents (NOT children)
+      // User can see files shared with their org or any parent org
       const allOrgIds = new Set(assignedOrgIds);
       
       for (const org of assignedOrgs) {
@@ -1182,25 +1284,16 @@ app.get('/api/files', auth, async (req, res) => {
           const parents = await db.collection('organizations')
             .find({ name: { $in: org.path } })
             .toArray();
+          console.log(`Parents of ${org.name}:`, parents.map(p => p.name));
           parents.forEach(p => allOrgIds.add(p._id.toString()));
         }
-        
-        // Add all children
-        const children = await db.collection('organizations')
-          .find({ path: org.name })
-          .toArray();
-        children.forEach(c => allOrgIds.add(c._id.toString()));
       }
       
       const hierarchyOrgIds = Array.from(allOrgIds);
       console.log('Total accessible org IDs:', hierarchyOrgIds.length);
       
-      // Files where sharedWith is empty OR includes any accessible org
-      // Convert string IDs to ObjectIds for query
-      query.$or = [
-        { sharedWith: { $size: 0 } }, // General files
-        { sharedWith: { $in: hierarchyOrgIds.map(id => new ObjectId(id)) } } // Org-specific files
-      ];
+      // Files shared with any accessible org
+      query.sharedWith = { $in: hierarchyOrgIds.map(id => new ObjectId(id)) };
     }
     
     console.log('Query:', JSON.stringify(query));
@@ -1227,7 +1320,7 @@ app.get('/api/files', auth, async (req, res) => {
         name: f.name,
         uploadedAt: f.uploadedAt,
         uploadedBy: f.uploadedBy || 'Unknown',
-        userId: f.userId,
+        userId: f.userId?.toString(),
         sharedWith: sharedOrgNames
       };
     }));
@@ -1247,7 +1340,7 @@ app.get('/api/forms', auth, async (req, res) => {
     // Developer sees all forms
     if (req.user.role !== 'developer') {
       const userId = req.user.id.toString();
-      const userAssignments = await db.collection('user_assignments').find({ userId }).toArray();
+      const userAssignments = await db.collection('user_organization_assignments').find({ userId }).toArray();
       
       if (userAssignments.length === 0) {
         return res.json([]);
@@ -1756,27 +1849,32 @@ app.get('/api/users', auth, hasPermission('user:view'), async (req, res) => {
 });
 
 app.post('/api/users', auth, hasPermission('user:manage'), async (req, res) => {
-  const { email, password, fullName, roles, status, organizationId, departmentId } = req.body;
-  
-  const existingUser = await db.collection('users').findOne({ email });
-  if (existingUser) {
-    return res.status(400).json({ error: 'Email already exists' });
+  try {
+    const { email, password, fullName, canUploadFiles } = req.body;
+    
+    const existingUser = await db.collection('users').findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ error: 'Email already exists' });
+    }
+    
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    const result = await db.collection('users').insertOne({
+      email,
+      password: hashedPassword,
+      fullName,
+      role: 'user',
+      status: 'active',
+      canUploadFiles: canUploadFiles !== false,
+      createdBy: req.user.id,
+      createdAt: new Date()
+    });
+    
+    res.json({ success: true, userId: result.insertedId });
+  } catch (error) {
+    console.error('Create user error:', error);
+    res.status(500).json({ error: 'Failed to create user' });
   }
-  
-  const hashedPassword = await bcrypt.hash(password, 10);
-  
-  const result = await db.collection('users').insertOne({
-    email,
-    password: hashedPassword,
-    fullName,
-    roles: roles.map(r => new ObjectId(r)),
-    organizationId: organizationId ? new ObjectId(organizationId) : null,
-    departmentId: departmentId ? new ObjectId(departmentId) : null,
-    status: status || 'active',
-    createdAt: new Date()
-  });
-  
-  res.json({ success: true, id: result.insertedId });
 });
 
 app.put('/api/users/:id', auth, hasPermission('user:manage'), async (req, res) => {
@@ -1984,11 +2082,14 @@ app.get('/api/groups', auth, hasPermission(), async (req, res) => {
 
 app.post('/api/groups', auth, hasPermission(), async (req, res) => {
   try {
-    const { name, storageLimitGB, organizationIds } = req.body;
+    const { name, storageLimitGB, organizationIds, chatQuota, quotaType, renewDay } = req.body;
     
     const group = {
       name,
       storageLimitGB,
+      chatQuota: chatQuota || 0,           // 0 = unlimited
+      quotaType: quotaType || 'individual', // 'individual' or 'total'
+      renewDay: renewDay || 1,              // 1-31
       createdAt: new Date()
     };
     
@@ -2010,11 +2111,17 @@ app.post('/api/groups', auth, hasPermission(), async (req, res) => {
 
 app.put('/api/groups/:id', auth, hasPermission(), async (req, res) => {
   try {
-    const { name, storageLimitGB, organizationIds } = req.body;
+    const { name, storageLimitGB, organizationIds, chatQuota, quotaType, renewDay } = req.body;
     
     await db.collection('groups').updateOne(
       { _id: new ObjectId(req.params.id) },
-      { $set: { name, storageLimitGB } }
+      { $set: { 
+        name, 
+        storageLimitGB,
+        chatQuota: chatQuota || 0,
+        quotaType: quotaType || 'individual',
+        renewDay: renewDay || 1
+      } }
     );
     
     // Remove groupId from all orgs first
@@ -2049,6 +2156,180 @@ app.delete('/api/groups/:id', auth, hasPermission(), async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to delete group' });
+  }
+});
+
+// Reset chat quota for a group (developer only)
+app.post('/api/groups/:id/reset-quota', auth, hasPermission(), async (req, res) => {
+  try {
+    const groupId = new ObjectId(req.params.id);
+    const currentMonth = new Date().toISOString().slice(0, 7); // "2026-02"
+    
+    // Delete all chat counts for this group in current month (try both formats)
+    await db.collection('chat_counts').deleteMany({ 
+      groupId: groupId, // ObjectId format
+      month: currentMonth 
+    });
+    
+    await db.collection('chat_counts').deleteMany({ 
+      groupId: groupId.toString(), // String format
+      month: currentMonth 
+    });
+    
+    // Mark as reset
+    await db.collection('chat_resets').updateOne(
+      { groupId: groupId.toString(), month: currentMonth },
+      { $set: { resetAt: new Date() } },
+      { upsert: true }
+    );
+    
+    res.json({ success: true, message: 'Chat quota reset successfully' });
+  } catch (error) {
+    console.error('Reset quota error:', error);
+    res.status(500).json({ error: 'Failed to reset quota' });
+  }
+});
+
+// Add bonus quota to a group (developer only)
+app.post('/api/groups/:id/add-bonus', auth, hasPermission(), async (req, res) => {
+  try {
+    const { bonusQuota } = req.body;
+    if (!bonusQuota || bonusQuota <= 0) {
+      return res.status(400).json({ error: 'Invalid bonus quota' });
+    }
+    
+    const groupId = new ObjectId(req.params.id);
+    
+    // Add bonus quota field (temporary, resets on renewDay)
+    await db.collection('groups').updateOne(
+      { _id: groupId },
+      { $inc: { bonusQuota: bonusQuota } }
+    );
+    
+    res.json({ success: true, message: `Added ${bonusQuota} bonus chats` });
+  } catch (error) {
+    console.error('Add bonus error:', error);
+    res.status(500).json({ error: 'Failed to add bonus quota' });
+  }
+});
+
+// Override renew day for a group (developer only)
+app.put('/api/groups/:id/renew-day', auth, hasPermission(), async (req, res) => {
+  try {
+    const { renewDay } = req.body;
+    if (!renewDay || renewDay < 1 || renewDay > 31) {
+      return res.status(400).json({ error: 'Invalid renew day (1-31)' });
+    }
+    
+    const groupId = new ObjectId(req.params.id);
+    
+    await db.collection('groups').updateOne(
+      { _id: groupId },
+      { $set: { renewDay: renewDay } }
+    );
+    
+    res.json({ success: true, message: `Renew day updated to ${renewDay}` });
+  } catch (error) {
+    console.error('Update renew day error:', error);
+    res.status(500).json({ error: 'Failed to update renew day' });
+  }
+});
+
+// Get chat usage for current user
+app.get('/api/chat-usage', auth, async (req, res) => {
+  try {
+    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    
+    // Get user's groupId from their organization assignments
+    let groupId = user.groupId;
+    
+    if (!groupId) {
+      // Get from user's organizations
+      const assignments = await db.collection('user_organization_assignments').find({ 
+        userId: user._id
+      }).toArray();
+      
+      if (assignments.length > 0) {
+        const org = await db.collection('organizations').findOne({ 
+          _id: assignments[0].organizationId 
+        });
+        groupId = org?.groupId;
+      }
+    }
+    
+    if (!groupId) {
+      return res.json({ 
+        hasQuota: false,
+        unlimited: true
+      });
+    }
+    
+    const group = await db.collection('groups').findOne({ _id: groupId });
+    
+    if (!group || group.chatQuota === 0) {
+      return res.json({ 
+        hasQuota: false,
+        unlimited: true
+      });
+    }
+    
+    const currentMonth = new Date().toISOString().substring(0, 7);
+    
+    let used = 0;
+    if (group.quotaType === 'individual') {
+      const userCount = await db.collection('chat_counts').findOne({ 
+        groupId: group._id, 
+        userId: user._id, 
+        month: currentMonth 
+      });
+      used = userCount?.count || 0;
+    } else {
+      const counts = await db.collection('chat_counts').find({ 
+        groupId: group._id, 
+        month: currentMonth 
+      }).toArray();
+      used = counts.reduce((sum, c) => sum + c.count, 0);
+    }
+    
+    const effectiveQuota = group.chatQuota + (group.bonusQuota || 0);
+    const percentage = (used / effectiveQuota * 100).toFixed(6);
+    
+    // Calculate next reset date
+    const now = new Date();
+    let resetDate = new Date(now.getFullYear(), now.getMonth(), group.renewDay);
+    if (resetDate <= now) {
+      resetDate = new Date(now.getFullYear(), now.getMonth() + 1, group.renewDay);
+    }
+    
+    res.json({
+      hasQuota: true,
+      used,
+      limit: effectiveQuota,
+      baseLimit: group.chatQuota,
+      bonusQuota: group.bonusQuota || 0,
+      percentage: parseFloat(percentage),
+      quotaType: group.quotaType,
+      resetDate: resetDate.toISOString(),
+      renewDay: group.renewDay
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get chat usage' });
+  }
+});
+
+// Update user name
+app.put('/api/user/name', auth, async (req, res) => {
+  try {
+    const { fullName } = req.body;
+    
+    await db.collection('users').updateOne(
+      { _id: new ObjectId(req.user.id) },
+      { $set: { fullName } }
+    );
+    
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update name' });
   }
 });
 

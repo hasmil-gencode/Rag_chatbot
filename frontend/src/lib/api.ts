@@ -441,7 +441,7 @@ class API {
     return json
   }
 
-  async createGroup(data: { name: string; storageLimitGB: number; organizationIds: string[] }) {
+  async createGroup(data: { name: string; storageLimitGB: number; chatQuota: number; quotaType: string; renewDay: number; organizationIds: string[] }) {
     const res = await fetch(`${API_BASE}/groups`, {
       method: 'POST',
       headers: this.getHeaders(),
@@ -452,7 +452,7 @@ class API {
     return json
   }
 
-  async updateGroup(id: string, data: { name: string; storageLimitGB: number; organizationIds: string[] }) {
+  async updateGroup(id: string, data: { name: string; storageLimitGB: number; chatQuota: number; quotaType: string; renewDay: number; organizationIds: string[] }) {
     const res = await fetch(`${API_BASE}/groups/${id}`, {
       method: 'PUT',
       headers: this.getHeaders(),
@@ -463,6 +463,25 @@ class API {
     return json
   }
 
+  async getChatUsage() {
+    const res = await fetch(`${API_BASE}/chat-usage`, {
+      headers: this.getHeaders(),
+    })
+    if (!res.ok) throw new Error('Failed to get chat usage')
+    return res.json()
+  }
+
+  async updateUserName(fullName: string) {
+    const res = await fetch(`${API_BASE}/user/name`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ fullName }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to update name')
+    return json
+  }
+
   async deleteGroup(id: string) {
     const res = await fetch(`${API_BASE}/groups/${id}`, {
       method: 'DELETE',
@@ -470,6 +489,38 @@ class API {
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to delete group')
+    return json
+  }
+
+  async resetGroupQuota(id: string) {
+    const res = await fetch(`${API_BASE}/groups/${id}/reset-quota`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to reset quota')
+    return json
+  }
+
+  async addGroupBonus(id: string, bonusQuota: number) {
+    const res = await fetch(`${API_BASE}/groups/${id}/add-bonus`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ bonusQuota }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to add bonus')
+    return json
+  }
+
+  async updateGroupRenewDay(id: string, renewDay: number) {
+    const res = await fetch(`${API_BASE}/groups/${id}/renew-day`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ renewDay }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to update renew day')
     return json
   }
 

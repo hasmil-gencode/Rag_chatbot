@@ -130,7 +130,8 @@ export const ApiManagementPage = () => {
   };
 
   return (
-    <div className="p-6">
+    <div className="h-full overflow-y-auto">
+      <div className="p-6">
       <div className="flex justify-between items-center mb-6">
         <div>
           <h1 className="text-2xl font-bold">API Management</h1>
@@ -298,6 +299,7 @@ export const ApiManagementPage = () => {
           </Card>
         </div>
       )}
+      </div>
     </div>
   );
 };
