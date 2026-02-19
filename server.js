@@ -16,6 +16,9 @@ import { GoogleAuth } from 'google-auth-library';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 
+// Disable X-Powered-By header globally
+app.disable('x-powered-by');
+
 // Serve React app static files
 app.use(express.static(join(__dirname, 'frontend/dist')));
 
@@ -90,6 +93,46 @@ async function getWebhookUrls() {
 // Middleware
 app.use(express.json());
 app.use(express.static('public'));
+
+// Security Headers Middleware
+app.use((req, res, next) => {
+  // Remove X-Powered-By header
+  res.removeHeader('X-Powered-By');
+  
+  // Strict-Transport-Security (HSTS)
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  
+  // Content-Security-Policy
+  res.setHeader('Content-Security-Policy', 
+    "default-src 'self'; " +
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+    "style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data: https:; " +
+    "font-src 'self' data:; " +
+    "connect-src 'self' https:; " +
+    "media-src 'self' blob:; " +
+    "frame-ancestors 'none';"
+  );
+  
+  // X-Content-Type-Options
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  
+  // X-Frame-Options
+  res.setHeader('X-Frame-Options', 'DENY');
+  
+  // Referrer-Policy
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  
+  // Permissions-Policy
+  res.setHeader('Permissions-Policy', 
+    'geolocation=(), microphone=(self), camera=()'
+  );
+  
+  // X-XSS-Protection (legacy but still useful)
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  
+  next();
+});
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, 'uploads/'),
