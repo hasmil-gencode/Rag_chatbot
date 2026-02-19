@@ -98,7 +98,7 @@ export const OrganizationsPage = () => {
                 type="text"
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                className="w-full px-3 py-2 border rounded-md"
+                className="w-full px-3 py-2 border rounded-md bg-background text-foreground"
                 required
               />
             </div>
@@ -107,7 +107,7 @@ export const OrganizationsPage = () => {
               <select
                 value={formData.type}
                 onChange={(e) => setFormData({ ...formData, type: e.target.value as any })}
-                className="w-full px-3 py-2 border rounded-md"
+                className="w-full px-3 py-2 border rounded-md bg-background text-foreground"
                 disabled={!!editingOrg}
               >
                 <option value="organization">Organization (Top Level)</option>
@@ -121,7 +121,7 @@ export const OrganizationsPage = () => {
                 <select
                   value={formData.parentId || ''}
                   onChange={(e) => setFormData({ ...formData, parentId: e.target.value || null })}
-                  className="w-full px-3 py-2 border rounded-md"
+                  className="w-full px-3 py-2 border rounded-md bg-background text-foreground"
                   required
                 >
                   <option value="">Select parent...</option>
