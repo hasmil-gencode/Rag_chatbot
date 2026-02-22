@@ -229,7 +229,7 @@ export const ApiManagementPage = () => {
       </Card>
 
       {/* API Documentation */}
-      <Card>
+      <Card className="mt-6">
         <CardHeader>
           <CardTitle>API Usage Guide</CardTitle>
         </CardHeader>
@@ -237,16 +237,17 @@ export const ApiManagementPage = () => {
           <div>
             <h3 className="font-semibold mb-2">Chat Endpoint</h3>
             <div className="bg-muted p-3 rounded text-sm font-mono">
-              POST /api/chat
+              POST /api/v1/chat
             </div>
             <p className="text-sm text-muted-foreground mt-2">Headers:</p>
             <div className="bg-muted p-3 rounded text-sm font-mono mt-1">
-              Authorization: Bearer YOUR_API_KEY
+              x-api-key: YOUR_API_KEY
             </div>
             <p className="text-sm text-muted-foreground mt-2">Request Body:</p>
             <div className="bg-muted p-3 rounded text-sm font-mono mt-1">
               {`{
   "message": "Your question here",
+  "organizationId": "optional-org-id",
   "sessionId": "optional-session-id"
 }`}
             </div>

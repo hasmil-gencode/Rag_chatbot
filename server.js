@@ -700,13 +700,15 @@ app.post('/api/chat', auth, async (req, res) => {
     // Get webhook URL from settings
     const webhooks = await getWebhookUrls();
 
-    // Send to n8n with sessionId, fileId, currentOrganizationId and timeout
+    // Send to n8n with sessionId, fileId, currentOrganizationId, chatType, and chatName
     const { data } = await axios.post(webhooks.chat, { 
       message, 
       userId: req.user.id,
       currentOrganizationId: currentOrganizationId || null,
       sessionId: chatSessionId,
-      fileId: fileId || null
+      fileId: fileId || null,
+      chatType: 'browser',
+      chatName: 'normal'
     }, {
       timeout: 60000 // 1 minute timeout
     });
@@ -789,7 +791,7 @@ async function authenticateApiKey(req, res, next) {
 // Public chat API endpoint (uses API key)
 app.post('/api/v1/chat', authenticateApiKey, async (req, res) => {
   try {
-    const { message, sessionId } = req.body;
+    const { message, sessionId, organizationId } = req.body;
 
     if (!message) {
       return res.status(400).json({ error: 'Message is required' });
@@ -812,14 +814,17 @@ app.post('/api/v1/chat', authenticateApiKey, async (req, res) => {
     const startedByEmail = user?.email || 'API User';
     const startedByName = startedByEmail.split('@')[0];
     
-    // Get user's organizations for context
-    const userAssignments = await db.collection('user_organization_assignments').find({ 
-      userId: req.user.id.toString() 
-    }).toArray();
+    // Use provided organizationId or get from user's assignments
+    let currentOrganizationId = organizationId || null;
     
-    let currentOrganizationId = null;
-    if (userAssignments.length > 0) {
-      currentOrganizationId = userAssignments[0].organizationId;
+    if (!currentOrganizationId) {
+      const userAssignments = await db.collection('user_organization_assignments').find({ 
+        userId: req.user.id.toString() 
+      }).toArray();
+      
+      if (userAssignments.length > 0) {
+        currentOrganizationId = userAssignments[0].organizationId;
+      }
     }
 
     // Save user message
@@ -841,13 +846,15 @@ app.post('/api/v1/chat', authenticateApiKey, async (req, res) => {
     // Get webhook URL
     const webhooks = await getWebhookUrls();
 
-    // Send to n8n
+    // Send to n8n with chatType and chatName
     const { data } = await axios.post(webhooks.chat, { 
       message, 
       userId: req.user.id.toString(),
       currentOrganizationId: currentOrganizationId,
       sessionId: chatSessionId,
-      fileId: null
+      fileId: null,
+      chatType: 'API',
+      chatName: req.apiKey.name
     }, {
       timeout: 60000
     });
