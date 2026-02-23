@@ -1,7 +1,6 @@
 import { useRef, useEffect, useState } from "react";
 import { ChatMessage } from "./ChatMessage";
 import { ChatInput } from "./ChatInput";
-import { FormOverlay } from "./FormOverlay";
 
 interface Message {
   id: string;
@@ -17,15 +16,15 @@ interface ChatAreaProps {
   isLoading?: boolean;
   userEmail?: string;
   hasActiveSession?: boolean;
+  onWebViewOpen?: (url: string) => void;
 }
 
-export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, hasActiveSession }: ChatAreaProps) => {
+export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, hasActiveSession, onWebViewOpen }: ChatAreaProps) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [waitingForResponse, setWaitingForResponse] = useState(false);
   const lastMessageCountRef = useRef(0);
   const lastMessageIdRef = useRef<string>('');
-  const [activeForm, setActiveForm] = useState<string | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -76,13 +75,6 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, hasAct
 
   return (
     <div className={`flex-1 flex flex-col h-screen bg-background ${hasActiveSession ? 'md:pt-0 pt-12' : ''}`}>
-      {activeForm && (
-        <FormOverlay
-          formType={activeForm}
-          onClose={() => setActiveForm(null)}
-        />
-      )}
-      
       {messages.length === 0 ? (
         <div className="flex-1 flex flex-col">
           {/* Centered greeting and input */}
@@ -117,7 +109,7 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, hasAct
                   userName={getUserName()} 
                   startedBy={msg.startedBy}
                   timestamp={msg.createdAt}
-                  onFormLinkClick={setActiveForm}
+                  onWebViewOpen={onWebViewOpen}
                 />
               ))}
               {isLoading && <ChatMessage role="assistant" content="" isTyping />}

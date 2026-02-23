@@ -29,8 +29,8 @@ let db;
 const client = new MongoClient(MONGODB_URI);
 
 await client.connect();
-db = client.db('ragchatbot_stag');
-console.log('Connected to MongoDB (ragchatbot_stag)');
+db = client.db(); // Use database from connection string
+console.log(`Connected to MongoDB (${db.databaseName})`);
 
 // Initialize default settings
 const settingsExists = await db.collection('settings').findOne({ _id: 'config' });
@@ -2331,15 +2331,26 @@ app.put('/api/groups/:id', auth, hasPermission(), async (req, res) => {
 
 app.delete('/api/groups/:id', auth, hasPermission(), async (req, res) => {
   try {
+    const groupId = req.params.id;
+    
     // Remove groupId from all orgs in this group
     await db.collection('organizations').updateMany(
-      { groupId: new ObjectId(req.params.id) },
+      { groupId: new ObjectId(groupId) },
       { $set: { groupId: null } }
     );
     
-    await db.collection('groups').deleteOne({ _id: new ObjectId(req.params.id) });
+    // Delete related chat_counts
+    await db.collection('chat_counts').deleteMany({ groupId: groupId });
+    
+    // Delete related chat_resets
+    await db.collection('chat_resets').deleteMany({ groupId: new ObjectId(groupId) });
+    
+    // Delete the group
+    await db.collection('groups').deleteOne({ _id: new ObjectId(groupId) });
+    
     res.json({ success: true });
   } catch (error) {
+    console.error('Delete group error:', error);
     res.status(500).json({ error: 'Failed to delete group' });
   }
 });
@@ -3199,55 +3210,13 @@ app.delete('/api/text-embeddings/:id', auth, async (req, res) => {
   }
 });
 
-// Form submission endpoints
-app.get('/api/form/:formType', auth, async (req, res) => {
-  try {
-    const formPath = join(__dirname, 'form-web-view', `${req.params.formType}.json`);
-    if (!fs.existsSync(formPath)) {
-      return res.status(404).json({ error: 'Form not found' });
-    }
-    const formConfig = JSON.parse(fs.readFileSync(formPath, 'utf8'));
-    res.json(formConfig);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to load form' });
-  }
-});
-
-app.post('/api/form-submission', auth, async (req, res) => {
-  try {
-    const { formType, data } = req.body;
-    
-    console.log('Form submission received:', { formType, data, user: req.user.email });
-    
-    // Fixed n8n webhook URL
-    const n8nWebhook = 'https://agent.gencode.com.my/webhook/form-submission-handler';
-    
-    // Send to n8n
-    const response = await axios.post(n8nWebhook, {
-      formType,
-      data,
-      submittedBy: req.user.email,
-      submittedAt: new Date().toISOString()
-    });
-    
-    res.json({ 
-      success: true, 
-      message: 'Thank you, your submission has been received and is being processed.',
-      data: response.data 
-    });
-  } catch (error) {
-    console.error('Form submission error:', error);
-    res.status(500).json({ error: 'Failed to submit form' });
-  }
-});
-
 // Serve React app for all other routes
 app.get('*', (req, res) => {
   res.sendFile(join(__dirname, 'frontend/dist/index.html'));
 });
 
-// Cleanup old deleted messages based on retention setting
-async function cleanupOldDeletedMessages() {
+// Cleanup old deleted messages and API usage based on retention setting
+async function cleanupOldData() {
   try {
     const settings = await db.collection('settings').findOne({ _id: 'config' });
     const retentionDays = settings?.deletedChatRetentionDays || 360;
@@ -3255,20 +3224,40 @@ async function cleanupOldDeletedMessages() {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
     
-    const result = await db.collection('deleted_messages').deleteMany({
+    // Cleanup deleted messages
+    const deletedMsgsResult = await db.collection('deleted_messages').deleteMany({
       deletedAt: { $lt: cutoffDate }
     });
     
-    if (result.deletedCount > 0) {
-      console.log(`Cleaned up ${result.deletedCount} old deleted messages (older than ${retentionDays} days)`);
+    if (deletedMsgsResult.deletedCount > 0) {
+      console.log(`Cleaned up ${deletedMsgsResult.deletedCount} old deleted messages (older than ${retentionDays} days)`);
     }
+    
+    // Cleanup API usage logs
+    const apiUsageResult = await db.collection('api_usage').deleteMany({
+      timestamp: { $lt: cutoffDate }
+    });
+    
+    if (apiUsageResult.deletedCount > 0) {
+      console.log(`Cleaned up ${apiUsageResult.deletedCount} old API usage logs (older than ${retentionDays} days)`);
+    }
+    
+    // Cleanup download tracking
+    const downloadResult = await db.collection('download_tracking').deleteMany({
+      downloadedAt: { $lt: cutoffDate }
+    });
+    
+    if (downloadResult.deletedCount > 0) {
+      console.log(`Cleaned up ${downloadResult.deletedCount} old download tracking (older than ${retentionDays} days)`);
+    }
+    
   } catch (error) {
     console.error('Cleanup error:', error);
   }
 }
 
 // Run cleanup daily
-setInterval(cleanupOldDeletedMessages, 24 * 60 * 60 * 1000);
-cleanupOldDeletedMessages(); // Run on startup
+setInterval(cleanupOldData, 24 * 60 * 60 * 1000);
+cleanupOldData(); // Run on startup
 
 app.listen(3000, () => console.log('Server running on port 3000'));

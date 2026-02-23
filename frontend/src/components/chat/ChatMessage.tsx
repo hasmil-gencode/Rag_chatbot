@@ -15,10 +15,10 @@ interface ChatMessageProps {
   userName?: string;
   startedBy?: string;
   timestamp?: Date | string;
-  onFormLinkClick?: (formType: string) => void;
+  onWebViewOpen?: (url: string) => void;
 }
 
-export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, startedBy, timestamp, onFormLinkClick }: ChatMessageProps) => {
+export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, startedBy, timestamp, onWebViewOpen }: ChatMessageProps) => {
   const isUser = role === "user";
   const userInitial = userName ? userName.charAt(0).toUpperCase() : "U";
   const userRole = localStorage.getItem('userRole') || 'user';
@@ -32,29 +32,16 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, st
   const [downloadableMatches, setDownloadableMatches] = useState<any[]>([]);
 
   // Auto-open form if message contains form link
-  useEffect(() => {
-    if (!isUser && content && !isTyping && !isStreaming && onFormLinkClick) {
-      const formLinkMatch = content.match(/\[.*?\]\(\/form\/([\w-]+)\)/);
-      if (formLinkMatch) {
-        const formType = formLinkMatch[1];
-        // Auto-open form after a short delay
-        setTimeout(() => {
-          onFormLinkClick(formType);
-        }, 500);
-      }
-    }
-  }, [content, isUser, isTyping, isStreaming, onFormLinkClick]);
-
   // Custom link renderer for ReactMarkdown
   const LinkRenderer = ({ href, children }: any) => {
-    if (href?.startsWith('/form/')) {
-      const formType = href.replace('/form/', '');
+    // External links - open in split screen
+    if (href?.startsWith('http://') || href?.startsWith('https://')) {
       return (
         <a
           href="#"
           onClick={(e) => {
             e.preventDefault();
-            onFormLinkClick?.(formType);
+            onWebViewOpen?.(href);
           }}
           className="text-blue-500 underline hover:text-blue-600 cursor-pointer"
         >
@@ -62,6 +49,7 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, st
         </a>
       );
     }
+    
     return <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 underline">{children}</a>;
   };
 

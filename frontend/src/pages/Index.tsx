@@ -13,6 +13,7 @@ import { OrganizationsPage } from "@/components/chat/OrganizationsPage";
 import { DeletedChatsPage } from "@/components/chat/DeletedChatsPage";
 import { TextEmbeddedPage } from "@/components/chat/TextEmbeddedPage";
 import { UserSettingsPage } from "@/components/chat/UserSettingsPage";
+import { WebViewPanel } from "@/components/chat/WebViewPanel";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -46,6 +47,9 @@ const Index = () => {
   const [userOrganizations, setUserOrganizations] = useState<any[]>([]);
   const [currentOrganizationId, setCurrentOrganizationId] = useState<string | null>(null);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
+  
+  // Split screen web view state
+  const [webViewUrl, setWebViewUrl] = useState<string | null>(null);
 
   // Login state
   const [email, setEmail] = useState("");
@@ -723,26 +727,39 @@ const Index = () => {
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden chat-container">
-        {currentPage === "chat" && (
-          <ChatArea
-            messages={messages}
-            onSendMessage={handleSendMessage}
-            isLoading={isLoading}
-            userEmail={userEmail}
-            hasActiveSession={!!currentSessionId}
-          />
-        )}
-        {currentPage === "files" && <FilesPage />}
-        {currentPage === "settings" && <SettingsPage />}
-        {currentPage === "api" && <ApiManagementPage />}
-        {currentPage === "groups" && <GroupsPage />}
-        {currentPage === "forms" && <FormsPage />}
-        {currentPage === "download-tracking" && <DownloadTrackingPage />}
-        {currentPage === "deleted-chats" && <DeletedChatsPage />}
-        {currentPage === "organizations" && <OrganizationsPage />}
-        {currentPage === "users" && <UsersPage />}
-        {currentPage === "text-embedded" && <TextEmbeddedPage />}
-        {currentPage === "user-settings" && <UserSettingsPage />}
+        <div className="flex h-full">
+          {/* Main content area */}
+          <div className={webViewUrl && currentPage === "chat" ? "w-1/2 flex flex-col overflow-hidden" : "flex-1 flex flex-col overflow-hidden"}>
+            {currentPage === "chat" && (
+              <ChatArea
+                messages={messages}
+                onSendMessage={handleSendMessage}
+                isLoading={isLoading}
+                userEmail={userEmail}
+                hasActiveSession={!!currentSessionId}
+                onWebViewOpen={setWebViewUrl}
+              />
+            )}
+            {currentPage === "files" && <FilesPage />}
+            {currentPage === "settings" && <SettingsPage />}
+            {currentPage === "api" && <ApiManagementPage />}
+            {currentPage === "groups" && <GroupsPage />}
+            {currentPage === "forms" && <FormsPage />}
+            {currentPage === "download-tracking" && <DownloadTrackingPage />}
+            {currentPage === "deleted-chats" && <DeletedChatsPage />}
+            {currentPage === "organizations" && <OrganizationsPage />}
+            {currentPage === "users" && <UsersPage />}
+            {currentPage === "text-embedded" && <TextEmbeddedPage />}
+            {currentPage === "user-settings" && <UserSettingsPage />}
+          </div>
+          
+          {/* Web view panel */}
+          {webViewUrl && currentPage === "chat" && (
+            <div className="w-1/2">
+              <WebViewPanel url={webViewUrl} onClose={() => setWebViewUrl(null)} />
+            </div>
+          )}
+        </div>
       </div>
     </div>
     </>
