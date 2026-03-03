@@ -29,6 +29,61 @@ export interface FileItem {
   isAllOrganizations?: boolean
 }
 
+type UnauthorizedPayload = {
+  error?: string
+  reason?: string
+  message?: string
+}
+
+type UnauthorizedHandler = (payload: UnauthorizedPayload) => void
+
+// Global 401 handler
+let onUnauthorized: UnauthorizedHandler | null = null
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null) {
+  onUnauthorized = handler
+}
+
+class ApiError extends Error {
+  status?: number
+  data?: UnauthorizedPayload
+
+  constructor(message: string, status?: number, data?: UnauthorizedPayload) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.data = data
+  }
+}
+
+function hasAuthorizationHeader(headers?: HeadersInit): boolean {
+  if (!headers) return false
+  if (headers instanceof Headers) return headers.has('Authorization')
+  if (Array.isArray(headers)) {
+    return headers.some(([key]) => key.toLowerCase() === 'authorization')
+  }
+  return Object.keys(headers).some((key) => key.toLowerCase() === 'authorization')
+}
+
+// Fetch wrapper that handles 401
+async function fetchWithAuth(url: string, options: RequestInit = {}) {
+  const response = await globalThis.fetch(url, options)
+
+  if (response.status === 401) {
+    const json = await response.json().catch(() => ({}))
+    const hasToken = Boolean(localStorage.getItem('token'))
+    const hasAuthHeader = hasAuthorizationHeader(options.headers)
+
+    if (hasToken && hasAuthHeader && onUnauthorized) {
+      onUnauthorized(json)
+    }
+
+    throw new ApiError(json.error || 'Unauthorized', response.status, json)
+  }
+
+  return response
+}
+
 export interface Message {
   _id: string
   content: string
@@ -75,7 +130,7 @@ class API {
   }
 
   async login(data: LoginData) {
-    const res = await fetch(`${API_BASE}/login`, {
+    const res = await fetchWithAuth(`${API_BASE}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -86,7 +141,7 @@ class API {
   }
 
   async changePasswordFirstLogin(tempToken: string, newPassword: string) {
-    const res = await fetch(`${API_BASE}/change-password-first-login`, {
+    const res = await fetchWithAuth(`${API_BASE}/change-password-first-login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tempToken, newPassword }),
@@ -97,7 +152,7 @@ class API {
   }
 
   async register(data: LoginData) {
-    const res = await fetch(`${API_BASE}/register`, {
+    const res = await fetchWithAuth(`${API_BASE}/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -108,7 +163,7 @@ class API {
   }
 
   async sendMessage(message: string, sessionId?: string, fileId?: string, currentOrganizationId?: string | null): Promise<{ response: string; sessionId: string }> {
-    const res = await fetch(`${API_BASE}/chat`, {
+    const res = await fetchWithAuth(`${API_BASE}/chat`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({ message, sessionId, fileId, currentOrganizationId }),
@@ -120,7 +175,7 @@ class API {
 
   async getMessages(sessionId?: string): Promise<ChatMessage[]> {
     const url = sessionId ? `${API_BASE}/messages?sessionId=${sessionId}` : `${API_BASE}/messages`
-    const res = await fetch(url, {
+    const res = await fetchWithAuth(url, {
       headers: this.getHeaders(),
     })
     if (!res.ok) throw new Error('Failed to load messages')
@@ -131,7 +186,7 @@ class API {
     const url = currentOrganizationId 
       ? `${API_BASE}/sessions?currentOrganizationId=${currentOrganizationId}`
       : `${API_BASE}/sessions`;
-    const res = await fetch(url, {
+    const res = await fetchWithAuth(url, {
       headers: this.getHeaders(),
     })
     if (!res.ok) throw new Error('Failed to load sessions')
@@ -139,7 +194,7 @@ class API {
   }
 
   async deleteSession(sessionId: string) {
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}`, {
+    const res = await fetchWithAuth(`${API_BASE}/sessions/${sessionId}`, {
       method: 'DELETE',
       headers: this.getHeaders(),
     })
@@ -152,7 +207,7 @@ class API {
     formData.append('file', file)
     formData.append('sharedWith', JSON.stringify(sharedWith))
     
-    const res = await fetch(`${API_BASE}/upload`, {
+    const res = await fetchWithAuth(`${API_BASE}/upload`, {
       method: 'POST',
       headers: this.getAuthHeaders(),
       body: formData,
@@ -166,7 +221,7 @@ class API {
     const url = currentOrganizationId
       ? `${API_BASE}/files?organizationId=${currentOrganizationId}`
       : `${API_BASE}/files`;
-    const res = await fetch(url, {
+    const res = await fetchWithAuth(url, {
       headers: this.getHeaders(),
     })
     if (!res.ok) throw new Error('Failed to load files')
@@ -174,7 +229,7 @@ class API {
   }
 
   async deleteFile(fileId: string) {
-    const res = await fetch(`${API_BASE}/files/${fileId}`, {
+    const res = await fetchWithAuth(`${API_BASE}/files/${fileId}`, {
       method: 'DELETE',
       headers: this.getHeaders(),
     })
@@ -183,7 +238,7 @@ class API {
   }
 
   async getSettings(): Promise<Settings> {
-    const res = await fetch(`${API_BASE}/settings`, {
+    const res = await fetchWithAuth(`${API_BASE}/settings`, {
       headers: this.getHeaders(),
     })
     if (!res.ok) throw new Error('Failed to load settings')
@@ -191,7 +246,7 @@ class API {
   }
 
   async updateSettings(settings: Settings) {
-    const res = await fetch(`${API_BASE}/settings`, {
+    const res = await fetchWithAuth(`${API_BASE}/settings`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify(settings),
@@ -204,7 +259,7 @@ class API {
     const formData = new FormData()
     formData.append('logo', file)
 
-    const res = await fetch(`${API_BASE}/upload-logo`, {
+    const res = await fetchWithAuth(`${API_BASE}/upload-logo`, {
       method: 'POST',
       headers: this.getAuthHeaders(),
       body: formData,
@@ -216,7 +271,7 @@ class API {
 
   // Forms Management
   async getForms() {
-    const res = await fetch(`${API_BASE}/forms`, {
+    const res = await fetchWithAuth(`${API_BASE}/forms`, {
       headers: this.getHeaders(),
     })
     const json = await res.json()
@@ -230,7 +285,7 @@ class API {
     formData.append('type', 'form')
     formData.append('sharedWith', JSON.stringify(sharedWith))
     
-    const res = await fetch(`${API_BASE}/upload`, {
+    const res = await fetchWithAuth(`${API_BASE}/upload`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
       body: formData,
@@ -242,7 +297,7 @@ class API {
 
   // ============= RBAC =============
   async getPermissions() {
-    const res = await fetch(`${API_BASE}/permissions`, {
+    const res = await fetchWithAuth(`${API_BASE}/permissions`, {
       headers: this.getHeaders(),
     })
     if (!res.ok) throw new Error('Failed to load permissions')
@@ -250,7 +305,7 @@ class API {
   }
 
   async getRoles() {
-    const res = await fetch(`${API_BASE}/roles`, {
+    const res = await fetchWithAuth(`${API_BASE}/roles`, {
       headers: this.getHeaders(),
     })
     if (!res.ok) throw new Error('Failed to load roles')
@@ -258,7 +313,7 @@ class API {
   }
 
   async createRole(data: { name: string; description: string; permissions: string[]; status: string }) {
-    const res = await fetch(`${API_BASE}/roles`, {
+    const res = await fetchWithAuth(`${API_BASE}/roles`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify(data),
@@ -269,7 +324,7 @@ class API {
   }
 
   async updateRole(id: string, data: { name: string; description: string; permissions: string[]; status: string }) {
-    const res = await fetch(`${API_BASE}/roles/${id}`, {
+    const res = await fetchWithAuth(`${API_BASE}/roles/${id}`, {
       method: 'PUT',
       headers: this.getHeaders(),
       body: JSON.stringify(data),
@@ -280,7 +335,7 @@ class API {
   }
 
   async deleteRole(id: string) {
-    const res = await fetch(`${API_BASE}/roles/${id}`, {
+    const res = await fetchWithAuth(`${API_BASE}/roles/${id}`, {
       method: 'DELETE',
       headers: this.getHeaders(),
     })
@@ -292,7 +347,7 @@ class API {
   // ===== Phase 5: Multi-Org APIs =====
   
   async getUserInfo() {
-    const res = await fetch(`${API_BASE}/user/me`, {
+    const res = await fetchWithAuth(`${API_BASE}/user/me`, {
       headers: this.getHeaders(),
     })
     if (!res.ok) throw new Error('Failed to load user info')
@@ -300,7 +355,7 @@ class API {
   }
   
   async getUsers() {
-    const res = await fetch(`${API_BASE}/users`, {
+    const res = await fetchWithAuth(`${API_BASE}/users`, {
       headers: this.getHeaders(),
     })
     if (!res.ok) throw new Error('Failed to load users')
@@ -308,7 +363,7 @@ class API {
   }
 
   async deleteUser(userId: string) {
-    const res = await fetch(`${API_BASE}/users/${userId}`, {
+    const res = await fetchWithAuth(`${API_BASE}/users/${userId}`, {
       method: 'DELETE',
       headers: this.getHeaders(),
     })
@@ -318,7 +373,7 @@ class API {
   }
 
   async resetUserPassword(userId: string, defaultPassword: string) {
-    const res = await fetch(`${API_BASE}/users/${userId}/reset-password`, {
+    const res = await fetchWithAuth(`${API_BASE}/users/${userId}/reset-password`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({ defaultPassword }),
@@ -333,7 +388,7 @@ class API {
     if (password) body.password = password;
     if (canUploadFiles !== undefined) body.canUploadFiles = canUploadFiles;
     
-    const res = await fetch(`${API_BASE}/users/${userId}`, {
+    const res = await fetchWithAuth(`${API_BASE}/users/${userId}`, {
       method: 'PUT',
       headers: this.getHeaders(),
       body: JSON.stringify(body),
@@ -344,7 +399,7 @@ class API {
   }
 
   async getUserAssignments(userId: string) {
-    const res = await fetch(`${API_BASE}/user-assignments/${userId}`, {
+    const res = await fetchWithAuth(`${API_BASE}/user-assignments/${userId}`, {
       headers: this.getHeaders(),
     })
     if (!res.ok) throw new Error('Failed to load user assignments')
@@ -352,7 +407,7 @@ class API {
   }
 
   async getAllOrganizations() {
-    const res = await fetch(`${API_BASE}/organizations`, {
+    const res = await fetchWithAuth(`${API_BASE}/organizations`, {
       headers: this.getHeaders(),
     })
     if (!res.ok) throw new Error('Failed to load organizations')
@@ -360,7 +415,7 @@ class API {
   }
 
   async deleteOrganization(orgId: string) {
-    const res = await fetch(`${API_BASE}/organizations/${orgId}`, {
+    const res = await fetchWithAuth(`${API_BASE}/organizations/${orgId}`, {
       method: 'DELETE',
       headers: this.getHeaders(),
     })
@@ -370,7 +425,7 @@ class API {
   }
 
   async updateOrganization(orgId: string, name: string, type: string, parentId: string | null) {
-    const res = await fetch(`${API_BASE}/organizations/${orgId}`, {
+    const res = await fetchWithAuth(`${API_BASE}/organizations/${orgId}`, {
       method: 'PUT',
       headers: this.getHeaders(),
       body: JSON.stringify({ name, type, parentId }),
@@ -381,7 +436,7 @@ class API {
   }
   
   async testWebhook(url: string) {
-    const res = await fetch(`${API_BASE}/test-webhook`, {
+    const res = await fetchWithAuth(`${API_BASE}/test-webhook`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({ url }),
@@ -392,7 +447,7 @@ class API {
   }
 
   async testS3(settings: any) {
-    const res = await fetch(`${API_BASE}/test-s3`, {
+    const res = await fetchWithAuth(`${API_BASE}/test-s3`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify(settings),
@@ -404,7 +459,7 @@ class API {
 
   // API Key Management
   async getApiKeys() {
-    const res = await fetch(`${API_BASE}/keys`, {
+    const res = await fetchWithAuth(`${API_BASE}/keys`, {
       headers: this.getHeaders(),
     })
     const json = await res.json()
@@ -413,7 +468,7 @@ class API {
   }
 
   async createApiKey(name: string, userId: string) {
-    const res = await fetch(`${API_BASE}/keys`, {
+    const res = await fetchWithAuth(`${API_BASE}/keys`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({ name, userId }),
@@ -424,7 +479,7 @@ class API {
   }
 
   async toggleApiKey(id: string, isActive: boolean) {
-    const res = await fetch(`${API_BASE}/keys/${id}`, {
+    const res = await fetchWithAuth(`${API_BASE}/keys/${id}`, {
       method: 'PATCH',
       headers: this.getHeaders(),
       body: JSON.stringify({ isActive }),
@@ -435,7 +490,7 @@ class API {
   }
 
   async deleteApiKey(id: string) {
-    const res = await fetch(`${API_BASE}/keys/${id}`, {
+    const res = await fetchWithAuth(`${API_BASE}/keys/${id}`, {
       method: 'DELETE',
       headers: this.getHeaders(),
     })
@@ -445,7 +500,7 @@ class API {
   }
 
   async getApiUsage() {
-    const res = await fetch(`${API_BASE}/usage`, {
+    const res = await fetchWithAuth(`${API_BASE}/usage`, {
       headers: this.getHeaders(),
     })
     const json = await res.json()
@@ -455,7 +510,7 @@ class API {
 
   // Group Management
   async getGroups() {
-    const res = await fetch(`${API_BASE}/groups`, {
+    const res = await fetchWithAuth(`${API_BASE}/groups`, {
       headers: this.getHeaders(),
     })
     const json = await res.json()
@@ -464,7 +519,7 @@ class API {
   }
 
   async createGroup(data: { name: string; storageLimitGB: number; chatQuota: number; quotaType: string; renewDay: number; organizationIds: string[] }) {
-    const res = await fetch(`${API_BASE}/groups`, {
+    const res = await fetchWithAuth(`${API_BASE}/groups`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify(data),
@@ -475,7 +530,7 @@ class API {
   }
 
   async updateGroup(id: string, data: { name: string; storageLimitGB: number; chatQuota: number; quotaType: string; renewDay: number; organizationIds: string[] }) {
-    const res = await fetch(`${API_BASE}/groups/${id}`, {
+    const res = await fetchWithAuth(`${API_BASE}/groups/${id}`, {
       method: 'PUT',
       headers: this.getHeaders(),
       body: JSON.stringify(data),
@@ -486,7 +541,7 @@ class API {
   }
 
   async getChatUsage() {
-    const res = await fetch(`${API_BASE}/chat-usage`, {
+    const res = await fetchWithAuth(`${API_BASE}/chat-usage`, {
       headers: this.getHeaders(),
     })
     if (!res.ok) throw new Error('Failed to get chat usage')
@@ -494,7 +549,7 @@ class API {
   }
 
   async updateUserName(fullName: string) {
-    const res = await fetch(`${API_BASE}/user/name`, {
+    const res = await fetchWithAuth(`${API_BASE}/user/name`, {
       method: 'PUT',
       headers: this.getHeaders(),
       body: JSON.stringify({ fullName }),
@@ -505,7 +560,7 @@ class API {
   }
 
   async deleteGroup(id: string) {
-    const res = await fetch(`${API_BASE}/groups/${id}`, {
+    const res = await fetchWithAuth(`${API_BASE}/groups/${id}`, {
       method: 'DELETE',
       headers: this.getHeaders(),
     })
@@ -515,7 +570,7 @@ class API {
   }
 
   async resetGroupQuota(id: string) {
-    const res = await fetch(`${API_BASE}/groups/${id}/reset-quota`, {
+    const res = await fetchWithAuth(`${API_BASE}/groups/${id}/reset-quota`, {
       method: 'POST',
       headers: this.getHeaders(),
     })
@@ -525,7 +580,7 @@ class API {
   }
 
   async addGroupBonus(id: string, bonusQuota: number) {
-    const res = await fetch(`${API_BASE}/groups/${id}/add-bonus`, {
+    const res = await fetchWithAuth(`${API_BASE}/groups/${id}/add-bonus`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({ bonusQuota }),
@@ -536,7 +591,7 @@ class API {
   }
 
   async updateGroupRenewDay(id: string, renewDay: number) {
-    const res = await fetch(`${API_BASE}/groups/${id}/renew-day`, {
+    const res = await fetchWithAuth(`${API_BASE}/groups/${id}/renew-day`, {
       method: 'PUT',
       headers: this.getHeaders(),
       body: JSON.stringify({ renewDay }),
@@ -549,7 +604,7 @@ class API {
   // ===== Phase 5: Multi-Org APIs =====
   
   async getStorageInfo() {
-    const res = await fetch(`${API_BASE}/storage-info`, {
+    const res = await fetchWithAuth(`${API_BASE}/storage-info`, {
       headers: this.getHeaders(),
     })
     const json = await res.json()
@@ -558,7 +613,7 @@ class API {
   }
 
   async getMyOrganizations() {
-    const res = await fetch(`${API_BASE}/my-organizations`, {
+    const res = await fetchWithAuth(`${API_BASE}/my-organizations`, {
       headers: this.getHeaders(),
     })
     if (!res.ok) throw new Error('Failed to load organizations')
@@ -566,7 +621,7 @@ class API {
   }
 
   async getMyOrganizationsHierarchy() {
-    const res = await fetch(`${API_BASE}/my-organizations-hierarchy`, {
+    const res = await fetchWithAuth(`${API_BASE}/my-organizations-hierarchy`, {
       headers: this.getHeaders(),
     })
     if (!res.ok) throw new Error('Failed to load organizations hierarchy')
@@ -574,7 +629,7 @@ class API {
   }
 
   async switchOrganization(organizationId: string) {
-    const res = await fetch(`${API_BASE}/switch-organization`, {
+    const res = await fetchWithAuth(`${API_BASE}/switch-organization`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({ organizationId }),
@@ -584,7 +639,7 @@ class API {
   }
 
   async createUser(email: string, password: string, fullName: string, canUploadFiles: boolean = true) {
-    const res = await fetch(`${API_BASE}/users`, {
+    const res = await fetchWithAuth(`${API_BASE}/users`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({ email, password, fullName, canUploadFiles }),
@@ -595,7 +650,7 @@ class API {
   }
 
   async createOrganization(name: string, type: string, parentId: string | null) {
-    const res = await fetch(`${API_BASE}/organizations`, {
+    const res = await fetchWithAuth(`${API_BASE}/organizations`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({ name, type, parentId }),
@@ -606,7 +661,7 @@ class API {
   }
 
   async assignUserToOrganizations(userId: string, organizationIds: string[]) {
-    const res = await fetch(`${API_BASE}/user-assignments`, {
+    const res = await fetchWithAuth(`${API_BASE}/user-assignments`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({ userId, organizationIds }),

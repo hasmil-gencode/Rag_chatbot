@@ -10,7 +10,7 @@ import { dirname, join } from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import { GoogleAuth } from 'google-auth-library';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -153,6 +153,16 @@ const auth = async (req, res, next) => {
       return res.status(401).json({ error: 'User not found or inactive' });
     }
     
+    // Check if this is the active session
+    if (user.activeSessionToken && user.activeSessionToken !== token) {
+      console.log(`[SESSION CHECK] User ${user.email} - Token mismatch! Logging out old session.`);
+      return res.status(401).json({ 
+        error: 'Session expired',
+        reason: 'logged_in_elsewhere',
+        message: 'You have been logged out because you logged in from another device or browser.'
+      });
+    }
+    
     req.user = {
       id: user._id,
       email: user.email,
@@ -208,6 +218,20 @@ app.post('/api/login', async (req, res) => {
     email: user.email,
     role: user.role
   }, JWT_SECRET);
+  
+  console.log(`[LOGIN] User ${email} logged in. Storing new session token.`);
+  
+  // Store active session token (single session per user)
+  await db.collection('users').updateOne(
+    { _id: user._id },
+    { 
+      $set: { 
+        activeSessionToken: token,
+        lastLoginAt: new Date(),
+        lastLoginIP: req.ip
+      } 
+    }
+  );
   
   res.json({ 
     success: true, 
@@ -2658,26 +2682,41 @@ app.post('/api/transcribe', auth, upload.single('audio'), async (req, res) => {
       }
 
       try {
-        const genAI = new GoogleGenerativeAI(geminiSttApiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const ai = new GoogleGenAI({ apiKey: geminiSttApiKey });
 
         // Read audio file
         const audioData = fs.readFileSync(req.file.path);
         const base64Audio = audioData.toString('base64');
+        const mimeType = req.file.mimetype || 'audio/webm';
 
-        const result = await model.generateContent([
-          {
-            inlineData: {
-              mimeType: 'audio/webm',
-              data: base64Audio
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  inlineData: {
+                    mimeType,
+                    data: base64Audio
+                  }
+                },
+                {
+                  text: 'Transcribe this audio to text. Keep mixed languages as spoken and do not translate unless asked. Return only the transcription.'
+                }
+              ]
             }
-          },
-          'Transcribe this audio to text. Only return the transcribed text, nothing else.'
-        ]);
+          ]
+        });
 
         fs.unlinkSync(req.file.path);
 
-        const transcript = result.response.text().trim();
+        const responseText = typeof response.text === 'function' ? response.text() : response.text;
+        const fallbackText = response?.candidates?.[0]?.content?.parts
+          ?.map(part => part.text)
+          ?.filter(Boolean)
+          ?.join('');
+        const transcript = (responseText || fallbackText || '').trim();
         res.json({ text: transcript, language: voiceLanguage });
       } catch (geminiError) {
         fs.unlinkSync(req.file.path);

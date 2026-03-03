@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Toaster, toast } from "sonner";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { ChatArea } from "@/components/chat/ChatArea";
@@ -14,7 +14,7 @@ import { DeletedChatsPage } from "@/components/chat/DeletedChatsPage";
 import { TextEmbeddedPage } from "@/components/chat/TextEmbeddedPage";
 import { UserSettingsPage } from "@/components/chat/UserSettingsPage";
 import { WebViewPanel } from "@/components/chat/WebViewPanel";
-import { api } from "@/lib/api";
+import { api, setUnauthorizedHandler } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -47,6 +47,8 @@ const Index = () => {
   const [userOrganizations, setUserOrganizations] = useState<any[]>([]);
   const [currentOrganizationId, setCurrentOrganizationId] = useState<string | null>(null);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
+  const unauthorizedHandledRef = useRef(false);
+  const idleTimerRef = useRef<number | null>(null);
   
   // Split screen web view state
   const [webViewUrl, setWebViewUrl] = useState<string | null>(null);
@@ -79,6 +81,19 @@ const Index = () => {
       loadInitialData();
     }
   }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const sessionCheckInterval = setInterval(async () => {
+      try {
+        await api.getUserInfo();
+      } catch (error) {
+        console.log("[SESSION CHECK] Session check failed:", error);
+      }
+    }, 15000);
+
+    return () => clearInterval(sessionCheckInterval);
+  }, [isAuthenticated]);
 
   const loadInitialData = async () => {
     try {
@@ -141,6 +156,7 @@ const Index = () => {
       setUserEmail(data.user?.email || email);
       setUserRole(data.user?.role || "user");
       setIsAuthenticated(true);
+      unauthorizedHandledRef.current = false;
       
       // Load user data after authentication
       await loadInitialData();
@@ -181,6 +197,7 @@ const Index = () => {
       setUserEmail(data.user?.email || email);
       setUserRole(data.user?.role || "user");
       setIsAuthenticated(true);
+      unauthorizedHandledRef.current = false;
       
       // Close modal and reset state
       setShowChangePasswordModal(false);
@@ -200,7 +217,7 @@ const Index = () => {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     localStorage.removeItem("token");
     localStorage.removeItem("userEmail");
     localStorage.removeItem("userRole");
@@ -214,7 +231,44 @@ const Index = () => {
     setUserRole("");
     setUserOrganizations([]);
     setCurrentOrganizationId(null);
-  };
+  }, []);
+
+  const resetIdleTimer = useCallback(() => {
+    if (!isAuthenticated) return;
+    if (idleTimerRef.current) {
+      window.clearTimeout(idleTimerRef.current);
+    }
+    idleTimerRef.current = window.setTimeout(() => {
+      handleLogout();
+      toast.error("Logged out after 30 minutes of inactivity.");
+    }, 30 * 60 * 1000);
+  }, [handleLogout, isAuthenticated]);
+
+  useEffect(() => {
+    setUnauthorizedHandler((payload) => {
+      if (unauthorizedHandledRef.current) return;
+      unauthorizedHandledRef.current = true;
+      handleLogout();
+      toast.error(payload?.message || "Session expired. Please log in again.");
+    });
+    return () => setUnauthorizedHandler(null);
+  }, [handleLogout]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    resetIdleTimer();
+    const events = ["mousemove", "mousedown", "keydown", "scroll", "touchstart", "focus"];
+    const handleActivity = () => resetIdleTimer();
+    events.forEach((event) => window.addEventListener(event, handleActivity));
+
+    return () => {
+      events.forEach((event) => window.removeEventListener(event, handleActivity));
+      if (idleTimerRef.current) {
+        window.clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+    };
+  }, [isAuthenticated, resetIdleTimer]);
 
   const handleOrganizationChange = async (orgId: string) => {
     setCurrentOrganizationId(orgId);
