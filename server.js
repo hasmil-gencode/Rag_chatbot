@@ -2680,7 +2680,6 @@ app.post('/api/transcribe', auth, upload.single('audio'), async (req, res) => {
         fs.unlinkSync(req.file.path);
         return res.status(400).json({ error: 'Gemini STT API Key not configured. Please set it in Settings.' });
       }
-
       try {
         const ai = new GoogleGenAI({ apiKey: geminiSttApiKey });
 
