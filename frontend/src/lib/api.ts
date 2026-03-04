@@ -467,11 +467,11 @@ class API {
     return json
   }
 
-  async createApiKey(name: string, userId: string) {
+  async createApiKey(name: string, userId: string, generateShortKey: boolean = false) {
     const res = await fetchWithAuth(`${API_BASE}/keys`, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({ name, userId }),
+      body: JSON.stringify({ name, userId, generateShortKey }),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to create API key')

@@ -784,7 +784,13 @@ async function authenticateApiKey(req, res, next) {
   }
 
   try {
-    const keyDoc = await db.collection('api_keys').findOne({ key: apiKey });
+    // Check both full key and short key
+    const keyDoc = await db.collection('api_keys').findOne({
+      $or: [
+        { key: apiKey },
+        { shortKey: apiKey }
+      ]
+    });
     
     if (!keyDoc) {
       return res.status(401).json({ error: 'Invalid API key' });
@@ -2207,13 +2213,21 @@ app.get('/api/keys', auth, hasPermission(), async (req, res) => {
 
 app.post('/api/keys', auth, hasPermission(), async (req, res) => {
   try {
-    const { name, userId } = req.body;
+    const { name, userId, generateShortKey } = req.body;
     
     // Generate API key
     const key = 'gk_' + crypto.randomBytes(32).toString('hex');
     
+    // Generate short key if requested
+    let shortKey = null;
+    if (generateShortKey) {
+      shortKey = await generateUniqueShortKey();
+    }
+    
     const apiKey = {
       key,
+      shortKey,
+      hasShortKey: !!generateShortKey,
       name,
       userId: new ObjectId(userId),
       isActive: true,
@@ -2222,11 +2236,35 @@ app.post('/api/keys', auth, hasPermission(), async (req, res) => {
     };
     
     await db.collection('api_keys').insertOne(apiKey);
-    res.json({ success: true, key });
+    res.json({ success: true, key, shortKey });
   } catch (error) {
     res.status(500).json({ error: 'Failed to create API key' });
   }
 });
+
+// Helper function to generate unique 6-char short key
+async function generateUniqueShortKey() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let shortKey;
+  let attempts = 0;
+  const maxAttempts = 10;
+  
+  while (attempts < maxAttempts) {
+    shortKey = '';
+    for (let i = 0; i < 6; i++) {
+      shortKey += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    
+    // Check if unique
+    const existing = await db.collection('api_keys').findOne({ shortKey });
+    if (!existing) {
+      return shortKey;
+    }
+    attempts++;
+  }
+  
+  throw new Error('Failed to generate unique short key');
+}
 
 app.patch('/api/keys/:id', auth, hasPermission(), async (req, res) => {
   try {

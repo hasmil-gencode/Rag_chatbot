@@ -10,6 +10,8 @@ import { Plus, Copy, Power, Trash2, Eye, EyeOff } from "lucide-react";
 interface ApiKey {
   _id: string;
   key: string;
+  shortKey?: string;
+  hasShortKey?: boolean;
   name: string;
   userId: string;
   userEmail: string;
@@ -34,6 +36,7 @@ export const ApiManagementPage = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
   const [selectedUserId, setSelectedUserId] = useState("");
+  const [generateShortKey, setGenerateShortKey] = useState(false);
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -76,10 +79,11 @@ export const ApiManagementPage = () => {
       return;
     }
     try {
-      await api.createApiKey(newKeyName, selectedUserId);
+      await api.createApiKey(newKeyName, selectedUserId, generateShortKey);
       setShowCreateModal(false);
       setNewKeyName("");
       setSelectedUserId("");
+      setGenerateShortKey(false);
       loadKeys();
       toast.success("API key created");
     } catch (error: any) {
@@ -172,6 +176,17 @@ export const ApiManagementPage = () => {
                         <Copy className="w-4 h-4" />
                       </button>
                     </div>
+                    {key.hasShortKey && key.shortKey && (
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs text-muted-foreground">Short Key:</span>
+                        <code className="text-sm bg-blue-100 dark:bg-blue-900 text-blue-900 dark:text-blue-100 px-2 py-1 rounded font-bold">
+                          {key.shortKey}
+                        </code>
+                        <button onClick={() => copyToClipboard(key.shortKey!)} className="text-muted-foreground hover:text-foreground">
+                          <Copy className="w-4 h-4" />
+                        </button>
+                      </div>
+                    )}
                     <p className="text-xs text-muted-foreground">
                       User: {key.userEmail} | Created: {new Date(key.createdAt).toLocaleString()} | 
                       Last used: {key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : 'Never'}
@@ -291,6 +306,18 @@ export const ApiManagementPage = () => {
                     </option>
                   ))}
                 </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="generateShortKey"
+                  checked={generateShortKey}
+                  onChange={(e) => setGenerateShortKey(e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <Label htmlFor="generateShortKey" className="cursor-pointer">
+                  Generate Short Key (6 characters) - Easier for touchscreen devices
+                </Label>
               </div>
               <div className="flex gap-2">
                 <Button onClick={handleCreateKey} disabled={!newKeyName || !selectedUserId}>Create</Button>
