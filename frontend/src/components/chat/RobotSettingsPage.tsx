@@ -552,6 +552,55 @@ export const RobotSettingsPage = () => {
             </Card>
           </div>
         )}
+
+        {/* API Documentation */}
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle>Robot API Documentation</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div>
+              <h3 className="font-semibold mb-2">Get Robot Data</h3>
+              <p className="text-sm text-muted-foreground mb-2">Returns all robot settings (navigation, motion, emotion) linked to the API key.</p>
+              <div className="bg-muted p-3 rounded text-sm font-mono">GET /api/robot-data</div>
+              <p className="text-sm text-muted-foreground mt-2">Headers:</p>
+              <div className="bg-muted p-3 rounded text-sm font-mono mt-1">x-api-key: YOUR_API_KEY</div>
+              <p className="text-sm text-muted-foreground mt-2">Response:</p>
+              <div className="bg-muted p-3 rounded text-sm font-mono mt-1 whitespace-pre">{`{
+  "name": "Robot 1",
+  "navigation": [
+    { "id": "lobby", "title": "Lobby", "description": "Main entrance" }
+  ],
+  "motion": [
+    { "id": "wave", "name": "Wave Hand" }
+  ],
+  "emotion": [
+    { "id": "happy", "name": "Happy" }
+  ]
+}`}</div>
+            </div>
+
+            <div>
+              <h3 className="font-semibold mb-2">Sync Navigation Data</h3>
+              <p className="text-sm text-muted-foreground mb-2">Send navigation data from robot on startup. Only updates if data has changed.</p>
+              <div className="bg-muted p-3 rounded text-sm font-mono">POST /api/robot-navigation</div>
+              <p className="text-sm text-muted-foreground mt-2">Headers:</p>
+              <div className="bg-muted p-3 rounded text-sm font-mono mt-1">{`x-api-key: YOUR_API_KEY
+Content-Type: application/json`}</div>
+              <p className="text-sm text-muted-foreground mt-2">Request Body:</p>
+              <div className="bg-muted p-3 rounded text-sm font-mono mt-1 whitespace-pre">{`{
+  "navigation": [
+    { "id": "lobby", "title": "Lobby", "description": "Main entrance area" },
+    { "id": "room_a", "title": "Meeting Room A", "description": "First floor" }
+  ]
+}`}</div>
+              <p className="text-sm text-muted-foreground mt-2">Response (unchanged):</p>
+              <div className="bg-muted p-3 rounded text-sm font-mono mt-1">{`{ "updated": false, "message": "Navigation data unchanged" }`}</div>
+              <p className="text-sm text-muted-foreground mt-2">Response (updated):</p>
+              <div className="bg-muted p-3 rounded text-sm font-mono mt-1">{`{ "updated": true, "message": "Navigation updated with 2 entries" }`}</div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

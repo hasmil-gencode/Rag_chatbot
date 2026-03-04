@@ -3503,6 +3503,43 @@ app.get('/api/robot-data', authenticateApiKey, async (req, res) => {
   }
 });
 
+// Sync navigation data from robot
+app.post('/api/robot-navigation', authenticateApiKey, async (req, res) => {
+  try {
+    if (!req.apiKey.robotSettingId) {
+      return res.status(404).json({ error: 'No robot setting linked to this API key' });
+    }
+    
+    const { navigation } = req.body;
+    
+    if (!Array.isArray(navigation)) {
+      return res.status(400).json({ error: 'navigation must be an array of { id, title, description }' });
+    }
+    
+    const robot = await db.collection('robot_settings').findOne({ _id: req.apiKey.robotSettingId });
+    
+    if (!robot) {
+      return res.status(404).json({ error: 'Robot setting not found' });
+    }
+    
+    // Compare - only update if different
+    const isSame = JSON.stringify(robot.navigation) === JSON.stringify(navigation);
+    
+    if (isSame) {
+      return res.json({ updated: false, message: 'Navigation data unchanged' });
+    }
+    
+    await db.collection('robot_settings').updateOne(
+      { _id: req.apiKey.robotSettingId },
+      { $set: { navigation, updatedAt: new Date() } }
+    );
+    
+    res.json({ updated: true, message: `Navigation updated with ${navigation.length} entries` });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update navigation' });
+  }
+});
+
 // Serve React app for all other routes
 app.get('*', (req, res) => {
   res.sendFile(join(__dirname, 'frontend/dist/index.html'));
