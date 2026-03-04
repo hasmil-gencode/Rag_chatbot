@@ -467,11 +467,11 @@ class API {
     return json
   }
 
-  async createApiKey(name: string, userId: string, generateShortKey: boolean = false) {
+  async createApiKey(name: string, userId: string, generateShortKey: boolean = false, robotSettingId: string | null = null) {
     const res = await fetchWithAuth(`${API_BASE}/keys`, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({ name, userId, generateShortKey }),
+      body: JSON.stringify({ name, userId, generateShortKey, robotSettingId }),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to create API key')
@@ -668,6 +668,58 @@ class API {
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to assign user')
+    return json
+  }
+
+  // Robot Settings
+  async getRobotSettings() {
+    const res = await fetchWithAuth(`${API_BASE}/robot-settings`, {
+      headers: this.getHeaders(),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(text || 'Failed to get robot settings')
+    }
+    return res.json()
+  }
+
+  async getRobotSetting(id: string) {
+    const res = await fetchWithAuth(`${API_BASE}/robot-settings/${id}`, {
+      headers: this.getHeaders(),
+    })
+    if (!res.ok) throw new Error('Failed to get robot setting')
+    return res.json()
+  }
+
+  async createRobotSetting(name: string, description: string) {
+    const res = await fetchWithAuth(`${API_BASE}/robot-settings`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ name, description }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to create robot setting')
+    return json
+  }
+
+  async updateRobotSetting(id: string, data: any) {
+    const res = await fetchWithAuth(`${API_BASE}/robot-settings/${id}`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify(data),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to update robot setting')
+    return json
+  }
+
+  async deleteRobotSetting(id: string) {
+    const res = await fetchWithAuth(`${API_BASE}/robot-settings/${id}`, {
+      method: 'DELETE',
+      headers: this.getHeaders(),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || json.message || 'Failed to delete robot setting')
     return json
   }
 }

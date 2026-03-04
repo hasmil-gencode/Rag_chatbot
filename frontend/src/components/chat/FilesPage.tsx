@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { File, Trash2, Upload } from "lucide-react";
+import { Download, File, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
+import { downloadFile } from "@/lib/fileHelper";
 
 export const FilesPage = () => {
   const [files, setFiles] = useState<any[]>([]);
@@ -82,6 +83,15 @@ export const FilesPage = () => {
       toast.success("File deleted");
     } catch (error: any) {
       toast.error(error.message);
+    }
+  };
+
+  const handleDownload = async (id: string) => {
+    try {
+      const fileName = await downloadFile(id);
+      toast.success(`Downloaded: ${fileName}`);
+    } catch (error: any) {
+      toast.error(error.message || "Download failed");
     }
   };
 
@@ -207,11 +217,20 @@ export const FilesPage = () => {
                       {new Date(file.uploadedAt).toLocaleDateString()}
                     </td>
                     <td className="px-4 py-3 text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDownload(file.id)}
+                        aria-label={`Download ${file.name}`}
+                      >
+                        <Download className="w-4 h-4" />
+                      </Button>
                       {(file.userId === userId || isDeveloper) && (
                         <Button
                           variant="ghost"
                           size="sm"
                           onClick={() => handleDelete(file.id)}
+                          aria-label={`Delete ${file.name}`}
                         >
                           <Trash2 className="w-4 h-4" />
                         </Button>

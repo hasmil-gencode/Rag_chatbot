@@ -1558,13 +1558,53 @@ app.get('/api/forms', auth, async (req, res) => {
 app.get('/api/files/:id/download', auth, async (req, res) => {
   try {
     const file = await db.collection('files').findOne({ 
-      _id: new ObjectId(req.params.id),
-      type: 'form',
-      isDownloadable: true
+      _id: new ObjectId(req.params.id)
     });
     
     if (!file) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    // Forms must be explicitly downloadable
+    if (file.type === 'form' && !file.isDownloadable) {
       return res.status(404).json({ error: 'File not found or not downloadable' });
+    }
+
+    // Access control for non-developers when file is restricted
+    if (req.user.role !== 'developer') {
+      const sharedWith = Array.isArray(file.sharedWith) ? file.sharedWith : [];
+      if (sharedWith.length > 0) {
+        const userId = new ObjectId(req.user.id);
+        const assignments = await db.collection('user_organization_assignments')
+          .find({ userId })
+          .toArray();
+        
+        if (assignments.length === 0) {
+          return res.status(403).json({ error: 'No organization access' });
+        }
+        
+        const assignedOrgs = await db.collection('organizations')
+          .find({ _id: { $in: assignments.map(a => a.organizationId) } })
+          .toArray();
+        
+        const allOrgIds = new Set(assignments.map(a => a.organizationId.toString()));
+        
+        for (const org of assignedOrgs) {
+          if (org.path && Array.isArray(org.path)) {
+            const parents = await db.collection('organizations')
+              .find({ name: { $in: org.path } })
+              .toArray();
+            parents.forEach(p => allOrgIds.add(p._id.toString()));
+          }
+        }
+        
+        const sharedWithIds = sharedWith.map(id => id.toString());
+        const hasAccess = sharedWithIds.some(id => allOrgIds.has(id));
+        
+        if (!hasAccess) {
+          return res.status(403).json({ error: 'Access denied' });
+        }
+      }
     }
     
     // Track download
@@ -1579,7 +1619,7 @@ app.get('/api/files/:id/download', auth, async (req, res) => {
     });
     
     // Generate S3 signed URL if using S3
-    if (file.url.startsWith('https://') && file.url.includes('.s3.')) {
+    if (file.url?.startsWith('https://') && file.url.includes('.s3.')) {
       const s3Client = await getS3Client();
       if (s3Client) {
         try {
@@ -2196,12 +2236,18 @@ app.get('/api/keys', auth, hasPermission(), async (req, res) => {
   try {
     const keys = await db.collection('api_keys').find().sort({ createdAt: -1 }).toArray();
     
-    // Include user email for each key
+    // Include user email and robot name for each key
     const keysWithUser = await Promise.all(keys.map(async (key) => {
       const user = await db.collection('users').findOne({ _id: key.userId });
+      let robotName = null;
+      if (key.robotSettingId) {
+        const robot = await db.collection('robot_settings').findOne({ _id: key.robotSettingId });
+        robotName = robot?.name || 'Unknown Robot';
+      }
       return {
         ...key,
-        userEmail: user?.email || 'Unknown'
+        userEmail: user?.email || 'Unknown',
+        robotName
       };
     }));
     
@@ -2213,7 +2259,7 @@ app.get('/api/keys', auth, hasPermission(), async (req, res) => {
 
 app.post('/api/keys', auth, hasPermission(), async (req, res) => {
   try {
-    const { name, userId, generateShortKey } = req.body;
+    const { name, userId, generateShortKey, robotSettingId } = req.body;
     
     // Generate API key
     const key = 'gk_' + crypto.randomBytes(32).toString('hex');
@@ -2230,6 +2276,7 @@ app.post('/api/keys', auth, hasPermission(), async (req, res) => {
       hasShortKey: !!generateShortKey,
       name,
       userId: new ObjectId(userId),
+      robotSettingId: robotSettingId ? new ObjectId(robotSettingId) : null,
       isActive: true,
       createdAt: new Date(),
       lastUsedAt: null
@@ -3286,11 +3333,6 @@ app.delete('/api/text-embeddings/:id', auth, async (req, res) => {
   }
 });
 
-// Serve React app for all other routes
-app.get('*', (req, res) => {
-  res.sendFile(join(__dirname, 'frontend/dist/index.html'));
-});
-
 // Cleanup old deleted messages and API usage based on retention setting
 async function cleanupOldData() {
   try {
@@ -3335,5 +3377,135 @@ async function cleanupOldData() {
 // Run cleanup daily
 setInterval(cleanupOldData, 24 * 60 * 60 * 1000);
 cleanupOldData(); // Run on startup
+
+// ============================================
+// ROBOT SETTINGS ENDPOINTS
+// ============================================
+
+// Get all robot settings
+app.get('/api/robot-settings', auth, hasPermission('developer'), async (req, res) => {
+  console.log('[ROBOT SETTINGS] GET /api/robot-settings called');
+  try {
+    const robots = await db.collection('robot_settings').find().sort({ createdAt: -1 }).toArray();
+    console.log('[ROBOT SETTINGS] Found robots:', robots.length);
+    res.json(robots);
+  } catch (error) {
+    console.error('[ROBOT SETTINGS] Error:', error);
+    res.status(500).json({ error: 'Failed to get robot settings' });
+  }
+});
+
+// Get one robot setting
+app.get('/api/robot-settings/:id', auth, hasPermission('developer'), async (req, res) => {
+  try {
+    const robot = await db.collection('robot_settings').findOne({ _id: new ObjectId(req.params.id) });
+    if (!robot) {
+      return res.status(404).json({ error: 'Robot not found' });
+    }
+    res.json(robot);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get robot setting' });
+  }
+});
+
+// Create robot setting
+app.post('/api/robot-settings', auth, hasPermission('developer'), async (req, res) => {
+  try {
+    const { name, description } = req.body;
+    
+    const robot = {
+      name,
+      description: description || '',
+      navigation: [],
+      motion: [],
+      emotion: [],
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    
+    const result = await db.collection('robot_settings').insertOne(robot);
+    res.json({ success: true, id: result.insertedId });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to create robot setting' });
+  }
+});
+
+// Update robot setting
+app.put('/api/robot-settings/:id', auth, hasPermission('developer'), async (req, res) => {
+  try {
+    const { name, description, navigation, motion, emotion } = req.body;
+    
+    const update = {
+      name,
+      description,
+      navigation,
+      motion,
+      emotion,
+      updatedAt: new Date()
+    };
+    
+    await db.collection('robot_settings').updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: update }
+    );
+    
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update robot setting' });
+  }
+});
+
+// Delete robot setting (with protection)
+app.delete('/api/robot-settings/:id', auth, hasPermission('developer'), async (req, res) => {
+  try {
+    const robotId = new ObjectId(req.params.id);
+    
+    // Check if any API keys are linked to this robot
+    const linkedKeys = await db.collection('api_keys').find({ robotSettingId: robotId }).toArray();
+    
+    if (linkedKeys.length > 0) {
+      const keyNames = linkedKeys.map(k => `${k.name} (${k.shortKey || k.key.substring(0, 10) + '...'})`);
+      return res.status(400).json({ 
+        error: 'Cannot delete robot',
+        message: `This robot is linked to ${linkedKeys.length} API key(s): ${keyNames.join(', ')}. Please unlink or delete these API keys first.`,
+        linkedKeys: keyNames
+      });
+    }
+    
+    await db.collection('robot_settings').deleteOne({ _id: robotId });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete robot setting' });
+  }
+});
+
+// Get robot data by API key (for robot to call)
+app.get('/api/robot-data', authenticateApiKey, async (req, res) => {
+  try {
+    if (!req.apiKey.robotSettingId) {
+      return res.status(404).json({ error: 'No robot setting linked to this API key' });
+    }
+    
+    const robot = await db.collection('robot_settings').findOne({ _id: req.apiKey.robotSettingId });
+    
+    if (!robot) {
+      return res.status(404).json({ error: 'Robot setting not found' });
+    }
+    
+    res.json({
+      name: robot.name,
+      navigation: robot.navigation,
+      motion: robot.motion,
+      emotion: robot.emotion
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get robot data' });
+  }
+});
+
+// Serve React app for all other routes
+app.get('*', (req, res) => {
+  res.sendFile(join(__dirname, 'frontend/dist/index.html'));
+});
 
 app.listen(3000, () => console.log('Server running on port 3000'));

@@ -15,6 +15,8 @@ interface ApiKey {
   name: string;
   userId: string;
   userEmail: string;
+  robotSettingId?: string;
+  robotName?: string;
   isActive: boolean;
   createdAt: string;
   lastUsedAt: string | null;
@@ -33,9 +35,11 @@ export const ApiManagementPage = () => {
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [usage, setUsage] = useState<ApiUsage[]>([]);
   const [users, setUsers] = useState<any[]>([]);
+  const [robots, setRobots] = useState<any[]>([]);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
   const [selectedUserId, setSelectedUserId] = useState("");
+  const [selectedRobotId, setSelectedRobotId] = useState("");
   const [generateShortKey, setGenerateShortKey] = useState(false);
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
 
@@ -43,6 +47,7 @@ export const ApiManagementPage = () => {
     loadKeys();
     loadUsage();
     loadUsers();
+    loadRobots();
   }, []);
 
   const loadKeys = async () => {
@@ -73,16 +78,27 @@ export const ApiManagementPage = () => {
     }
   };
 
+  const loadRobots = async () => {
+    try {
+      const data = await api.getRobotSettings();
+      setRobots(data);
+    } catch (error: any) {
+      console.error(error);
+      setRobots([]);
+    }
+  };
+
   const handleCreateKey = async () => {
     if (!newKeyName || !selectedUserId) {
       toast.error("Please fill all fields");
       return;
     }
     try {
-      await api.createApiKey(newKeyName, selectedUserId, generateShortKey);
+      await api.createApiKey(newKeyName, selectedUserId, generateShortKey, selectedRobotId || null);
       setShowCreateModal(false);
       setNewKeyName("");
       setSelectedUserId("");
+      setSelectedRobotId("");
       setGenerateShortKey(false);
       loadKeys();
       toast.success("API key created");
@@ -190,6 +206,7 @@ export const ApiManagementPage = () => {
                     <p className="text-xs text-muted-foreground">
                       User: {key.userEmail} | Created: {new Date(key.createdAt).toLocaleString()} | 
                       Last used: {key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : 'Never'}
+                      {key.robotName && ` | Robot: ${key.robotName}`}
                     </p>
                   </div>
                   <div className="flex gap-2">
@@ -303,6 +320,21 @@ export const ApiManagementPage = () => {
                   {users.map((user) => (
                     <option key={user._id} value={user._id}>
                       {user.fullName} ({user.email})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <Label>Robot Setting</Label>
+                <select
+                  value={selectedRobotId}
+                  onChange={(e) => setSelectedRobotId(e.target.value)}
+                  className="w-full p-2 border rounded-md bg-background"
+                >
+                  <option value="">Normal (No Robot)</option>
+                  {robots.map((robot) => (
+                    <option key={robot._id} value={robot._id}>
+                      {robot.name}
                     </option>
                   ))}
                 </select>
