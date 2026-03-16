@@ -737,7 +737,9 @@ app.post('/api/chat', auth, async (req, res) => {
       timeout: 60000 // 1 minute timeout
     });
 
-    // Save bot response
+    // Save bot response (handle both string and object format)
+    const botContent = typeof data.response === 'object' ? data.response.text : data.response;
+    
     await db.collection('messages').insertOne({
       userId: req.user.id,
       sessionId: chatSessionId,
@@ -745,7 +747,7 @@ app.post('/api/chat', auth, async (req, res) => {
       startedBy: startedByName,
       startedByEmail: startedByEmail,
       role: 'bot',
-      content: data.response,
+      content: botContent || '',
       chatType: 'browser',
       chatName: 'normal',
       createdAt: new Date()
@@ -765,7 +767,7 @@ app.post('/api/chat', auth, async (req, res) => {
       );
     }
 
-    res.json({ response: data.response, sessionId: chatSessionId });
+    res.json({ response: botContent || '', sessionId: chatSessionId });
   } catch (error) {
     console.error('Chat error:', error);
     res.status(500).json({ 
@@ -890,6 +892,8 @@ app.post('/api/v1/chat', authenticateApiKey, async (req, res) => {
     });
 
     // Save bot response
+    const botContent = typeof data.response === 'object' ? data.response.text : data.response;
+    
     await db.collection('messages').insertOne({
       userId: req.user.id,
       sessionId: chatSessionId,
@@ -897,7 +901,7 @@ app.post('/api/v1/chat', authenticateApiKey, async (req, res) => {
       startedBy: startedByName,
       startedByEmail: startedByEmail,
       role: 'bot',
-      content: data.response,
+      content: botContent || '',
       chatType: 'API',
       chatName: req.apiKey.name,
       source: 'api',

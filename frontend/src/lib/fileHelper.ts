@@ -6,6 +6,8 @@
  * 3. filename.pdf (with common extensions)
  */
 export function parseFileNamesFromMessage(message: string): string[] {
+  if (!message || typeof message !== 'string') return [];
+  
   const patterns = [
     /\*{1,2}([^*]+\.(pdf|docx|xlsx|txt|doc|xls|ppt|pptx))\*{1,2}/gi,
     /"([^"]+\.(pdf|docx|xlsx|txt|doc|xls|ppt|pptx))"/gi,
