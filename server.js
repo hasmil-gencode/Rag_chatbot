@@ -3062,7 +3062,7 @@ app.post('/api/tts', auth, async (req, res) => {
           
           if (hasChinese) {
             languageCode = 'cmn-CN';
-            voiceName = 'cmn-CN-Standard-A';
+            voiceName = 'cmn-CN-Standard-D';
           } else if (hasTamil) {
             languageCode = 'ta-IN';
             voiceName = 'ta-IN-Standard-A';
@@ -3071,7 +3071,7 @@ app.post('/api/tts', auth, async (req, res) => {
             voiceName = 'ms-MY-Standard-A';
           } else {
             languageCode = 'en-US';
-            voiceName = 'en-US-Neural2-C';
+            voiceName = 'en-US-Studio-O';
           }
         }
 
