@@ -1,15 +1,135 @@
-version: '3.8'
-
 services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${PG_USER:-raguser}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-ragpass}
+      POSTGRES_DB: ${PG_DATABASE:-ragchatbot}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-raguser}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # GPU support (uncomment if NVIDIA GPU available):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  n8n:
+    image: n8nio/n8n:latest
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-admin}
+      - WEBHOOK_URL=http://n8n:5678
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   rag-chatbot-ui:
     build: .
     ports:
       - "1223:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
     environment:
       - NODE_ENV=production
-      - MONGODB_URI=${MONGODB_URI}
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_USER=${PG_USER:-raguser}
+      - PG_PASSWORD=${PG_PASSWORD:-ragpass}
+      - PG_DATABASE=${PG_DATABASE:-ragchatbot}
       - JWT_SECRET=${JWT_SECRET}
+      - OLLAMA_URL=http://ollama:11434
+      - WHISPER_API_URL=http://faster-whisper:8000
+      - CHATTERBOX_URL=http://chatterbox:8004
     volumes:
       - ./uploads:/app/uploads
       - ./public/logos:/app/public/logos
     restart: unless-stopped
+
+  faster-whisper:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    ports:
+      - "8080:8000"
+    volumes:
+      - whisper_data:/home/ubuntu/.cache/huggingface/hub
+    environment:
+      - SPEACHES__DEFAULT_MODEL=Systran/faster-whisper-small
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://0.0.0.0:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  chatterbox:
+    build:
+      context: ./chatterbox
+      dockerfile: Dockerfile
+    ports:
+      - "8004:8004"
+    volumes:
+      - chatterbox_data:/app/hf_cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://0.0.0.0:8004/api/ui/initial-data"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  ollama_data:
+  n8n_data:
+  pgadmin_data:
+  whisper_data:
+  chatterbox_data:

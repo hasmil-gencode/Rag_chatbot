@@ -95,6 +95,8 @@ export interface Message {
 
 interface Settings {
   companyName?: string
+  storageMode?: string
+  localStoragePath?: string
   voiceMode?: string
   voiceLanguage?: string
   detectVoiceDuringTTS?: boolean
@@ -103,6 +105,12 @@ interface Settings {
   geminiApiKey?: string
   elevenlabsApiKey?: string
   gclasApiKey?: string
+  whisperUrl?: string
+  chatterboxUrl?: string
+  chatterboxVoice?: string
+  ollamaUrl?: string
+  ollamaModel?: string
+  ollamaEmbeddingModel?: string
   chatWebhook?: string
   uploadWebhook?: string
   transcribeWebhook?: string
@@ -454,6 +462,16 @@ class API {
     })
     const json = await res.json()
     if (!res.ok || !json.success) throw new Error(json.error || 'S3 test failed')
+    return json
+  }
+
+  async testOllama() {
+    const res = await fetchWithAuth(`${API_BASE}/test-ollama`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+    })
+    const json = await res.json()
+    if (!res.ok || !json.success) throw new Error(json.error || 'Ollama test failed')
     return json
   }
 

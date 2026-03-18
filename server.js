@@ -1,5 +1,5 @@
 import express from 'express';
-import { MongoClient, ObjectId } from 'mongodb';
+import { query as db } from './db.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import multer from 'multer';
@@ -12,82 +12,62 @@ import crypto from 'crypto';
 import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
 import { GoogleGenAI } from '@google/genai';
 import { GoogleAuth } from 'google-auth-library';
+import { v4 as uuidv4 } from 'uuid';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 
-// Disable X-Powered-By header globally
 app.disable('x-powered-by');
-
-// Serve React app static files
 app.use(express.static(join(__dirname, 'frontend/dist')));
 
-const MONGODB_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
 
-let db;
-const client = new MongoClient(MONGODB_URI);
+// Test DB connection
+const connTest = await db('SELECT 1');
+console.log('Connected to PostgreSQL');
 
-await client.connect();
-db = client.db(); // Use database from connection string
-console.log(`Connected to MongoDB (${db.databaseName})`);
+// Helper: get settings
+async function getSettings() {
+  const res = await db('SELECT data FROM settings WHERE id = $1', ['config']);
+  return res.rows[0]?.data || {};
+}
 
-// Initialize default settings
-const settingsExists = await db.collection('settings').findOne({ _id: 'config' });
-if (!settingsExists) {
-  await db.collection('settings').insertOne({
-    _id: 'config',
-    companyName: 'GenBotChat',
-    voiceMode: 'browser',
-    voiceLanguage: 'auto',
-    googleSttApiKey: '',
-    googleTtsApiKey: '',
-    geminiSttApiKey: '',
-    geminiTtsApiKey: '',
-    elevenlabsApiKey: '',
-    elevenlabsVoice: 'onwK4e9ZLuTAKqWW03F9',
-    gclasServiceAccount: '',
-    gclasLanguage: 'auto',
-    gclasVoice: 'en-US-Neural2-C',
-    geminiVoice: 'Aoede',
-    geminiTtsLanguage: 'auto',
-    ttsMode: 'browser',
-    ttsLanguage: 'en-US',
-    chatWebhook: '',
-    uploadWebhook: '',
-    transcribeWebhook: '',
-    formSubmissionWebhook: '',
-    s3Bucket: '',
-    s3Region: '',
-    s3AccessKey: '',
-    s3SecretKey: ''
-  });
-  console.log('Default settings initialized');
+// Helper: update settings
+async function updateSettings(updates) {
+  await db(
+    'UPDATE settings SET data = data || $1::jsonb, updated_at = NOW() WHERE id = $2',
+    [JSON.stringify(updates), 'config']
+  );
 }
 
 // Helper to get S3 client
 async function getS3Client() {
-  const settings = await db.collection('settings').findOne({ _id: 'config' });
-  if (!settings?.s3AccessKey || !settings?.s3SecretKey || !settings?.s3Region) {
-    return null;
-  }
+  const settings = await getSettings();
+  if (!settings.s3AccessKey || !settings.s3SecretKey || !settings.s3Region) return null;
   return new S3Client({
     region: settings.s3Region,
-    credentials: {
-      accessKeyId: settings.s3AccessKey,
-      secretAccessKey: settings.s3SecretKey
-    }
+    credentials: { accessKeyId: settings.s3AccessKey, secretAccessKey: settings.s3SecretKey }
   });
 }
 
 // Helper to get webhook URLs from DB
 async function getWebhookUrls() {
-  const settings = await db.collection('settings').findOne({ _id: 'config' });
+  const settings = await getSettings();
   return {
-    chat: settings?.chatWebhook || 'http://localhost:5678/webhook/chat',
-    upload: settings?.uploadWebhook || 'http://localhost:5678/webhook/upload',
-    transcribe: settings?.transcribeWebhook || 'http://localhost:5678/webhook/transcribe'
+    chat: settings.chatWebhook || 'http://localhost:5678/webhook/chat',
+    upload: settings.uploadWebhook || 'http://localhost:5678/webhook/upload',
+    transcribe: settings.transcribeWebhook || 'http://localhost:5678/webhook/transcribe'
   };
+}
+
+// Helper: get all children org IDs from parent org IDs
+async function getAllChildrenOrgs(parentOrgIds) {
+  if (!parentOrgIds || parentOrgIds.length === 0) return [];
+  const res = await db('SELECT id FROM organizations WHERE parent_id = ANY($1::uuid[])', [parentOrgIds]);
+  const childIds = res.rows.map(r => r.id);
+  if (childIds.length === 0) return parentOrgIds;
+  const deeper = await getAllChildrenOrgs(childIds);
+  return [...new Set([...parentOrgIds.map(String), ...childIds.map(String), ...deeper.map(String)])];
 }
 
 // Middleware
@@ -96,41 +76,16 @@ app.use(express.static('public'));
 
 // Security Headers Middleware
 app.use((req, res, next) => {
-  // Remove X-Powered-By header
   res.removeHeader('X-Powered-By');
-  
-  // Strict-Transport-Security (HSTS)
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
-  
-  // Content-Security-Policy
-  res.setHeader('Content-Security-Policy', 
-    "default-src 'self'; " +
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
-    "style-src 'self' 'unsafe-inline'; " +
-    "img-src 'self' data: https:; " +
-    "font-src 'self' data:; " +
-    "connect-src 'self' https:; " +
-    "media-src 'self' blob:; " +
-    "frame-ancestors 'none';"
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https:; media-src 'self' blob:; frame-ancestors 'none';"
   );
-  
-  // X-Content-Type-Options
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  
-  // X-Frame-Options
   res.setHeader('X-Frame-Options', 'DENY');
-  
-  // Referrer-Policy
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  
-  // Permissions-Policy
-  res.setHeader('Permissions-Policy', 
-    'geolocation=(), microphone=(self), camera=()'
-  );
-  
-  // X-XSS-Protection (legacy but still useful)
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(self), camera=()');
   res.setHeader('X-XSS-Protection', '1; mode=block');
-  
   next();
 });
 
@@ -146,30 +101,18 @@ const auth = async (req, res, next) => {
   if (!token) return res.status(401).json({ error: 'No token' });
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    
-    // Get user
-    const user = await db.collection('users').findOne({ _id: new ObjectId(decoded.id) });
-    if (!user || user.status !== 'active') {
-      return res.status(401).json({ error: 'User not found or inactive' });
-    }
-    
-    // Check if this is the active session
-    if (user.activeSessionToken && user.activeSessionToken !== token) {
-      console.log(`[SESSION CHECK] User ${user.email} - Token mismatch! Logging out old session.`);
-      return res.status(401).json({ 
-        error: 'Session expired',
-        reason: 'logged_in_elsewhere',
+    const result = await db('SELECT * FROM users WHERE id = $1', [decoded.id]);
+    const user = result.rows[0];
+    if (!user || user.status !== 'active') return res.status(401).json({ error: 'User not found or inactive' });
+
+    if (user.active_session_token && user.active_session_token !== token) {
+      return res.status(401).json({
+        error: 'Session expired', reason: 'logged_in_elsewhere',
         message: 'You have been logged out because you logged in from another device or browser.'
       });
     }
-    
-    req.user = {
-      id: user._id,
-      email: user.email,
-      fullName: user.fullName,
-      role: user.role
-    };
-    
+
+    req.user = { id: user.id, email: user.email, fullName: user.full_name, role: user.role };
     next();
   } catch (err) {
     console.error('Auth error:', err.message);
@@ -177,230 +120,105 @@ const auth = async (req, res, next) => {
   }
 };
 
-// Permission check middleware (simplified for developer-only)
+// Permission check middleware
 const hasPermission = (...requiredPermissions) => {
   return (req, res, next) => {
-    // Only developer has all permissions
-    if (req.user.role === 'developer') {
-      return next();
-    }
-    
+    if (req.user.role === 'developer') return next();
     return res.status(403).json({ error: 'Insufficient permissions' });
   };
 };
 
-// Auth
+// ============= AUTH =============
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
-  const user = await db.collection('users').findOne({ email, status: 'active' });
+  const result = await db('SELECT * FROM users WHERE email = $1 AND status = $2', [email, 'active']);
+  const user = result.rows[0];
   if (!user || !await bcrypt.compare(password, user.password)) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
-  
-  // Check if user must change password
-  if (user.mustChangePassword === true) {
-    // Generate temporary token (expires in 10 minutes)
-    const tempToken = jwt.sign({ 
-      id: user._id, 
-      email: user.email,
-      type: 'password-change'
-    }, JWT_SECRET, { expiresIn: '10m' });
-    
-    return res.json({ 
-      mustChangePassword: true,
-      tempToken,
-      email: user.email
-    });
+
+  if (user.must_change_password === true) {
+    const tempToken = jwt.sign({ id: user.id, email: user.email, type: 'password-change' }, JWT_SECRET, { expiresIn: '10m' });
+    return res.json({ mustChangePassword: true, tempToken, email: user.email });
   }
-  
-  const token = jwt.sign({ 
-    id: user._id, 
-    email: user.email,
-    role: user.role
-  }, JWT_SECRET);
-  
-  console.log(`[LOGIN] User ${email} logged in. Storing new session token.`);
-  
-  // Store active session token (single session per user)
-  await db.collection('users').updateOne(
-    { _id: user._id },
-    { 
-      $set: { 
-        activeSessionToken: token,
-        lastLoginAt: new Date(),
-        lastLoginIP: req.ip
-      } 
-    }
-  );
-  
-  res.json({ 
-    success: true, 
-    token, 
-    user: { 
-      id: user._id.toString(), 
-      email: user.email,
-      fullName: user.fullName,
-      role: user.role
-    } 
+
+  const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET);
+  console.log(`[LOGIN] User ${email} logged in.`);
+
+  await db('UPDATE users SET active_session_token = $1, last_login = NOW() WHERE id = $2', [token, user.id]);
+
+  res.json({
+    success: true, token,
+    user: { id: user.id, email: user.email, fullName: user.full_name, role: user.role }
   });
 });
 
-// First-time password change
 app.post('/api/change-password-first-login', async (req, res) => {
   try {
     const { tempToken, newPassword } = req.body;
-    
-    if (!tempToken || !newPassword) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-    
-    // Verify temp token
+    if (!tempToken || !newPassword) return res.status(400).json({ error: 'Missing required fields' });
+
     let decoded;
     try {
       decoded = jwt.verify(tempToken, JWT_SECRET);
-      if (decoded.type !== 'password-change') {
-        return res.status(401).json({ error: 'Invalid token type' });
-      }
-    } catch (err) {
-      return res.status(401).json({ error: 'Token expired or invalid' });
-    }
-    
-    // Validate new password
-    if (newPassword.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters' });
-    }
-    
-    const user = await db.collection('users').findOne({ _id: new ObjectId(decoded.id) });
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    
-    // Check if new password is same as old password
-    const isSamePassword = await bcrypt.compare(newPassword, user.password);
-    if (isSamePassword) {
+      if (decoded.type !== 'password-change') return res.status(401).json({ error: 'Invalid token type' });
+    } catch { return res.status(401).json({ error: 'Token expired or invalid' }); }
+
+    if (newPassword.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+
+    const result = await db('SELECT * FROM users WHERE id = $1', [decoded.id]);
+    const user = result.rows[0];
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    if (await bcrypt.compare(newPassword, user.password)) {
       return res.status(400).json({ error: 'New password must be different from the default password' });
     }
-    
-    // Hash new password
+
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-    
-    // Update user
-    await db.collection('users').updateOne(
-      { _id: new ObjectId(decoded.id) },
-      { 
-        $set: { 
-          password: hashedPassword,
-          mustChangePassword: false,
-          passwordChangedAt: new Date()
-        } 
-      }
-    );
-    
-    // Generate normal login token
-    const token = jwt.sign({ 
-      id: user._id, 
-      email: user.email,
-      role: user.role
-    }, JWT_SECRET);
-    
-    res.json({ 
-      success: true, 
-      token, 
-      user: { 
-        id: user._id.toString(), 
-        email: user.email,
-        fullName: user.fullName,
-        role: user.role
-      } 
-    });
+    await db('UPDATE users SET password = $1, must_change_password = false, updated_at = NOW() WHERE id = $2', [hashedPassword, decoded.id]);
+
+    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET);
+    res.json({ success: true, token, user: { id: user.id, email: user.email, fullName: user.full_name, role: user.role } });
   } catch (error) {
     console.error('Change password error:', error);
     res.status(500).json({ error: 'Failed to change password' });
   }
 });
 
-// Get current user info
 app.get('/api/user/me', auth, async (req, res) => {
   try {
-    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const result = await db('SELECT * FROM users WHERE id = $1', [req.user.id]);
+    const user = result.rows[0];
     if (!user) return res.status(404).json({ error: 'User not found' });
-    
-    res.json({
-      id: user._id,
-      email: user.email,
-      fullName: user.fullName,
-      role: user.role,
-      canUploadFiles: user.canUploadFiles !== false
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get user info' });
-  }
+    res.json({ id: user.id, email: user.email, fullName: user.full_name, role: user.role, canUploadFiles: user.can_upload_files !== false });
+  } catch (error) { res.status(500).json({ error: 'Failed to get user info' }); }
 });
 
-// ===== PHASE 2: Multi-Org Hierarchy APIs =====
-
-// Create user (Developer only)
-// REMOVED DUPLICATE - Using the one at line 1855 with organization assignments
-
-
-// Create organization/entity/department
+// ============= ORGANIZATIONS (Phase 2) =============
 app.post('/api/organizations', auth, hasPermission(), async (req, res) => {
   try {
-    const { name, type, parentId } = req.body; // type: 'organization' | 'entity' | 'department'
-    
+    const { name, type, parentId } = req.body;
     let path = [name];
     if (parentId) {
-      const parent = await db.collection('organizations').findOne({ _id: new ObjectId(parentId) });
-      if (!parent) return res.status(404).json({ error: 'Parent not found' });
-      path = [...parent.path, name];
+      const p = await db('SELECT path FROM organizations WHERE id = $1', [parentId]);
+      if (!p.rows[0]) return res.status(404).json({ error: 'Parent not found' });
+      path = [...(p.rows[0].path || []), name];
     }
-    
-    const result = await db.collection('organizations').insertOne({
-      name,
-      type,
-      parentId: parentId ? new ObjectId(parentId) : null,
-      path,
-      createdBy: req.user.id,
-      createdAt: new Date()
-    });
-    
-    res.json({ success: true, organizationId: result.insertedId });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to create organization' });
-  }
+    const result = await db(
+      'INSERT INTO organizations (name, path, parent_id, created_at) VALUES ($1, $2, $3, NOW()) RETURNING id',
+      [name, JSON.stringify(path), parentId || null]
+    );
+    res.json({ success: true, organizationId: result.rows[0].id });
+  } catch (error) { res.status(500).json({ error: 'Failed to create organization' }); }
 });
 
-// Assign user to organizations (Developer only)
 app.post('/api/user-assignments', auth, hasPermission(), async (req, res) => {
   try {
-    const { userId, organizationIds } = req.body; // organizationIds is array
-    
-    console.log('=== ASSIGN USER TO ORGS ===');
-    console.log('userId:', userId, typeof userId);
-    console.log('organizationIds:', organizationIds);
-    
-    // Remove existing assignments
-    const deleteResult = await db.collection('user_organization_assignments').deleteMany({ 
-      userId: new ObjectId(userId) 
-    });
-    console.log('Deleted', deleteResult.deletedCount, 'existing assignments');
-    
-    // Add new assignments
-    const assignments = organizationIds.map(orgId => ({
-      userId: new ObjectId(userId),
-      userIdStr: userId, // String version for n8n
-      organizationId: new ObjectId(orgId),
-      assignedBy: req.user.id,
-      assignedAt: new Date()
-    }));
-    
-    console.log('Creating', assignments.length, 'new assignments');
-    
-    if (assignments.length > 0) {
-      const insertResult = await db.collection('user_organization_assignments').insertMany(assignments);
-      console.log('Inserted', insertResult.insertedCount, 'assignments');
+    const { userId, organizationIds } = req.body;
+    await db('DELETE FROM user_org_assignments WHERE user_id = $1', [userId]);
+    for (const orgId of organizationIds) {
+      await db('INSERT INTO user_org_assignments (user_id, organization_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [userId, orgId]);
     }
-    
     res.json({ success: true });
   } catch (error) {
     console.error('Assign user error:', error);
@@ -408,593 +226,341 @@ app.post('/api/user-assignments', auth, hasPermission(), async (req, res) => {
   }
 });
 
-// Get user's assigned organizations
 app.get('/api/my-organizations', auth, async (req, res) => {
   try {
-    const assignments = await db.collection('user_organization_assignments')
-      .find({ userId: new ObjectId(req.user.id) })
-      .toArray();
-    
-    const orgIds = assignments.map(a => a.organizationId);
-    const organizations = await db.collection('organizations')
-      .find({ _id: { $in: orgIds } })
-      .toArray();
-    
-    res.json({ organizations });
-  } catch (error) {
-    console.error('Get my organizations error:', error);
-    res.status(500).json({ error: 'Failed to get organizations' });
-  }
+    const result = await db(
+      `SELECT o.* FROM organizations o
+       JOIN user_org_assignments uoa ON o.id = uoa.organization_id
+       WHERE uoa.user_id = $1`, [req.user.id]
+    );
+    res.json({ organizations: result.rows });
+  } catch (error) { res.status(500).json({ error: 'Failed to get organizations' }); }
 });
 
-// Get user's organizations with hierarchy (assigned + all children)
 app.get('/api/my-organizations-hierarchy', auth, async (req, res) => {
   try {
-    console.log('=== my-organizations-hierarchy called ===');
-    const userId = new ObjectId(req.user.id);
-    console.log('User ID:', userId);
-    
-    // Get directly assigned orgs
-    const assignments = await db.collection('user_organization_assignments')
-      .find({ userId: userId })
-      .toArray();
-    console.log('Assignments found:', assignments.length);
-    
-    const assignedOrgIds = assignments.map(a => a.organizationId);
-    console.log('Assigned org IDs:', assignedOrgIds);
-    
-    const assignedOrgs = await db.collection('organizations')
-      .find({ _id: { $in: assignedOrgIds } })
-      .toArray();
-    console.log('Assigned orgs:', assignedOrgs.map(o => o.name));
-    
-    // For each assigned org, find all children
-    const allOrgIds = new Set(assignedOrgIds.map(id => id.toString()));
-    
-    for (const org of assignedOrgs) {
-      // Find all orgs where path contains this org's name
-      const children = await db.collection('organizations')
-        .find({ path: org.name })
-        .toArray();
-      console.log(`Children of ${org.name}:`, children.length);
-      
-      children.forEach(child => allOrgIds.add(child._id.toString()));
+    const assignments = await db('SELECT organization_id FROM user_org_assignments WHERE user_id = $1', [req.user.id]);
+    const assignedOrgIds = assignments.rows.map(a => a.organization_id);
+    if (assignedOrgIds.length === 0) return res.json({ organizations: [] });
+
+    const assignedOrgs = await db('SELECT * FROM organizations WHERE id = ANY($1::uuid[])', [assignedOrgIds]);
+    const allOrgIds = new Set(assignedOrgIds.map(String));
+
+    for (const org of assignedOrgs.rows) {
+      if (org.path) {
+        const pathArr = typeof org.path === 'string' ? JSON.parse(org.path) : org.path;
+        const children = await db('SELECT id FROM organizations WHERE path::text LIKE $1', [`%${org.name}%`]);
+        children.rows.forEach(c => allOrgIds.add(c.id));
+      }
     }
-    
-    // Get all orgs (assigned + children)
-    const allOrgs = await db.collection('organizations')
-      .find({ _id: { $in: Array.from(allOrgIds).map(id => new ObjectId(id)) } })
-      .toArray();
-    
-    console.log('Final orgs:', allOrgs.map(o => o.name));
-    res.json({ organizations: allOrgs });
+
+    const allOrgs = await db('SELECT * FROM organizations WHERE id = ANY($1::uuid[])', [Array.from(allOrgIds)]);
+    res.json({ organizations: allOrgs.rows });
   } catch (error) {
     console.error('Error in my-organizations-hierarchy:', error);
     res.status(500).json({ error: 'Failed to get organizations hierarchy' });
   }
 });
 
-// Get all organizations (Developer only)
 app.get('/api/organizations', auth, hasPermission(), async (req, res) => {
   try {
-    const organizations = await db.collection('organizations').find({}).toArray();
-    res.json({ organizations });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get organizations' });
-  }
+    const result = await db('SELECT * FROM organizations');
+    res.json({ organizations: result.rows });
+  } catch (error) { res.status(500).json({ error: 'Failed to get organizations' }); }
 });
 
-// Update organization (Developer only)
 app.put('/api/organizations/:id', auth, hasPermission(), async (req, res) => {
   try {
     const { name, type, parentId } = req.body;
-    
     let path = [name];
     if (parentId) {
-      const parent = await db.collection('organizations').findOne({ _id: new ObjectId(parentId) });
-      if (!parent) return res.status(404).json({ error: 'Parent not found' });
-      path = [...parent.path, name];
+      const p = await db('SELECT path FROM organizations WHERE id = $1', [parentId]);
+      if (!p.rows[0]) return res.status(404).json({ error: 'Parent not found' });
+      path = [...(p.rows[0].path || []), name];
     }
-    
-    await db.collection('organizations').updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: { name, path, updatedAt: new Date() } }
-    );
-    
+    await db('UPDATE organizations SET name = $1, path = $2, updated_at = NOW() WHERE id = $3', [name, JSON.stringify(path), req.params.id]);
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update organization' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to update organization' }); }
 });
 
-// Delete organization (Developer only)
 app.delete('/api/organizations/:id', auth, hasPermission(), async (req, res) => {
   try {
-    await db.collection('organizations').deleteOne({ _id: new ObjectId(req.params.id) });
-    // Also remove user assignments
-    await db.collection('user_organization_assignments').deleteMany({ organizationId: new ObjectId(req.params.id) });
+    await db('DELETE FROM organizations WHERE id = $1', [req.params.id]);
+    await db('DELETE FROM user_org_assignments WHERE organization_id = $1', [req.params.id]);
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete organization' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to delete organization' }); }
 });
 
-// Get all users (Developer only)
+// ============= USERS (basic) =============
 app.get('/api/users', auth, hasPermission(), async (req, res) => {
   try {
-    const users = await db.collection('users').find({}).toArray();
-    res.json(users);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get users' });
-  }
+    const result = await db('SELECT * FROM users');
+    res.json(result.rows);
+  } catch (error) { res.status(500).json({ error: 'Failed to get users' }); }
 });
 
-// Update user (Developer only)
 app.put('/api/users/:id', auth, hasPermission(), async (req, res) => {
   try {
     const { fullName, password, canUploadFiles } = req.body;
-    const updateData = { fullName, updatedAt: new Date() };
-    
-    if (password) {
-      updateData.password = await bcrypt.hash(password, 10);
-    }
-    
-    if (canUploadFiles !== undefined) {
-      updateData.canUploadFiles = canUploadFiles;
-    }
-    
-    await db.collection('users').updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: updateData }
-    );
-    
+    let q = 'UPDATE users SET full_name = $1, updated_at = NOW()';
+    let params = [fullName];
+    let idx = 2;
+    if (password) { q += `, password = $${idx}`; params.push(await bcrypt.hash(password, 10)); idx++; }
+    if (canUploadFiles !== undefined) { q += `, can_upload_files = $${idx}`; params.push(canUploadFiles); idx++; }
+    q += ` WHERE id = $${idx}`;
+    params.push(req.params.id);
+    await db(q, params);
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update user' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to update user' }); }
 });
 
-// Get user assignments
 app.get('/api/user-assignments/:userId', auth, hasPermission(), async (req, res) => {
   try {
-    const assignments = await db.collection('user_organization_assignments')
-      .find({ userId: new ObjectId(req.params.userId) })
-      .toArray();
-    res.json(assignments);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get user assignments' });
-  }
+    const result = await db('SELECT * FROM user_org_assignments WHERE user_id = $1', [req.params.userId]);
+    res.json(result.rows);
+  } catch (error) { res.status(500).json({ error: 'Failed to get user assignments' }); }
 });
 
-// Delete user (Developer only)
 app.delete('/api/users/:id', auth, hasPermission(), async (req, res) => {
   try {
-    const user = await db.collection('users').findOne({ _id: new ObjectId(req.params.id) });
-    if (user?.role === 'developer') {
-      return res.status(403).json({ error: 'Cannot delete developer account' });
-    }
-    await db.collection('users').deleteOne({ _id: new ObjectId(req.params.id) });
-    // Also remove user assignments
-    await db.collection('user_organization_assignments').deleteMany({ userId: new ObjectId(req.params.id) });
+    const result = await db('SELECT role FROM users WHERE id = $1', [req.params.id]);
+    if (result.rows[0]?.role === 'developer') return res.status(403).json({ error: 'Cannot delete developer account' });
+    await db('DELETE FROM users WHERE id = $1', [req.params.id]);
+    await db('DELETE FROM user_org_assignments WHERE user_id = $1', [req.params.id]);
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete user' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to delete user' }); }
 });
 
-// Switch active organization context
 app.post('/api/switch-organization', auth, async (req, res) => {
   try {
     const { organizationId } = req.body;
-    
-    // Verify user has access to this org
-    const assignment = await db.collection('user_organization_assignments').findOne({
-      userId: new ObjectId(req.user.id),
-      organizationId: new ObjectId(organizationId)
-    });
-    
-    if (!assignment && req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'No access to this organization' });
+    if (req.user.role !== 'developer') {
+      const check = await db('SELECT 1 FROM user_org_assignments WHERE user_id = $1 AND organization_id = $2', [req.user.id, organizationId]);
+      if (check.rows.length === 0) return res.status(403).json({ error: 'No access to this organization' });
     }
-    
-    // Store in session or return to frontend to store
     res.json({ success: true, currentOrganizationId: organizationId });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to switch organization' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to switch organization' }); }
 });
 
-// Chat
+// ============= CHAT =============
 app.post('/api/chat', auth, async (req, res) => {
   try {
     const { message, sessionId, fileId, currentOrganizationId } = req.body;
-    const chatSessionId = sessionId || new ObjectId().toString();
-    
-    // Get user info for startedBy
-    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const chatSessionId = sessionId || uuidv4();
+
+    const userRes = await db('SELECT * FROM users WHERE id = $1', [req.user.id]);
+    const user = userRes.rows[0];
     const startedByEmail = user?.email || 'Unknown';
     const startedByName = startedByEmail.split('@')[0];
-    
-    // Get user's groupId from their organization assignments
-    let groupId = user.groupId;
-    
-    if (!groupId) {
-      const assignments = await db.collection('user_organization_assignments').find({ 
-        userId: user._id
-      }).toArray();
-      
-      if (assignments.length > 0) {
-        const org = await db.collection('organizations').findOne({ 
-          _id: assignments[0].organizationId 
-        });
-        groupId = org?.groupId;
-      }
-    }
-    
-    // Check chat quota if user has groupId
+
+    // Get user's groupId
+    let groupId = null;
+    const assignRes = await db(
+      `SELECT o.group_id FROM user_org_assignments uoa
+       JOIN organizations o ON o.id = uoa.organization_id
+       WHERE uoa.user_id = $1 AND o.group_id IS NOT NULL LIMIT 1`, [user.id]
+    );
+    if (assignRes.rows[0]) groupId = assignRes.rows[0].group_id;
+
+    // Check chat quota
     if (groupId) {
-      const group = await db.collection('groups').findOne({ _id: groupId });
-      
-      if (group && group.chatQuota > 0) {
-        const currentMonth = new Date().toISOString().substring(0, 7); // "2026-02"
-        
-        // Check if need to reset (today is renew day)
+      const groupRes = await db('SELECT * FROM groups WHERE id = $1', [groupId]);
+      const group = groupRes.rows[0];
+
+      if (group && group.chat_quota > 0) {
+        const currentMonth = new Date().toISOString().substring(0, 7);
         const today = new Date().getDate();
-        if (today === group.renewDay) {
-          const lastReset = await db.collection('chat_resets').findOne({ 
-            groupId: group._id, 
-            month: currentMonth 
-          });
-          
-          if (!lastReset) {
-            // Reset counts AND bonus quota for this group
-            await db.collection('chat_counts').deleteMany({ 
-              groupId: group._id, 
-              month: { $lt: currentMonth } 
-            });
-            
-            await db.collection('chat_resets').insertOne({ 
-              groupId: group._id, 
-              month: currentMonth, 
-              resetAt: new Date() 
-            });
-            
-            // Reset bonus quota to 0
-            await db.collection('groups').updateOne(
-              { _id: group._id },
-              { $set: { bonusQuota: 0 } }
-            );
+
+        if (today === group.renew_day) {
+          const resetCheck = await db('SELECT 1 FROM chat_resets WHERE group_id = $1 AND month = $2', [group.id, currentMonth]);
+          if (resetCheck.rows.length === 0) {
+            await db('DELETE FROM chat_counts WHERE group_id = $1 AND month < $2', [group.id, currentMonth]);
+            await db('INSERT INTO chat_resets (group_id, month) VALUES ($1, $2) ON CONFLICT DO NOTHING', [group.id, currentMonth]);
+            await db('UPDATE groups SET bonus_quota = 0 WHERE id = $1', [group.id]);
           }
         }
-        
-        // Calculate effective quota (base + bonus)
-        const effectiveQuota = group.chatQuota + (group.bonusQuota || 0);
-        
-        // Check quota
-        if (group.quotaType === 'individual') {
-          const userCount = await db.collection('chat_counts').findOne({ 
-            groupId: group._id, 
-            userId: user._id, 
-            month: currentMonth 
-          });
-          
-          const currentCount = userCount?.count || 0;
+
+        const effectiveQuota = group.chat_quota + (group.bonus_quota || 0);
+
+        if (group.quota_type === 'individual') {
+          const countRes = await db('SELECT count FROM chat_counts WHERE group_id = $1 AND user_id = $2 AND month = $3', [group.id, user.id, currentMonth]);
+          const currentCount = countRes.rows[0]?.count || 0;
           if (currentCount >= effectiveQuota) {
-            return res.status(429).json({ 
-              error: 'quota_exceeded',
-              message: 'Your quota exceeded limit, please contact Admin',
-              used: currentCount,
-              limit: effectiveQuota
-            });
+            return res.status(429).json({ error: 'quota_exceeded', message: 'Your quota exceeded limit, please contact Admin', used: currentCount, limit: effectiveQuota });
           }
         } else {
-          // Total quota for entire group
-          const counts = await db.collection('chat_counts').find({ 
-            groupId: group._id, 
-            month: currentMonth 
-          }).toArray();
-          
-          const totalCount = counts.reduce((sum, c) => sum + c.count, 0);
-          if (totalCount >= effectiveQuota) {
-            return res.status(429).json({ 
-              error: 'quota_exceeded',
-              message: 'Your quota exceeded limit, please contact Admin',
-              used: totalCount,
-              limit: effectiveQuota
-            });
+          const countRes = await db('SELECT COALESCE(SUM(count), 0) as total FROM chat_counts WHERE group_id = $1 AND month = $2', [group.id, currentMonth]);
+          if (parseInt(countRes.rows[0].total) >= effectiveQuota) {
+            return res.status(429).json({ error: 'quota_exceeded', message: 'Your quota exceeded limit, please contact Admin', used: parseInt(countRes.rows[0].total), limit: effectiveQuota });
           }
         }
       }
     }
-    
-    // Save user message with current org context
-    await db.collection('messages').insertOne({
-      userId: req.user.id,
-      sessionId: chatSessionId,
-      currentOrganizationId: currentOrganizationId ? new ObjectId(currentOrganizationId) : null,
-      startedBy: startedByName,
-      startedByEmail: startedByEmail,
-      role: 'user',
-      content: message,
-      chatType: 'browser',
-      chatName: 'normal',
-      createdAt: new Date()
-    });
 
-    // Get webhook URL from settings
+    // Save user message
+    await db(
+      `INSERT INTO messages (user_id, session_id, current_organization_id, started_by, started_by_email, role, content, chat_type, chat_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [req.user.id, chatSessionId, currentOrganizationId || null, startedByName, startedByEmail, 'user', message, 'browser', 'normal']
+    );
+
     const webhooks = await getWebhookUrls();
+    const { data } = await axios.post(webhooks.chat, {
+      message, userId: req.user.id, currentOrganizationId: currentOrganizationId || null,
+      sessionId: chatSessionId, fileId: fileId || null, chatType: 'browser', chatName: 'normal'
+    }, { timeout: 60000 });
 
-    // Send to n8n with sessionId, fileId, currentOrganizationId, chatType, and chatName
-    const { data } = await axios.post(webhooks.chat, { 
-      message, 
-      userId: req.user.id,
-      currentOrganizationId: currentOrganizationId || null,
-      sessionId: chatSessionId,
-      fileId: fileId || null,
-      chatType: 'browser',
-      chatName: 'normal'
-    }, {
-      timeout: 60000 // 1 minute timeout
-    });
-
-    // Save bot response (handle both string and object format)
     const botContent = typeof data.response === 'object' ? data.response.text : data.response;
-    
-    await db.collection('messages').insertOne({
-      userId: req.user.id,
-      sessionId: chatSessionId,
-      currentOrganizationId: currentOrganizationId ? new ObjectId(currentOrganizationId) : null,
-      startedBy: startedByName,
-      startedByEmail: startedByEmail,
-      role: 'bot',
-      content: botContent || '',
-      chatType: 'browser',
-      chatName: 'normal',
-      createdAt: new Date()
-    });
 
-    // Increment chat count if user has groupId
+    await db(
+      `INSERT INTO messages (user_id, session_id, current_organization_id, started_by, started_by_email, role, content, chat_type, chat_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [req.user.id, chatSessionId, currentOrganizationId || null, startedByName, startedByEmail, 'bot', botContent || '', 'browser', 'normal']
+    );
+
+    // Increment chat count
     if (groupId) {
       const currentMonth = new Date().toISOString().substring(0, 7);
-      await db.collection('chat_counts').updateOne(
-        { groupId: groupId, userId: user._id, month: currentMonth },
-        { 
-          $inc: { count: 1 },
-          $setOnInsert: { createdAt: new Date() },
-          $set: { updatedAt: new Date() }
-        },
-        { upsert: true }
+      await db(
+        `INSERT INTO chat_counts (group_id, user_id, month, count) VALUES ($1, $2, $3, 1)
+         ON CONFLICT (group_id, user_id, month) DO UPDATE SET count = chat_counts.count + 1`,
+        [groupId, user.id, currentMonth]
       );
     }
 
     res.json({ response: botContent || '', sessionId: chatSessionId });
   } catch (error) {
     console.error('Chat error:', error);
-    res.status(500).json({ 
-      error: 'Failed to get response. Please check n8n webhook configuration.',
-      details: error.message 
-    });
+    res.status(500).json({ error: 'Failed to get response. Please check n8n webhook configuration.', details: error.message });
   }
 });
 
 // API Key authentication middleware
 async function authenticateApiKey(req, res, next) {
   const apiKey = req.headers['x-api-key'];
-  
-  if (!apiKey) {
-    return res.status(401).json({ error: 'API key required' });
-  }
-
+  if (!apiKey) return res.status(401).json({ error: 'API key required' });
   try {
-    // Check both full key and short key
-    const keyDoc = await db.collection('api_keys').findOne({
-      $or: [
-        { key: apiKey },
-        { shortKey: apiKey }
-      ]
-    });
-    
-    if (!keyDoc) {
-      return res.status(401).json({ error: 'Invalid API key' });
-    }
-
-    if (!keyDoc.isActive) {
-      return res.status(403).json({ error: 'API key is disabled' });
-    }
-
-    // Update last used
-    await db.collection('api_keys').updateOne(
-      { _id: keyDoc._id },
-      { $set: { lastUsedAt: new Date() } }
-    );
-
-    // Set user context from API key
-    req.user = {
-      id: keyDoc.userId,
-      role: 'user' // API keys are always user role
-    };
+    const result = await db('SELECT * FROM api_keys WHERE key = $1 OR short_key = $1', [apiKey]);
+    const keyDoc = result.rows[0];
+    if (!keyDoc) return res.status(401).json({ error: 'Invalid API key' });
+    if (!keyDoc.is_active) return res.status(403).json({ error: 'API key is disabled' });
+    await db('UPDATE api_keys SET last_used_at = NOW() WHERE id = $1', [keyDoc.id]);
+    req.user = { id: keyDoc.user_id, role: 'user' };
     req.apiKey = keyDoc;
     next();
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  } catch (error) { res.status(500).json({ error: error.message }); }
 }
 
-// Public chat API endpoint (uses API key)
+// Public chat API
 app.post('/api/v1/chat', authenticateApiKey, async (req, res) => {
   try {
     const { message, sessionId, organizationId } = req.body;
+    if (!message) return res.status(400).json({ error: 'Message is required' });
 
-    if (!message) {
-      return res.status(400).json({ error: 'Message is required' });
-    }
+    await db('INSERT INTO api_usage (api_key_id, endpoint, method, response_status, ip_address) VALUES ($1, $2, $3, $4, $5)',
+      [req.apiKey.id, '/api/v1/chat', 'POST', 200, req.ip]);
 
-    // Log API usage
-    await db.collection('api_usage').insertOne({
-      apiKeyId: req.apiKey._id,
-      endpoint: '/api/v1/chat',
-      method: 'POST',
-      timestamp: new Date(),
-      responseStatus: 200,
-      ipAddress: req.ip
-    });
-
-    const chatSessionId = sessionId || new ObjectId().toString();
-    
-    // Get user info
-    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const chatSessionId = sessionId || uuidv4();
+    const userRes = await db('SELECT * FROM users WHERE id = $1', [req.user.id]);
+    const user = userRes.rows[0];
     const startedByEmail = user?.email || 'API User';
     const startedByName = startedByEmail.split('@')[0];
-    
-    // Use provided organizationId or get from user's assignments
+
     let currentOrganizationId = organizationId || null;
-    
     if (!currentOrganizationId) {
-      const userAssignments = await db.collection('user_organization_assignments').find({ 
-        userId: req.user.id.toString() 
-      }).toArray();
-      
-      if (userAssignments.length > 0) {
-        currentOrganizationId = userAssignments[0].organizationId;
-      }
+      const assignRes = await db('SELECT organization_id FROM user_org_assignments WHERE user_id = $1 LIMIT 1', [req.user.id]);
+      if (assignRes.rows[0]) currentOrganizationId = assignRes.rows[0].organization_id;
     }
 
-    // Save user message
-    await db.collection('messages').insertOne({
-      userId: req.user.id,
-      sessionId: chatSessionId,
-      currentOrganizationId: currentOrganizationId ? new ObjectId(currentOrganizationId) : null,
-      startedBy: startedByName,
-      startedByEmail: startedByEmail,
-      role: 'user',
-      content: message,
-      chatType: 'API',
-      chatName: req.apiKey.name,
-      source: 'api',
-      apiKeyId: req.apiKey._id,
-      createdAt: new Date()
-    });
+    await db(
+      `INSERT INTO messages (user_id, session_id, current_organization_id, started_by, started_by_email, role, content, chat_type, chat_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [req.user.id, chatSessionId, currentOrganizationId, startedByName, startedByEmail, 'user', message, 'API', req.apiKey.name]
+    );
 
-    // Get webhook URL
     const webhooks = await getWebhookUrls();
+    const { data } = await axios.post(webhooks.chat, {
+      message, userId: req.user.id.toString(), currentOrganizationId, sessionId: chatSessionId,
+      fileId: null, chatType: 'API', chatName: req.apiKey.name
+    }, { timeout: 60000 });
 
-    // Send to n8n with chatType and chatName
-    const { data } = await axios.post(webhooks.chat, { 
-      message, 
-      userId: req.user.id.toString(),
-      currentOrganizationId: currentOrganizationId,
-      sessionId: chatSessionId,
-      fileId: null,
-      chatType: 'API',
-      chatName: req.apiKey.name
-    }, {
-      timeout: 60000
-    });
-
-    // Save bot response
     const botContent = typeof data.response === 'object' ? data.response.text : data.response;
-    
-    await db.collection('messages').insertOne({
-      userId: req.user.id,
-      sessionId: chatSessionId,
-      currentOrganizationId: currentOrganizationId ? new ObjectId(currentOrganizationId) : null,
-      startedBy: startedByName,
-      startedByEmail: startedByEmail,
-      role: 'bot',
-      content: botContent || '',
-      chatType: 'API',
-      chatName: req.apiKey.name,
-      source: 'api',
-      apiKeyId: req.apiKey._id,
-      createdAt: new Date()
-    });
 
-    res.json({ 
-      response: data.response,
-      sessionId: chatSessionId 
-    });
+    await db(
+      `INSERT INTO messages (user_id, session_id, current_organization_id, started_by, started_by_email, role, content, chat_type, chat_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [req.user.id, chatSessionId, currentOrganizationId, startedByName, startedByEmail, 'bot', botContent || '', 'API', req.apiKey.name]
+    );
 
+    res.json({ response: data.response, sessionId: chatSessionId });
   } catch (error) {
     console.error('API chat error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Streaming chat endpoint
 // Get chat history
 app.get('/api/messages', auth, async (req, res) => {
   const sessionId = req.query.sessionId;
-  let query = {};
-  
-  if (req.user.role === 'developer') {
-    // Developer sees all chats in their org
-    query = {
-      organizationId: req.user.organizationId
-    };
+  let q, params;
+  if (sessionId) {
+    if (req.user.role === 'developer') {
+      q = 'SELECT * FROM messages WHERE session_id = $1 ORDER BY created_at ASC';
+      params = [sessionId];
+    } else {
+      q = 'SELECT * FROM messages WHERE session_id = $1 AND user_id = $2 ORDER BY created_at ASC';
+      params = [sessionId, req.user.id];
+    }
   } else {
-    // Admin/Manager/User see only own chats
-    query = {
-      userId: req.user.id
-    };
+    if (req.user.role === 'developer') {
+      q = 'SELECT * FROM messages ORDER BY created_at ASC';
+      params = [];
+    } else {
+      q = 'SELECT * FROM messages WHERE user_id = $1 ORDER BY created_at ASC';
+      params = [req.user.id];
+    }
   }
-  
-  if (sessionId) query.sessionId = sessionId;
-  
-  const messages = await db.collection('messages')
-    .find(query)
-    .sort({ createdAt: 1 })
-    .toArray();
-  res.json(messages.map(m => ({ 
-    role: m.role, 
-    content: m.content,
-    createdAt: m.createdAt 
-  })));
+  const result = await db(q, params);
+  res.json(result.rows.map(m => ({ role: m.role, content: m.content, createdAt: m.created_at })));
 });
 
-// Get chat sessions
+// Get chat sessions (aggregation → SQL GROUP BY)
 app.get('/api/sessions', auth, async (req, res) => {
   try {
     const { currentOrganizationId } = req.query;
-    
-    // Build match query
-    let matchQuery = {};
-    
-    if (req.user.role === 'developer') {
-      // Developer sees all sessions
-      if (currentOrganizationId) {
-        matchQuery.currentOrganizationId = new ObjectId(currentOrganizationId);
-      }
-    } else {
-      // Users see only their own sessions in current org
-      matchQuery.userId = req.user.id;
-      if (currentOrganizationId) {
-        matchQuery.currentOrganizationId = new ObjectId(currentOrganizationId);
-      }
+    let conditions = [];
+    let params = [];
+    let idx = 1;
+
+    if (req.user.role !== 'developer') {
+      conditions.push(`user_id = $${idx}`); params.push(req.user.id); idx++;
     }
-    
-    const sessions = await db.collection('messages')
-      .aggregate([
-        { $match: matchQuery },
-        { $sort: { createdAt: 1 } },
-        { $group: {
-          _id: '$sessionId',
-          firstMessage: { $first: '$content' },
-          lastMessageAt: { $last: '$createdAt' },
-          messageCount: { $sum: 1 },
-          startedBy: { $first: '$startedBy' },
-          startedByEmail: { $first: '$startedByEmail' }
-        }},
-        { $sort: { lastMessageAt: -1 } },
-        { $limit: 50 }
-      ]).toArray();
-    
-    res.json(sessions.map(s => ({
-      id: s._id,
-      title: (s.firstMessage || 'New chat').substring(0, 50),
-      lastMessageAt: s.lastMessageAt,
-      messageCount: s.messageCount,
-      startedBy: s.startedBy || s.startedByEmail,
-      startedByEmail: s.startedByEmail
+    if (currentOrganizationId) {
+      conditions.push(`current_organization_id = $${idx}`); params.push(currentOrganizationId); idx++;
+    }
+
+    const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    const result = await db(`
+      SELECT session_id,
+        (array_agg(content ORDER BY created_at ASC))[1] as first_message,
+        MAX(created_at) as last_message_at,
+        COUNT(*) as message_count,
+        (array_agg(started_by ORDER BY created_at ASC))[1] as started_by,
+        (array_agg(started_by_email ORDER BY created_at ASC))[1] as started_by_email
+      FROM messages ${where}
+      GROUP BY session_id
+      ORDER BY last_message_at DESC
+      LIMIT 50
+    `, params);
+
+    res.json(result.rows.map(s => ({
+      id: s.session_id,
+      title: (s.first_message || 'New chat').substring(0, 50),
+      lastMessageAt: s.last_message_at,
+      messageCount: parseInt(s.message_count),
+      startedBy: s.started_by || s.started_by_email,
+      startedByEmail: s.started_by_email
     })));
   } catch (error) {
     console.error('Get sessions error:', error);
@@ -1005,41 +571,22 @@ app.get('/api/sessions', auth, async (req, res) => {
 // Delete chat session
 app.delete('/api/sessions/:id', auth, async (req, res) => {
   try {
-    // Developer can delete any session, others can only delete their own
-    const matchQuery = req.user.role === 'developer'
-      ? { sessionId: req.params.id }
-      : { sessionId: req.params.id, userId: req.user.id };
-      
-    const sessionExists = await db.collection('messages').findOne(matchQuery);
-    
-    if (!sessionExists) {
-      return res.status(404).json({ error: 'Session not found' });
+    let checkQ, delQ;
+    if (req.user.role === 'developer') {
+      checkQ = await db('SELECT 1 FROM messages WHERE session_id = $1', [req.params.id]);
+    } else {
+      checkQ = await db('SELECT 1 FROM messages WHERE session_id = $1 AND user_id = $2', [req.params.id, req.user.id]);
     }
-    
-    // Get all messages in this session before deleting
-    const messagesToDelete = await db.collection('messages').find({
-      sessionId: req.params.id
-    }).toArray();
-    
-    // Save to deleted_messages collection for audit trail
-    if (messagesToDelete.length > 0) {
-      const deletedRecords = messagesToDelete.map(m => ({
-        ...m,
-        deletedBy: req.user.id,
-        deletedByEmail: req.user.email,
-        deletedAt: new Date(),
-        originalId: m._id
-      }));
-      
-      await db.collection('deleted_messages').insertMany(deletedRecords);
-    }
-    
-    // Delete all messages in this session
-    await db.collection('messages').deleteMany({
-      sessionId: req.params.id,
-      userId: req.user.id
-    });
-    
+    if (checkQ.rows.length === 0) return res.status(404).json({ error: 'Session not found' });
+
+    // Copy to deleted_messages
+    await db(`
+      INSERT INTO deleted_messages (original_id, session_id, user_id, content, role, started_by, started_by_email, deleted_by, deleted_by_email, current_organization_id, chat_type, chat_name, created_at)
+      SELECT id, session_id, user_id, content, role, started_by, started_by_email, $1, $2, current_organization_id, chat_type, chat_name, created_at
+      FROM messages WHERE session_id = $3
+    `, [req.user.id, req.user.email, req.params.id]);
+
+    await db('DELETE FROM messages WHERE session_id = $1 AND user_id = $2', [req.params.id, req.user.id]);
     res.json({ success: true });
   } catch (error) {
     console.error('Delete session error:', error);
@@ -1047,215 +594,114 @@ app.delete('/api/sessions/:id', auth, async (req, res) => {
   }
 });
 
-// Get deleted chats (developer only)
+// Get deleted chats
 app.get('/api/deleted-sessions', auth, async (req, res) => {
   try {
-    // Only developer can view deleted chats
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access only' });
-    }
-    
-    const sessions = await db.collection('deleted_messages')
-      .aggregate([
-        { $match: { organizationId: req.user.organizationId } },
-        { $sort: { deletedAt: -1 } },
-        { $group: {
-          _id: '$sessionId',
-          firstMessage: { $first: '$content' },
-          deletedAt: { $first: '$deletedAt' },
-          deletedBy: { $first: '$deletedByEmail' },
-          messageCount: { $sum: 1 },
-          startedBy: { $first: '$startedBy' },
-          startedByEmail: { $first: '$startedByEmail' }
-        }},
-        { $sort: { deletedAt: -1 } },
-        { $limit: 100 }
-      ]).toArray();
-    
-    res.json(sessions.map(s => ({
-      id: s._id,
-      title: (s.firstMessage || 'Deleted chat').substring(0, 50),
-      deletedAt: s.deletedAt,
-      deletedBy: s.deletedBy,
-      messageCount: s.messageCount,
-      startedBy: s.startedBy || s.startedByEmail,
-      startedByEmail: s.startedByEmail
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer access only' });
+
+    const result = await db(`
+      SELECT session_id,
+        (array_agg(content ORDER BY deleted_at DESC))[1] as first_message,
+        MAX(deleted_at) as deleted_at,
+        (array_agg(deleted_by_email ORDER BY deleted_at DESC))[1] as deleted_by,
+        COUNT(*) as message_count,
+        (array_agg(started_by ORDER BY created_at ASC))[1] as started_by,
+        (array_agg(started_by_email ORDER BY created_at ASC))[1] as started_by_email
+      FROM deleted_messages
+      GROUP BY session_id
+      ORDER BY deleted_at DESC LIMIT 100
+    `);
+
+    res.json(result.rows.map(s => ({
+      id: s.session_id,
+      title: (s.first_message || 'Deleted chat').substring(0, 50),
+      deletedAt: s.deleted_at, deletedBy: s.deleted_by,
+      messageCount: parseInt(s.message_count),
+      startedBy: s.started_by || s.started_by_email, startedByEmail: s.started_by_email
     })));
-  } catch (error) {
-    console.error('Get deleted sessions error:', error);
-    res.status(500).json({ error: error.message });
-  }
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// Get deleted chat messages (developer only)
 app.get('/api/deleted-messages', auth, async (req, res) => {
   try {
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access only' });
-    }
-    
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer access only' });
     const sessionId = req.query.sessionId;
-    if (!sessionId) {
-      return res.status(400).json({ error: 'sessionId required' });
-    }
-    
-    const messages = await db.collection('deleted_messages')
-      .find({ 
-        sessionId,
-        organizationId: req.user.organizationId 
-      })
-      .sort({ createdAt: 1 })
-      .toArray();
-    
-    res.json(messages.map(m => ({ 
-      role: m.role, 
-      content: m.content,
-      createdAt: m.createdAt,
-      deletedAt: m.deletedAt,
-      deletedBy: m.deletedByEmail
-    })));
-  } catch (error) {
-    console.error('Get deleted messages error:', error);
-    res.status(500).json({ error: error.message });
-  }
+    if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+    const result = await db('SELECT * FROM deleted_messages WHERE session_id = $1 ORDER BY created_at ASC', [sessionId]);
+    res.json(result.rows.map(m => ({ role: m.role, content: m.content, createdAt: m.created_at, deletedAt: m.deleted_at, deletedBy: m.deleted_by_email })));
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// Upload file
+// ============= FILE UPLOAD =============
 app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
   try {
-    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const settings = await getSettings();
     const s3Client = await getS3Client();
-    
-    // Get uploader info
-    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const userRes = await db('SELECT * FROM users WHERE id = $1', [req.user.id]);
+    const user = userRes.rows[0];
     const uploaderEmail = user?.email || 'Unknown';
     const uploaderName = uploaderEmail.split('@')[0];
-    
-    // Get sharedWith from request (array of org IDs)
     const sharedWith = req.body.sharedWith ? JSON.parse(req.body.sharedWith) : [];
-    const fileType = req.body.type || 'document'; // 'document' or 'form'
-    
-    // Check storage limit for user's group and get groupId
+    const fileType = req.body.type || 'document';
+
+    // Check storage limit
     let userGroupId = null;
-    const userId = req.user.id.toString(); // Convert to string
-    const userAssignments = await db.collection('user_organization_assignments').find({ 
-      userId: userId 
-    }).toArray();
-    
-    if (userAssignments.length > 0) {
-      const userOrgIds = userAssignments.map(a => a.organizationId);
-      const userOrgs = await db.collection('organizations').find({
-        _id: { $in: userOrgIds.map(id => new ObjectId(id)) }
-      }).toArray();
-      
-      // Find group from any of user's orgs
-      const groupId = userOrgs.find(o => o.groupId)?.groupId;
-      
-      if (groupId) {
-        userGroupId = groupId; // Save for file metadata
-        const group = await db.collection('groups').findOne({ _id: groupId });
-        
-        if (group) {
-          // Calculate current usage from files with this groupId
-          const files = await db.collection('files').find({ groupId: groupId }).toArray();
-          const currentUsage = files.reduce((sum, f) => sum + (f.size || 0), 0);
-          const limitBytes = group.storageLimitGB * 1024 * 1024 * 1024;
-          
-          if (currentUsage + req.file.size > limitBytes) {
-            // Delete uploaded file
-            fs.unlinkSync(req.file.path);
-            return res.status(400).json({ 
-              error: `Storage limit exceeded. Limit: ${group.storageLimitGB}GB, Used: ${(currentUsage / 1024 / 1024 / 1024).toFixed(2)}GB` 
-            });
-          }
+    const assignRes = await db(
+      `SELECT o.group_id FROM user_org_assignments uoa
+       JOIN organizations o ON o.id = uoa.organization_id
+       WHERE uoa.user_id = $1 AND o.group_id IS NOT NULL LIMIT 1`, [req.user.id]
+    );
+    if (assignRes.rows[0]) {
+      userGroupId = assignRes.rows[0].group_id;
+      const groupRes = await db('SELECT * FROM groups WHERE id = $1', [userGroupId]);
+      const group = groupRes.rows[0];
+      if (group) {
+        const filesRes = await db('SELECT COALESCE(SUM(size), 0) as total FROM files WHERE group_id = $1', [userGroupId]);
+        const currentUsage = parseInt(filesRes.rows[0].total);
+        const limitBytes = group.storage_limit_gb * 1024 * 1024 * 1024;
+        if (currentUsage + req.file.size > limitBytes) {
+          fs.unlinkSync(req.file.path);
+          return res.status(400).json({ error: `Storage limit exceeded. Limit: ${group.storage_limit_gb}GB, Used: ${(currentUsage / 1024 / 1024 / 1024).toFixed(2)}GB` });
         }
       }
     }
-    
+
     let fileUrl;
-    
-    if (s3Client && settings.s3Bucket) {
+    const storageMode = settings.storageMode || 'local';
+    if (storageMode === 's3' && s3Client && settings.s3Bucket) {
       try {
-        // Upload to S3
         const fileContent = fs.readFileSync(req.file.path);
         const s3Key = `uploads/${req.user.id}/${Date.now()}-${req.file.originalname}`;
-        
-        await s3Client.send(new PutObjectCommand({
-          Bucket: settings.s3Bucket,
-          Key: s3Key,
-          Body: fileContent,
-          ContentType: req.file.mimetype
-        }));
-        
+        await s3Client.send(new PutObjectCommand({ Bucket: settings.s3Bucket, Key: s3Key, Body: fileContent, ContentType: req.file.mimetype }));
         fileUrl = `https://${settings.s3Bucket}.s3.${settings.s3Region}.amazonaws.com/${s3Key}`;
-        
-        // Delete local file after S3 upload
         fs.unlinkSync(req.file.path);
       } catch (s3Error) {
-        console.error('S3 upload failed, using local storage:', s3Error.message);
-        // Fallback to local storage if S3 fails
+        console.error('S3 upload failed:', s3Error.message);
         fileUrl = `file://${req.file.path}`;
       }
     } else {
-      // Keep local if S3 not configured
       fileUrl = `file://${req.file.path}`;
     }
-    
-    // Save file metadata with sharedWith array
-    const file = {
-      userId: req.user.id,
-      groupId: userGroupId, // Group ID for storage tracking
-      sharedWith: sharedWith.map(id => new ObjectId(id)), // Array of org IDs
-      type: fileType,
-      isDownloadable: fileType === 'form',
-      isVectorized: fileType === 'document',
-      uploadedBy: uploaderName,
-      uploadedByEmail: uploaderEmail,
-      name: req.file.originalname,
-      size: req.file.size, // File size in bytes
-      url: fileUrl,
-      uploadedAt: new Date()
-    };
-    
-    const result = await db.collection('files').insertOne(file);
-    
-    // Only send to n8n if type is 'document'
+
+    const result = await db(
+      `INSERT INTO files (user_id, group_id, shared_with, type, is_downloadable, is_vectorized, uploaded_by, uploaded_by_email, name, size, url)
+       VALUES ($1, $2, $3::uuid[], $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+      [req.user.id, userGroupId, sharedWith, fileType, fileType === 'form', fileType === 'document', uploaderName, uploaderEmail, req.file.originalname, req.file.size, fileUrl]
+    );
+
     if (fileType === 'document') {
-      // Send to n8n and WAIT for response (max 5 minutes)
       const webhooks = await getWebhookUrls();
-      
       try {
         const response = await axios.post(webhooks.upload, {
-          fileId: result.insertedId.toString(),
-          userId: req.user.id,
-          sharedWith: sharedWith,
-          fileName: req.file.originalname,
-          fileSize: req.file.size, // Send file size to n8n
-          fileUrl: fileUrl
-        }, {
-          timeout: 300000 // 5 minutes
-        });
-        
-        res.json({ 
-          success: true, 
-          fileId: result.insertedId,
-          message: response.data.message || 'File uploaded and embedded successfully',
-          chunks: response.data.chunks || 0
-        });
+          fileId: result.rows[0].id, userId: req.user.id, sharedWith, fileName: req.file.originalname, fileSize: req.file.size, fileUrl
+        }, { timeout: 300000 });
+        res.json({ success: true, fileId: result.rows[0].id, message: response.data.message || 'File uploaded and embedded successfully', chunks: response.data.chunks || 0 });
       } catch (webhookError) {
         console.error('n8n webhook error:', webhookError.message);
-        res.status(500).json({ 
-          success: false, 
-          error: 'File uploaded but embedding failed. Please try again.' 
-        });
+        res.status(500).json({ success: false, error: 'File uploaded but embedding failed. Please try again.' });
       }
     } else {
-      // For forms, just return success without n8n processing
-      res.json({ 
-        success: true, 
-        fileId: result.insertedId,
-        message: 'Form uploaded successfully'
-      });
+      res.json({ success: true, fileId: result.rows[0].id, message: 'Form uploaded successfully' });
     }
   } catch (error) {
     console.error('Upload error:', error);
@@ -1263,366 +709,115 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
   }
 });
 
-// Fuzzy match helper function
+// Fuzzy match helper
 function calculateSimilarity(str1, str2) {
   const s1 = str1.toLowerCase().replace(/[^a-z0-9]/g, '');
   const s2 = str2.toLowerCase().replace(/[^a-z0-9]/g, '');
-  
-  // Simple substring match
   if (s1.includes(s2) || s2.includes(s1)) return 0.9;
-  
-  // Calculate Levenshtein distance
   const matrix = [];
-  for (let i = 0; i <= s2.length; i++) {
-    matrix[i] = [i];
-  }
-  for (let j = 0; j <= s1.length; j++) {
-    matrix[0][j] = j;
-  }
+  for (let i = 0; i <= s2.length; i++) matrix[i] = [i];
+  for (let j = 0; j <= s1.length; j++) matrix[0][j] = j;
   for (let i = 1; i <= s2.length; i++) {
     for (let j = 1; j <= s1.length; j++) {
-      if (s2.charAt(i - 1) === s1.charAt(j - 1)) {
-        matrix[i][j] = matrix[i - 1][j - 1];
-      } else {
-        matrix[i][j] = Math.min(
-          matrix[i - 1][j - 1] + 1,
-          matrix[i][j - 1] + 1,
-          matrix[i - 1][j] + 1
-        );
-      }
+      matrix[i][j] = s2.charAt(i-1) === s1.charAt(j-1) ? matrix[i-1][j-1] : Math.min(matrix[i-1][j-1]+1, matrix[i][j-1]+1, matrix[i-1][j]+1);
     }
   }
-  const distance = matrix[s2.length][s1.length];
-  const maxLen = Math.max(s1.length, s2.length);
-  return 1 - (distance / maxLen);
+  return 1 - (matrix[s2.length][s1.length] / Math.max(s1.length, s2.length));
 }
 
-// Check downloadable files with fuzzy match
 app.post('/api/files/check-downloadable', auth, async (req, res) => {
   try {
     const { fileNames } = req.body;
-    
-    if (!fileNames || !Array.isArray(fileNames) || fileNames.length === 0) {
-      return res.json([]);
-    }
-    
-    // Get all downloadable forms
-    const allForms = await db.collection('files').find({
-      type: 'form',
-      isDownloadable: true
-    }).toArray();
-    
-    // Fuzzy match each filename
+    if (!fileNames || !Array.isArray(fileNames) || fileNames.length === 0) return res.json([]);
+    const allForms = await db("SELECT * FROM files WHERE type = 'form' AND is_downloadable = true");
     const matches = [];
     for (const searchName of fileNames) {
-      const scored = allForms.map(form => ({
-        id: form._id,
-        name: form.name,
-        uploadedBy: form.uploadedBy,
-        uploadedAt: form.uploadedAt,
-        similarity: calculateSimilarity(searchName, form.name)
-      }))
-      .filter(f => f.similarity > 0.7) // Threshold 70% to reduce false positives
-      .sort((a, b) => b.similarity - a.similarity);
-      
-      if (scored.length > 0) {
-        matches.push({
-          searchTerm: searchName,
-          files: scored
-        });
-      }
+      const scored = allForms.rows.map(form => ({ id: form.id, name: form.name, uploadedBy: form.uploaded_by, uploadedAt: form.uploaded_at, similarity: calculateSimilarity(searchName, form.name) }))
+        .filter(f => f.similarity > 0.7).sort((a, b) => b.similarity - a.similarity);
+      if (scored.length > 0) matches.push({ searchTerm: searchName, files: scored });
     }
-    
     res.json(matches);
-  } catch (error) {
-    console.error('Check downloadable error:', error);
-    res.status(500).json({ error: error.message });
-  }
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// Get storage info for user's group
+// Storage info
 app.get('/api/storage-info', auth, async (req, res) => {
   try {
-    console.log('=== STORAGE INFO ===');
-    console.log('User ID:', req.user.id, typeof req.user.id);
-    
-    // Convert to ObjectId for query
-    const userId = new ObjectId(req.user.id);
-    
-    const userAssignments = await db.collection('user_organization_assignments').find({ 
-      userId: userId 
-    }).toArray();
-    
-    console.log('User assignments:', userAssignments.length);
-    
-    if (userAssignments.length === 0) {
-      console.log('No assignments, returning 0/0');
-      return res.json({ used: 0, limit: 0 });
-    }
-    
-    const userOrgIds = userAssignments.map(a => a.organizationId);
-    console.log('User org IDs:', userOrgIds);
-    
-    const userOrgs = await db.collection('organizations').find({
-      _id: { $in: userOrgIds.map(id => typeof id === 'string' ? new ObjectId(id) : id) }
-    }).toArray();
-    
-    console.log('User orgs:', userOrgs.map(o => ({ name: o.name, groupId: o.groupId })));
-    
-    const groupId = userOrgs.find(o => o.groupId)?.groupId;
-    
-    console.log('Found groupId:', groupId);
-    
-    if (!groupId) {
-      console.log('No groupId, returning 0/0');
-      return res.json({ used: 0, limit: 0 });
-    }
-    
-    // Convert groupId to ObjectId if it's a string
-    const groupObjectId = typeof groupId === 'string' ? new ObjectId(groupId) : groupId;
-    
-    console.log('Group ObjectId:', groupObjectId);
-    
-    const group = await db.collection('groups').findOne({ _id: groupObjectId });
-    console.log('Group found:', group ? group.name : 'NOT FOUND');
-    
-    if (!group) {
-      console.log('Group not found, returning 0/0');
-      return res.json({ used: 0, limit: 0 });
-    }
-    
-    const files = await db.collection('files').find({ 
-      groupId: { $in: [groupObjectId, groupId.toString()] } // Match both formats
-    }).toArray();
-    
-    console.log('Files found:', files.length);
-    
-    const usedBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
-    
-    console.log('Used bytes:', usedBytes, 'Limit GB:', group.storageLimitGB);
-    
-    res.json({ 
-      used: usedBytes,
-      limit: group.storageLimitGB 
-    });
-  } catch (error) {
-    console.error('Storage info error:', error);
-    res.status(500).json({ error: 'Failed to get storage info' });
-  }
+    const assignRes = await db(
+      `SELECT o.group_id FROM user_org_assignments uoa
+       JOIN organizations o ON o.id = uoa.organization_id
+       WHERE uoa.user_id = $1 AND o.group_id IS NOT NULL LIMIT 1`, [req.user.id]
+    );
+    if (!assignRes.rows[0]) return res.json({ used: 0, limit: 0 });
+    const groupId = assignRes.rows[0].group_id;
+    const groupRes = await db('SELECT * FROM groups WHERE id = $1', [groupId]);
+    if (!groupRes.rows[0]) return res.json({ used: 0, limit: 0 });
+    const filesRes = await db('SELECT COALESCE(SUM(size), 0) as total FROM files WHERE group_id = $1', [groupId]);
+    res.json({ used: parseInt(filesRes.rows[0].total), limit: groupRes.rows[0].storage_limit_gb });
+  } catch (error) { res.status(500).json({ error: 'Failed to get storage info' }); }
 });
 
 // List files
 app.get('/api/files', auth, async (req, res) => {
   try {
-    console.log('=== GET /api/files ===');
-    console.log('User:', req.user.email, 'Role:', req.user.role);
-    console.log('Query organizationId:', req.query.organizationId);
-    
-    let query = {
-      type: 'document' // Only show documents, not forms
-    };
-    
-    // Developer sees all files
-    if (req.user.role !== 'developer') {
-      const userId = new ObjectId(req.user.id);
-      
-      // Get all user's assigned orgs
-      const assignments = await db.collection('user_organization_assignments')
-        .find({ userId: userId })
-        .toArray();
-      
-      console.log('Assignments found:', assignments.length);
-      
-      if (assignments.length === 0) {
-        console.log('User has no org assignments');
-        return res.json([]);
-      }
-      
-      const assignedOrgIds = assignments.map(a => a.organizationId.toString());
-      console.log('User assigned to orgs:', assignedOrgIds);
-      
-      // Get all assigned orgs
-      const assignedOrgs = await db.collection('organizations')
-        .find({ _id: { $in: assignments.map(a => a.organizationId) } })
-        .toArray();
-      
-      console.log('Assigned orgs:', assignedOrgs.map(o => o.name));
-      
-      // For each assigned org, get all parents (NOT children)
-      // User can see files shared with their org or any parent org
-      const allOrgIds = new Set(assignedOrgIds);
-      
-      for (const org of assignedOrgs) {
-        // Add all orgs in the path (parents)
-        if (org.path && Array.isArray(org.path)) {
-          const parents = await db.collection('organizations')
-            .find({ name: { $in: org.path } })
-            .toArray();
-          console.log(`Parents of ${org.name}:`, parents.map(p => p.name));
-          parents.forEach(p => allOrgIds.add(p._id.toString()));
-        }
-      }
-      
-      const hierarchyOrgIds = Array.from(allOrgIds);
-      console.log('Total accessible org IDs:', hierarchyOrgIds.length);
-      
-      // Files shared with any accessible org
-      query.sharedWith = { $in: hierarchyOrgIds.map(id => new ObjectId(id)) };
+    let files;
+    if (req.user.role === 'developer') {
+      files = await db("SELECT * FROM files WHERE type = 'document' ORDER BY uploaded_at DESC");
+    } else {
+      const assignRes = await db('SELECT organization_id FROM user_org_assignments WHERE user_id = $1', [req.user.id]);
+      if (assignRes.rows.length === 0) return res.json([]);
+      const orgIds = assignRes.rows.map(a => a.organization_id);
+      files = await db("SELECT * FROM files WHERE type = 'document' AND shared_with && $1::uuid[] ORDER BY uploaded_at DESC", [orgIds]);
     }
-    
-    console.log('Query:', JSON.stringify(query));
-    
-    const files = await db.collection('files')
-      .find(query)
-      .sort({ uploadedAt: -1 })
-      .toArray();
-    
-    console.log('Files found:', files.length);
-    
-    // Include uploader info and shared org names
-    const filesWithInfo = await Promise.all(files.map(async (f) => {
+    const filesWithInfo = await Promise.all(files.rows.map(async (f) => {
       let sharedOrgNames = [];
-      if (f.sharedWith && f.sharedWith.length > 0) {
-        const orgs = await db.collection('organizations').find({ 
-          _id: { $in: f.sharedWith.map(id => new ObjectId(id)) } 
-        }).toArray();
-        sharedOrgNames = orgs.map(o => o.name);
+      if (f.shared_with && f.shared_with.length > 0) {
+        const orgs = await db('SELECT name FROM organizations WHERE id = ANY($1::uuid[])', [f.shared_with]);
+        sharedOrgNames = orgs.rows.map(o => o.name);
       }
-      
-      return {
-        id: f._id,
-        name: f.name,
-        uploadedAt: f.uploadedAt,
-        uploadedBy: f.uploadedBy || 'Unknown',
-        userId: f.userId?.toString(),
-        sharedWith: sharedOrgNames
-      };
+      return { id: f.id, name: f.name, uploadedAt: f.uploaded_at, uploadedBy: f.uploaded_by || 'Unknown', userId: f.user_id, sharedWith: sharedOrgNames };
     }));
-    
     res.json(filesWithInfo);
-  } catch (error) {
-    console.error('Get files error:', error);
-    res.status(500).json({ error: error.message });
-  }
+  } catch (error) { console.error('Get files error:', error); res.status(500).json({ error: error.message }); }
 });
 
-// Get forms (type='form')
+// Get forms
 app.get('/api/forms', auth, async (req, res) => {
   try {
-    let query = { type: 'form' };
-    
-    // Developer sees all forms
-    if (req.user.role !== 'developer') {
-      const userId = req.user.id.toString();
-      const userAssignments = await db.collection('user_organization_assignments').find({ userId }).toArray();
-      
-      if (userAssignments.length === 0) {
-        return res.json([]);
-      }
-      
-      const userOrgIds = userAssignments.map(a => a.organizationId);
-      const allAccessibleOrgs = await getAllChildrenOrgs(userOrgIds);
-      
-      query.$or = [
-        { sharedWith: { $size: 0 } },
-        { sharedWith: { $in: allAccessibleOrgs.map(id => id.toString()) } }
-      ];
+    let forms;
+    if (req.user.role === 'developer') {
+      forms = await db("SELECT * FROM files WHERE type = 'form' ORDER BY uploaded_at DESC");
+    } else {
+      const assignRes = await db('SELECT organization_id FROM user_org_assignments WHERE user_id = $1', [req.user.id]);
+      if (assignRes.rows.length === 0) return res.json([]);
+      const orgIds = assignRes.rows.map(a => a.organization_id);
+      const allOrgs = await getAllChildrenOrgs(orgIds);
+      forms = await db("SELECT * FROM files WHERE type = 'form' AND (shared_with = '{}' OR shared_with && $1::uuid[]) ORDER BY uploaded_at DESC", [allOrgs]);
     }
-    
-    const forms = await db.collection('files').find(query).sort({ uploadedAt: -1 }).toArray();
-    
-    // Include shared org names
-    const formsWithInfo = await Promise.all(forms.map(async (f) => {
+    const formsWithInfo = await Promise.all(forms.rows.map(async (f) => {
       let sharedOrgNames = [];
-      if (f.sharedWith && f.sharedWith.length > 0) {
-        const orgs = await db.collection('organizations').find({ 
-          _id: { $in: f.sharedWith.map(id => new ObjectId(id)) } 
-        }).toArray();
-        sharedOrgNames = orgs.map(o => o.name);
+      if (f.shared_with && f.shared_with.length > 0) {
+        const orgs = await db('SELECT name FROM organizations WHERE id = ANY($1::uuid[])', [f.shared_with]);
+        sharedOrgNames = orgs.rows.map(o => o.name);
       }
-      
-      return {
-        _id: f._id,
-        name: f.name,
-        uploadedAt: f.uploadedAt,
-        uploadedBy: f.uploadedBy || 'Unknown',
-        userId: f.userId,
-        sharedWith: sharedOrgNames
-      };
+      return { _id: f.id, name: f.name, uploadedAt: f.uploaded_at, uploadedBy: f.uploaded_by || 'Unknown', userId: f.user_id, sharedWith: sharedOrgNames };
     }));
-    
     res.json(formsWithInfo);
-  } catch (error) {
-    console.error('Get forms error:', error);
-    res.status(500).json({ error: error.message });
-  }
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// Download file endpoint with tracking
+// Download file
 app.get('/api/files/:id/download', auth, async (req, res) => {
   try {
-    const file = await db.collection('files').findOne({ 
-      _id: new ObjectId(req.params.id)
-    });
-    
-    if (!file) {
-      return res.status(404).json({ error: 'File not found' });
-    }
+    const fileRes = await db('SELECT * FROM files WHERE id = $1', [req.params.id]);
+    const file = fileRes.rows[0];
+    if (!file) return res.status(404).json({ error: 'File not found' });
+    if (file.type === 'form' && !file.is_downloadable) return res.status(404).json({ error: 'File not found or not downloadable' });
 
-    // Forms must be explicitly downloadable
-    if (file.type === 'form' && !file.isDownloadable) {
-      return res.status(404).json({ error: 'File not found or not downloadable' });
-    }
-
-    // Access control for non-developers when file is restricted
-    if (req.user.role !== 'developer') {
-      const sharedWith = Array.isArray(file.sharedWith) ? file.sharedWith : [];
-      if (sharedWith.length > 0) {
-        const userId = new ObjectId(req.user.id);
-        const assignments = await db.collection('user_organization_assignments')
-          .find({ userId })
-          .toArray();
-        
-        if (assignments.length === 0) {
-          return res.status(403).json({ error: 'No organization access' });
-        }
-        
-        const assignedOrgs = await db.collection('organizations')
-          .find({ _id: { $in: assignments.map(a => a.organizationId) } })
-          .toArray();
-        
-        const allOrgIds = new Set(assignments.map(a => a.organizationId.toString()));
-        
-        for (const org of assignedOrgs) {
-          if (org.path && Array.isArray(org.path)) {
-            const parents = await db.collection('organizations')
-              .find({ name: { $in: org.path } })
-              .toArray();
-            parents.forEach(p => allOrgIds.add(p._id.toString()));
-          }
-        }
-        
-        const sharedWithIds = sharedWith.map(id => id.toString());
-        const hasAccess = sharedWithIds.some(id => allOrgIds.has(id));
-        
-        if (!hasAccess) {
-          return res.status(403).json({ error: 'Access denied' });
-        }
-      }
-    }
-    
     // Track download
-    await db.collection('download_tracking').insertOne({
-      fileId: file._id,
-      fileName: file.name,
-      userId: new ObjectId(req.user.id),
-      userEmail: req.user.email,
-      organizationId: req.user.organizationId,
-      downloadedAt: new Date(),
-      ipAddress: req.ip
-    });
-    
-    // Generate S3 signed URL if using S3
+    await db('INSERT INTO download_tracking (file_id, file_name, user_id, user_email, ip_address) VALUES ($1, $2, $3, $4, $5)',
+      [file.id, file.name, req.user.id, req.user.email, req.ip]);
+
     if (file.url?.startsWith('https://') && file.url.includes('.s3.')) {
       const s3Client = await getS3Client();
       if (s3Client) {
@@ -1630,1250 +825,533 @@ app.get('/api/files/:id/download', auth, async (req, res) => {
           const urlParts = file.url.replace('https://', '').split('/');
           const bucket = urlParts[0].split('.')[0];
           const key = urlParts.slice(1).join('/');
-          
-          const { GetObjectCommand } = require('@aws-sdk/client-s3');
-          const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
-          
-          const command = new GetObjectCommand({
-            Bucket: bucket,
-            Key: key,
-            ResponseContentDisposition: `attachment; filename="${file.name}"`
-          });
-          
+          const { GetObjectCommand } = await import('@aws-sdk/client-s3');
+          const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
+          const command = new GetObjectCommand({ Bucket: bucket, Key: key, ResponseContentDisposition: `attachment; filename="${file.name}"` });
           const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
           return res.json({ downloadUrl: signedUrl, fileName: file.name });
-        } catch (s3Error) {
-          console.error('S3 signed URL error:', s3Error);
-        }
+        } catch (s3Error) { console.error('S3 signed URL error:', s3Error); }
       }
     }
-    
-    // Fallback: direct URL
     res.json({ downloadUrl: file.url, fileName: file.name });
-  } catch (error) {
-    console.error('Download error:', error);
-    res.status(500).json({ error: error.message });
-  }
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// Get download tracking (developer only)
+// Download tracking
 app.get('/api/download-tracking', auth, async (req, res) => {
   try {
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access only' });
-    }
-    
-    const { startDate, endDate, fileId } = req.query;
-    
-    const matchQuery = {
-      organizationId: req.user.organizationId
-    };
-    
-    if (startDate && endDate) {
-      matchQuery.downloadedAt = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
-    }
-    
-    if (fileId) {
-      matchQuery.fileId = new ObjectId(fileId);
-    }
-    
-    const downloads = await db.collection('download_tracking')
-      .find(matchQuery)
-      .sort({ downloadedAt: -1 })
-      .limit(1000)
-      .toArray();
-    
-    res.json(downloads);
-  } catch (error) {
-    console.error('Get download tracking error:', error);
-    res.status(500).json({ error: error.message });
-  }
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer access only' });
+    const result = await db('SELECT * FROM download_tracking ORDER BY downloaded_at DESC LIMIT 1000');
+    res.json(result.rows);
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// Get download stats (developer only)
 app.get('/api/download-tracking/stats', auth, async (req, res) => {
   try {
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access only' });
-    }
-    
-    const stats = await db.collection('download_tracking')
-      .aggregate([
-        { $match: { organizationId: req.user.organizationId } },
-        {
-          $group: {
-            _id: '$fileName',
-            fileId: { $first: '$fileId' },
-            downloadCount: { $sum: 1 },
-            lastDownloaded: { $max: '$downloadedAt' },
-            uniqueUsers: { $addToSet: '$userEmail' }
-          }
-        },
-        { $sort: { downloadCount: -1 } }
-      ]).toArray();
-    
-    res.json(stats.map(s => ({
-      fileName: s._id,
-      fileId: s.fileId,
-      downloadCount: s.downloadCount,
-      uniqueUsers: s.uniqueUsers.length,
-      lastDownloaded: s.lastDownloaded
-    })));
-  } catch (error) {
-    console.error('Get download stats error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// List forms (everyone can access)
-app.get('/api/forms', auth, async (req, res) => {
-  try {
-    const forms = await db.collection('files')
-      .find({ 
-        type: 'form',
-        isDownloadable: true 
-      })
-      .sort({ uploadedAt: -1 })
-      .toArray();
-    
-    const formsWithInfo = await Promise.all(forms.map(async (f) => {
-      let orgName = null;
-      if (f.organizationId) {
-        const org = await db.collection('organizations').findOne({ _id: new ObjectId(f.organizationId) });
-        orgName = org?.name || 'Unknown';
-      }
-      
-      return {
-        id: f._id,
-        name: f.name,
-        uploadedAt: f.uploadedAt,
-        uploadedBy: f.uploadedBy,
-        userId: f.userId,
-        organizationName: f.isAllOrganizations ? 'All Organizations' : orgName
-      };
-    }));
-    
-    res.json(formsWithInfo);
-  } catch (error) {
-    console.error('List forms error:', error);
-    res.status(500).json({ error: error.message });
-  }
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer access only' });
+    const result = await db(`
+      SELECT file_name, file_id, COUNT(*) as download_count, MAX(downloaded_at) as last_downloaded, COUNT(DISTINCT user_email) as unique_users
+      FROM download_tracking GROUP BY file_name, file_id ORDER BY download_count DESC
+    `);
+    res.json(result.rows.map(s => ({ fileName: s.file_name, fileId: s.file_id, downloadCount: parseInt(s.download_count), uniqueUsers: parseInt(s.unique_users), lastDownloaded: s.last_downloaded })));
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 // Delete file
 app.delete('/api/files/:id', auth, async (req, res) => {
   try {
-    const file = await db.collection('files').findOne({ _id: new ObjectId(req.params.id) });
+    const fileRes = await db('SELECT * FROM files WHERE id = $1', [req.params.id]);
+    const file = fileRes.rows[0];
     if (!file) return res.status(404).json({ error: 'File not found' });
-    
-    // Only file uploader or developer can delete
-    // Convert both to string for comparison
-    const fileUserId = file.userId.toString();
-    const requestUserId = req.user.id.toString();
-    
-    if (fileUserId !== requestUserId && req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Not authorized to delete this file' });
-    }
-    
-    // Delete from S3 if URL is S3
-    if (file.url.startsWith('https://') && file.url.includes('.s3.')) {
+    if (file.user_id.toString() !== req.user.id.toString() && req.user.role !== 'developer') return res.status(403).json({ error: 'Not authorized' });
+
+    if (file.url?.startsWith('https://') && file.url.includes('.s3.')) {
       const s3Client = await getS3Client();
       if (s3Client) {
         const urlParts = file.url.replace('https://', '').split('/');
         const bucket = urlParts[0].split('.')[0];
         const key = urlParts.slice(1).join('/');
-        
-        await s3Client.send(new DeleteObjectCommand({
-          Bucket: bucket,
-          Key: key
-        }));
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
       }
     }
-    
-    // Delete from MongoDB files collection
-    await db.collection('files').deleteOne({ _id: new ObjectId(req.params.id) });
-    
-    // Delete from embedding_files collection
-    console.log(`Deleting embeddings for fileId: ${req.params.id}`);
-    
-    const deleteResult = await db.collection('embedding_files').deleteMany({ 
-      fileId: req.params.id
-    });
-    
-    console.log(`Deleted ${deleteResult.deletedCount} embeddings`);
-    
+
+    await db('DELETE FROM files WHERE id = $1', [req.params.id]);
+    const delResult = await db('DELETE FROM embeddings WHERE file_id = $1', [req.params.id]);
+    console.log(`Deleted ${delResult.rowCount} embeddings`);
     res.json({ success: true });
-  } catch (error) {
-    console.error('Delete error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
+  } catch (error) { res.status(500).json({ success: false, error: error.message }); }
 });
 
-// List users (admin)
-// ============= PERMISSIONS =============
+// ============= PERMISSIONS & ROLES =============
 app.get('/api/permissions', auth, hasPermission('role:manage'), async (req, res) => {
-  const permissions = await db.collection('permissions').find().toArray();
-  res.json(permissions);
+  const result = await db('SELECT * FROM permissions');
+  res.json(result.rows);
 });
 
-// ============= ROLES =============
-// List roles (for user creation - no permission needed, just auth)
 app.get('/api/roles/list', auth, async (req, res) => {
-  const roles = await db.collection('roles').find({ status: 'active' }).toArray();
-  res.json(roles);
+  const result = await db("SELECT * FROM roles WHERE status = 'active'");
+  res.json(result.rows);
 });
 
-// Manage roles (full CRUD - requires role:manage)
 app.get('/api/roles', auth, hasPermission('role:manage'), async (req, res) => {
-  const roles = await db.collection('roles').find().toArray();
-  res.json(roles);
+  const result = await db('SELECT * FROM roles');
+  res.json(result.rows);
 });
 
 app.post('/api/roles', auth, hasPermission('role:manage'), async (req, res) => {
   const { name, description, permissions, status } = req.body;
-  
-  const result = await db.collection('roles').insertOne({
-    name,
-    description,
-    permissions,
-    isSystem: false,
-    status: status || 'active',
-    createdAt: new Date()
-  });
-  
-  res.json({ success: true, id: result.insertedId });
+  const result = await db('INSERT INTO roles (name, description, permissions, status) VALUES ($1, $2, $3, $4) RETURNING id', [name, description, permissions, status || 'active']);
+  res.json({ success: true, id: result.rows[0].id });
 });
 
 app.put('/api/roles/:id', auth, hasPermission('role:manage'), async (req, res) => {
   const { name, description, permissions, status } = req.body;
-  const role = await db.collection('roles').findOne({ _id: new ObjectId(req.params.id) });
-  
-  if (role?.isSystem) {
-    return res.status(403).json({ error: 'Cannot edit system roles' });
-  }
-  
-  await db.collection('roles').updateOne(
-    { _id: new ObjectId(req.params.id) },
-    { $set: { name, description, permissions, status, updatedAt: new Date() } }
-  );
-  
+  const roleRes = await db('SELECT is_system FROM roles WHERE id = $1', [req.params.id]);
+  if (roleRes.rows[0]?.is_system) return res.status(403).json({ error: 'Cannot edit system roles' });
+  await db('UPDATE roles SET name=$1, description=$2, permissions=$3, status=$4, updated_at=NOW() WHERE id=$5', [name, description, permissions, status, req.params.id]);
   res.json({ success: true });
 });
 
 app.delete('/api/roles/:id', auth, hasPermission('role:manage', 'system:delete'), async (req, res) => {
-  const role = await db.collection('roles').findOne({ _id: new ObjectId(req.params.id) });
-  
-  if (role?.isSystem) {
-    return res.status(403).json({ error: 'Cannot delete system roles' });
-  }
-  
-  const usersWithRole = await db.collection('users').countDocuments({
-    roles: new ObjectId(req.params.id)
-  });
-  
-  if (usersWithRole > 0) {
-    return res.status(400).json({ error: 'Cannot delete role assigned to users' });
-  }
-  
-  await db.collection('roles').deleteOne({ _id: new ObjectId(req.params.id) });
+  const roleRes = await db('SELECT is_system FROM roles WHERE id = $1', [req.params.id]);
+  if (roleRes.rows[0]?.is_system) return res.status(403).json({ error: 'Cannot delete system roles' });
+  const usersCount = await db('SELECT COUNT(*) FROM users WHERE $1 = ANY(roles)', [req.params.id]);
+  if (parseInt(usersCount.rows[0].count) > 0) return res.status(400).json({ error: 'Cannot delete role assigned to users' });
+  await db('DELETE FROM roles WHERE id = $1', [req.params.id]);
   res.json({ success: true });
 });
 
-// Add these endpoints to server.js after RBAC endpoints
-
-// ============= ORGANIZATIONS =============
+// ============= ORGANIZATIONS (RBAC) =============
 app.get('/api/organizations', auth, hasPermission('org:view'), async (req, res) => {
-  const orgs = await db.collection('organizations').find().toArray();
-  res.json(orgs);
+  const result = await db('SELECT * FROM organizations');
+  res.json(result.rows);
 });
 
 app.post('/api/organizations', auth, hasPermission('org:manage'), async (req, res) => {
   const { name, description, status } = req.body;
-  
-  const result = await db.collection('organizations').insertOne({
-    name,
-    description,
-    status: status || 'active',
-    createdAt: new Date()
-  });
-  
-  res.json({ success: true, id: result.insertedId });
+  const result = await db('INSERT INTO organizations (name, path, created_at) VALUES ($1, $2, NOW()) RETURNING id', [name, description]);
+  res.json({ success: true, id: result.rows[0].id });
 });
 
 app.put('/api/organizations/:id', auth, hasPermission('org:manage'), async (req, res) => {
   const { name, description, status } = req.body;
-  
-  await db.collection('organizations').updateOne(
-    { _id: new ObjectId(req.params.id) },
-    { $set: { name, description, status, updatedAt: new Date() } }
-  );
-  
+  await db('UPDATE organizations SET name=$1, updated_at=NOW() WHERE id=$2', [name, req.params.id]);
   res.json({ success: true });
 });
 
 app.delete('/api/organizations/:id', auth, hasPermission('org:manage', 'system:delete'), async (req, res) => {
-  // Check if any users belong to this org
-  const usersCount = await db.collection('users').countDocuments({
-    organizationId: new ObjectId(req.params.id)
-  });
-  
-  if (usersCount > 0) {
-    return res.status(400).json({ error: 'Cannot delete organization with users' });
-  }
-  
-  // Delete all departments in this org
-  await db.collection('departments').deleteMany({
-    organizationId: new ObjectId(req.params.id)
-  });
-  
-  await db.collection('organizations').deleteOne({ _id: new ObjectId(req.params.id) });
+  const usersCount = await db('SELECT COUNT(*) FROM users WHERE organization_id = $1', [req.params.id]);
+  if (parseInt(usersCount.rows[0].count) > 0) return res.status(400).json({ error: 'Cannot delete organization with users' });
+  await db('DELETE FROM departments WHERE organization_id = $1', [req.params.id]);
+  await db('DELETE FROM organizations WHERE id = $1', [req.params.id]);
   res.json({ success: true });
 });
 
 // ============= DEPARTMENTS =============
 app.get('/api/departments', auth, hasPermission('dept:view'), async (req, res) => {
   const { organizationId } = req.query;
-  
-  const query = organizationId ? { organizationId: new ObjectId(organizationId) } : {};
-  const depts = await db.collection('departments').find(query).toArray();
-  
-  // Get org names
-  const deptsWithOrg = await Promise.all(depts.map(async (dept) => {
-    const org = await db.collection('organizations').findOne({ _id: new ObjectId(dept.organizationId) });
-    return {
-      ...dept,
-      organizationName: org?.name || 'Unknown'
-    };
-  }));
-  
-  res.json(deptsWithOrg);
+  let result;
+  if (organizationId) {
+    result = await db('SELECT d.*, o.name as organization_name FROM departments d LEFT JOIN organizations o ON o.id = d.organization_id WHERE d.organization_id = $1', [organizationId]);
+  } else {
+    result = await db('SELECT d.*, o.name as organization_name FROM departments d LEFT JOIN organizations o ON o.id = d.organization_id');
+  }
+  res.json(result.rows.map(d => ({ ...d, organizationName: d.organization_name })));
 });
 
 app.post('/api/departments', auth, hasPermission('dept:manage'), async (req, res) => {
   const { name, description, organizationId, status } = req.body;
-  
-  const result = await db.collection('departments').insertOne({
-    name,
-    description,
-    organizationId: new ObjectId(organizationId),
-    status: status || 'active',
-    createdAt: new Date()
-  });
-  
-  res.json({ success: true, id: result.insertedId });
+  const result = await db('INSERT INTO departments (name, description, organization_id, status) VALUES ($1, $2, $3, $4) RETURNING id', [name, description, organizationId, status || 'active']);
+  res.json({ success: true, id: result.rows[0].id });
 });
 
 app.put('/api/departments/:id', auth, hasPermission('dept:manage'), async (req, res) => {
   const { name, description, organizationId, status } = req.body;
-  
-  await db.collection('departments').updateOne(
-    { _id: new ObjectId(req.params.id) },
-    { $set: { 
-      name, 
-      description, 
-      organizationId: new ObjectId(organizationId),
-      status, 
-      updatedAt: new Date() 
-    } }
-  );
-  
+  await db('UPDATE departments SET name=$1, description=$2, organization_id=$3, status=$4, updated_at=NOW() WHERE id=$5', [name, description, organizationId, status, req.params.id]);
   res.json({ success: true });
 });
 
 app.delete('/api/departments/:id', auth, hasPermission('dept:manage', 'system:delete'), async (req, res) => {
-  // Check if any users belong to this dept
-  const usersCount = await db.collection('users').countDocuments({
-    departmentId: new ObjectId(req.params.id)
-  });
-  
-  if (usersCount > 0) {
-    return res.status(400).json({ error: 'Cannot delete department with users' });
-  }
-  
-  await db.collection('departments').deleteOne({ _id: new ObjectId(req.params.id) });
+  const usersCount = await db('SELECT COUNT(*) FROM users WHERE department_id = $1', [req.params.id]);
+  if (parseInt(usersCount.rows[0].count) > 0) return res.status(400).json({ error: 'Cannot delete department with users' });
+  await db('DELETE FROM departments WHERE id = $1', [req.params.id]);
   res.json({ success: true });
 });
 
-
-// ============= USERS =============
+// ============= USERS (RBAC) =============
 app.get('/api/users', auth, hasPermission('user:view'), async (req, res) => {
-  // Get current user info
-  const currentUser = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
-  const currentUserRoles = await db.collection('roles').find({
-    _id: { $in: currentUser.roles.map(r => new ObjectId(r)) }
-  }).toArray();
-  const currentUserRole = currentUserRoles[0]?.name.toLowerCase();
-  
-  // Build filter based on role
-  let userFilter = {};
-  
-  if (currentUserRole === 'developer') {
-    // Developer sees all users
-    userFilter = {};
-  } else if (currentUserRole === 'admin') {
-    // Admin sees only users in own organization
-    userFilter = { organizationId: currentUser.organizationId };
-  } else if (currentUserRole === 'manager') {
-    // Manager sees only users in own department
-    userFilter = { 
-      organizationId: currentUser.organizationId,
-      departmentId: currentUser.departmentId 
-    };
+  const currentUser = (await db('SELECT * FROM users WHERE id = $1', [req.user.id])).rows[0];
+  let users;
+  if (currentUser.role === 'developer') {
+    users = (await db('SELECT * FROM users')).rows;
   } else {
-    // User role cannot view users list (but has permission check above)
-    userFilter = { _id: new ObjectId(req.user.id) }; // Only see self
+    users = (await db('SELECT * FROM users WHERE organization_id = $1', [currentUser.organization_id])).rows;
   }
-  
-  const users = await db.collection('users').find(userFilter).toArray();
-  
+
   const usersWithRoles = await Promise.all(users.map(async (user) => {
-    const roles = await db.collection('roles').find({
-      _id: { $in: user.roles.map(r => new ObjectId(r)) }
-    }).toArray();
-    
-    let organization = null;
-    let department = null;
-    
-    if (user.organizationId) {
-      organization = await db.collection('organizations').findOne({ _id: new ObjectId(user.organizationId) });
+    let roles = [];
+    if (user.roles && user.roles.length > 0) {
+      const rolesRes = await db('SELECT id, name FROM roles WHERE id = ANY($1::uuid[])', [user.roles]);
+      roles = rolesRes.rows;
     }
-    
-    if (user.departmentId) {
-      department = await db.collection('departments').findOne({ _id: new ObjectId(user.departmentId) });
-    }
-    
-    return {
-      id: user._id,
-      email: user.email,
-      fullName: user.fullName,
-      status: user.status,
-      roles: roles.map(r => ({ id: r._id, name: r.name })),
-      organizationId: user.organizationId,
-      organizationName: organization?.name || null,
-      departmentId: user.departmentId,
-      departmentName: department?.name || null,
-      createdAt: user.createdAt
-    };
+    let orgName = null, deptName = null;
+    if (user.organization_id) { const o = await db('SELECT name FROM organizations WHERE id = $1', [user.organization_id]); orgName = o.rows[0]?.name; }
+    if (user.department_id) { const d = await db('SELECT name FROM departments WHERE id = $1', [user.department_id]); deptName = d.rows[0]?.name; }
+    return { id: user.id, email: user.email, fullName: user.full_name, status: user.status, roles: roles.map(r => ({ id: r.id, name: r.name })), organizationId: user.organization_id, organizationName: orgName, departmentId: user.department_id, departmentName: deptName, createdAt: user.created_at };
   }));
-  
   res.json(usersWithRoles);
 });
 
 app.post('/api/users', auth, hasPermission('user:manage'), async (req, res) => {
   try {
     const { email, password, fullName, canUploadFiles } = req.body;
-    
-    const existingUser = await db.collection('users').findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({ error: 'Email already exists' });
-    }
-    
+    const existing = await db('SELECT 1 FROM users WHERE email = $1', [email]);
+    if (existing.rows.length > 0) return res.status(400).json({ error: 'Email already exists' });
     const hashedPassword = await bcrypt.hash(password, 10);
-    
-    const result = await db.collection('users').insertOne({
-      email,
-      password: hashedPassword,
-      fullName,
-      role: 'user',
-      status: 'active',
-      canUploadFiles: canUploadFiles !== false,
-      mustChangePassword: true, // Force password change on first login
-      createdBy: req.user.id,
-      createdAt: new Date()
-    });
-    
-    res.json({ success: true, userId: result.insertedId });
-  } catch (error) {
-    console.error('Create user error:', error);
-    res.status(500).json({ error: 'Failed to create user' });
-  }
+    const result = await db(
+      'INSERT INTO users (email, password, full_name, role, status, can_upload_files, must_change_password, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
+      [email, hashedPassword, fullName, 'user', 'active', canUploadFiles !== false, true, req.user.id]
+    );
+    res.json({ success: true, userId: result.rows[0].id });
+  } catch (error) { res.status(500).json({ error: 'Failed to create user' }); }
 });
 
 app.put('/api/users/:id', auth, hasPermission('user:manage'), async (req, res) => {
   const { email, fullName, roles, status, password, organizationId, departmentId } = req.body;
-  
-  const updateData = {
-    email,
-    fullName,
-    roles: roles.map(r => new ObjectId(r)),
-    organizationId: organizationId ? new ObjectId(organizationId) : null,
-    departmentId: departmentId ? new ObjectId(departmentId) : null,
-    status,
-    updatedAt: new Date()
-  };
-  
-  if (password) {
-    updateData.password = await bcrypt.hash(password, 10);
-  }
-  
-  await db.collection('users').updateOne(
-    { _id: new ObjectId(req.params.id) },
-    { $set: updateData }
-  );
-  
+  let q = 'UPDATE users SET email=$1, full_name=$2, roles=$3::uuid[], organization_id=$4, department_id=$5, status=$6, updated_at=NOW()';
+  let params = [email, fullName, roles || [], organizationId || null, departmentId || null, status];
+  let idx = 7;
+  if (password) { q += `, password=$${idx}`; params.push(await bcrypt.hash(password, 10)); idx++; }
+  q += ` WHERE id=$${idx}`;
+  params.push(req.params.id);
+  await db(q, params);
   res.json({ success: true });
 });
 
 app.delete('/api/users/:id', auth, hasPermission('user:manage', 'system:delete'), async (req, res) => {
-  if (req.params.id === req.user.id.toString()) {
-    return res.status(400).json({ error: 'Cannot delete your own account' });
-  }
-  
-  await db.collection('users').deleteOne({ _id: new ObjectId(req.params.id) });
+  if (req.params.id === req.user.id.toString()) return res.status(400).json({ error: 'Cannot delete your own account' });
+  await db('DELETE FROM users WHERE id = $1', [req.params.id]);
   res.json({ success: true });
 });
 
-// Reset user password to default (developer only)
 app.post('/api/users/:id/reset-password', auth, hasPermission(), async (req, res) => {
   try {
     const { defaultPassword } = req.body;
-    
-    if (!defaultPassword) {
-      return res.status(400).json({ error: 'Default password is required' });
-    }
-    
-    if (req.params.id === req.user.id.toString()) {
-      return res.status(400).json({ error: 'Cannot reset your own password' });
-    }
-    
-    const user = await db.collection('users').findOne({ _id: new ObjectId(req.params.id) });
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    
-    // Hash the default password
+    if (!defaultPassword) return res.status(400).json({ error: 'Default password is required' });
+    if (req.params.id === req.user.id.toString()) return res.status(400).json({ error: 'Cannot reset your own password' });
+    const userRes = await db('SELECT 1 FROM users WHERE id = $1', [req.params.id]);
+    if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
     const hashedPassword = await bcrypt.hash(defaultPassword, 10);
-    
-    // Update user with new password and set mustChangePassword flag
-    await db.collection('users').updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { 
-        $set: { 
-          password: hashedPassword,
-          mustChangePassword: true,
-          passwordResetAt: new Date(),
-          passwordResetBy: req.user.id
-        } 
-      }
-    );
-    
-    res.json({ 
-      success: true, 
-      message: 'Password reset successfully. User must change password on next login.' 
-    });
-  } catch (error) {
-    console.error('Reset password error:', error);
-    res.status(500).json({ error: 'Failed to reset password' });
-  }
+    await db('UPDATE users SET password=$1, must_change_password=true, updated_at=NOW() WHERE id=$2', [hashedPassword, req.params.id]);
+    res.json({ success: true, message: 'Password reset successfully. User must change password on next login.' });
+  } catch (error) { res.status(500).json({ error: 'Failed to reset password' }); }
 });
 
+// ============= SETTINGS =============
 app.get('/api/public-settings', async (req, res) => {
   try {
-    const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
-    res.json({
-      logo: settings.logo || null,
-      voiceMode: settings.voiceMode || 'browser',
-      voiceLanguage: settings.voiceLanguage || 'auto',
-      ttsMode: settings.ttsMode || 'browser',
-      ttsLanguage: settings.ttsLanguage || 'en-US'
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to load settings' });
-  }
+    const settings = await getSettings();
+    res.json({ logo: settings.logo || null, voiceMode: settings.voiceMode || 'browser', voiceLanguage: settings.voiceLanguage || 'auto', ttsMode: settings.ttsMode || 'browser', ttsLanguage: settings.ttsLanguage || 'en-US' });
+  } catch (error) { res.status(500).json({ error: 'Failed to load settings' }); }
 });
 
-// Settings
 app.get('/api/settings', auth, hasPermission(), async (req, res) => {
-  const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+  const s = await getSettings();
   res.json({
-    companyName: settings.companyName || 'GenBotChat',
-    logo: settings.logo || null,
-    voiceMode: settings.voiceMode || 'browser',
-    voiceLanguage: settings.voiceLanguage || 'auto',
-    googleSttApiKey: settings.googleSttApiKey || '',
-    googleTtsApiKey: settings.googleTtsApiKey || '',
-    geminiSttApiKey: settings.geminiSttApiKey || '',
-    geminiTtsApiKey: settings.geminiTtsApiKey || '',
-    elevenlabsApiKey: settings.elevenlabsApiKey || '',
-    elevenlabsVoice: settings.elevenlabsVoice || 'onwK4e9ZLuTAKqWW03F9',
-    gclasServiceAccount: settings.gclasServiceAccount || '',
-    gclasLanguage: settings.gclasLanguage || 'auto',
-    gclasVoice: settings.gclasVoice || 'en-US-Neural2-C',
-    geminiVoice: settings.geminiVoice || 'Aoede',
-    geminiTtsLanguage: settings.geminiTtsLanguage || 'auto',
-    ttsMode: settings.ttsMode || 'browser',
-    ttsLanguage: settings.ttsLanguage || 'en-US',
-    chatWebhook: settings.chatWebhook || '',
-    uploadWebhook: settings.uploadWebhook || '',
-    transcribeWebhook: settings.transcribeWebhook || '',
-    formSubmissionWebhook: settings.formSubmissionWebhook || '',
-    s3Bucket: settings.s3Bucket || '',
-    s3Region: settings.s3Region || '',
-    s3AccessKey: settings.s3AccessKey || '',
-    s3SecretKey: settings.s3SecretKey || ''
+    companyName: s.companyName || 'GenBotChat', logo: s.logo || null,
+    storageMode: s.storageMode || 'local', localStoragePath: s.localStoragePath || '/app/uploads',
+    voiceMode: s.voiceMode || 'browser', voiceLanguage: s.voiceLanguage || 'auto',
+    googleSttApiKey: s.googleSttApiKey || '', googleTtsApiKey: s.googleTtsApiKey || '', geminiSttApiKey: s.geminiSttApiKey || '', geminiTtsApiKey: s.geminiTtsApiKey || '',
+    elevenlabsApiKey: s.elevenlabsApiKey || '', elevenlabsVoice: s.elevenlabsVoice || 'onwK4e9ZLuTAKqWW03F9',
+    gclasServiceAccount: s.gclasServiceAccount || '', gclasLanguage: s.gclasLanguage || 'auto', gclasVoice: s.gclasVoice || 'en-US-Neural2-C',
+    geminiVoice: s.geminiVoice || 'Aoede', geminiTtsLanguage: s.geminiTtsLanguage || 'auto',
+    ttsMode: s.ttsMode || 'browser', ttsLanguage: s.ttsLanguage || 'en-US',
+    whisperUrl: s.whisperUrl || process.env.WHISPER_API_URL || '',
+    chatterboxUrl: s.chatterboxUrl || process.env.CHATTERBOX_URL || '', chatterboxVoice: s.chatterboxVoice || 'default',
+    ollamaUrl: s.ollamaUrl || process.env.OLLAMA_URL || 'http://ollama:11434',
+    ollamaModel: s.ollamaModel || 'qwen3:8b',
+    ollamaEmbeddingModel: s.ollamaEmbeddingModel || 'nomic-embed-text',
+    chatWebhook: s.chatWebhook || '', uploadWebhook: s.uploadWebhook || '', transcribeWebhook: s.transcribeWebhook || '', formSubmissionWebhook: s.formSubmissionWebhook || '',
+    s3Bucket: s.s3Bucket || '', s3Region: s.s3Region || '', s3AccessKey: s.s3AccessKey || '', s3SecretKey: s.s3SecretKey || ''
   });
 });
 
 app.post('/api/settings', auth, hasPermission(), async (req, res) => {
-  await db.collection('settings').updateOne(
-    { _id: 'config' },
-    { $set: req.body },
-    { upsert: true }
-  );
+  await updateSettings(req.body);
   res.json({ success: true });
 });
 
 app.put('/api/settings', auth, hasPermission(), async (req, res) => {
-  await db.collection('settings').updateOne(
-    { _id: 'config' },
-    { $set: req.body },
-    { upsert: true }
-  );
+  await updateSettings(req.body);
   res.json({ success: true });
 });
 
-// API Key Management (Developer only)
+// ============= API KEYS =============
 app.get('/api/keys', auth, hasPermission(), async (req, res) => {
   try {
-    const keys = await db.collection('api_keys').find().sort({ createdAt: -1 }).toArray();
-    
-    // Include user email and robot name for each key
-    const keysWithUser = await Promise.all(keys.map(async (key) => {
-      const user = await db.collection('users').findOne({ _id: key.userId });
+    const keys = await db('SELECT * FROM api_keys ORDER BY created_at DESC');
+    const keysWithUser = await Promise.all(keys.rows.map(async (key) => {
+      const userRes = await db('SELECT email FROM users WHERE id = $1', [key.user_id]);
       let robotName = null;
-      if (key.robotSettingId) {
-        const robot = await db.collection('robot_settings').findOne({ _id: key.robotSettingId });
-        robotName = robot?.name || 'Unknown Robot';
-      }
-      return {
-        ...key,
-        userEmail: user?.email || 'Unknown',
-        robotName
-      };
+      if (key.robot_setting_id) { const r = await db('SELECT name FROM robot_settings WHERE id = $1', [key.robot_setting_id]); robotName = r.rows[0]?.name; }
+      return { ...key, userEmail: userRes.rows[0]?.email || 'Unknown', robotName };
     }));
-    
     res.json(keysWithUser);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get API keys' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to get API keys' }); }
 });
 
 app.post('/api/keys', auth, hasPermission(), async (req, res) => {
   try {
     const { name, userId, generateShortKey, robotSettingId } = req.body;
-    
-    // Generate API key
     const key = 'gk_' + crypto.randomBytes(32).toString('hex');
-    
-    // Generate short key if requested
     let shortKey = null;
-    if (generateShortKey) {
-      shortKey = await generateUniqueShortKey();
-    }
-    
-    const apiKey = {
-      key,
-      shortKey,
-      hasShortKey: !!generateShortKey,
-      name,
-      userId: new ObjectId(userId),
-      robotSettingId: robotSettingId ? new ObjectId(robotSettingId) : null,
-      isActive: true,
-      createdAt: new Date(),
-      lastUsedAt: null
-    };
-    
-    await db.collection('api_keys').insertOne(apiKey);
+    if (generateShortKey) shortKey = await generateUniqueShortKey();
+    await db('INSERT INTO api_keys (key, short_key, has_short_key, name, user_id, robot_setting_id) VALUES ($1,$2,$3,$4,$5,$6)',
+      [key, shortKey, !!generateShortKey, name, userId, robotSettingId || null]);
     res.json({ success: true, key, shortKey });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to create API key' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to create API key' }); }
 });
 
-// Helper function to generate unique 6-char short key
 async function generateUniqueShortKey() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let shortKey;
-  let attempts = 0;
-  const maxAttempts = 10;
-  
-  while (attempts < maxAttempts) {
-    shortKey = '';
-    for (let i = 0; i < 6; i++) {
-      shortKey += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    
-    // Check if unique
-    const existing = await db.collection('api_keys').findOne({ shortKey });
-    if (!existing) {
-      return shortKey;
-    }
-    attempts++;
+  for (let attempts = 0; attempts < 10; attempts++) {
+    let shortKey = '';
+    for (let i = 0; i < 6; i++) shortKey += chars.charAt(Math.floor(Math.random() * chars.length));
+    const existing = await db('SELECT 1 FROM api_keys WHERE short_key = $1', [shortKey]);
+    if (existing.rows.length === 0) return shortKey;
   }
-  
   throw new Error('Failed to generate unique short key');
 }
 
 app.patch('/api/keys/:id', auth, hasPermission(), async (req, res) => {
   try {
-    const { isActive } = req.body;
-    await db.collection('api_keys').updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: { isActive } }
-    );
+    await db('UPDATE api_keys SET is_active = $1 WHERE id = $2', [req.body.isActive, req.params.id]);
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to toggle API key' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to toggle API key' }); }
 });
 
 app.delete('/api/keys/:id', auth, hasPermission(), async (req, res) => {
   try {
-    await db.collection('api_keys').deleteOne({ _id: new ObjectId(req.params.id) });
+    await db('DELETE FROM api_keys WHERE id = $1', [req.params.id]);
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete API key' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to delete API key' }); }
 });
 
 app.get('/api/usage', auth, hasPermission(), async (req, res) => {
   try {
-    const usage = await db.collection('api_usage').find().sort({ timestamp: -1 }).limit(100).toArray();
-    res.json(usage);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get API usage' });
-  }
+    const result = await db('SELECT * FROM api_usage ORDER BY timestamp DESC LIMIT 100');
+    res.json(result.rows);
+  } catch (error) { res.status(500).json({ error: 'Failed to get API usage' }); }
 });
 
-// Group Management (Developer only)
+// ============= GROUPS =============
 app.get('/api/groups', auth, hasPermission(), async (req, res) => {
   try {
-    const groups = await db.collection('groups').find().toArray();
-    
-    // Add org names and calculate used storage
-    const groupsWithDetails = await Promise.all(groups.map(async (group) => {
-      // Get org names
-      const orgs = await db.collection('organizations').find({ 
-        groupId: group._id 
-      }).toArray();
-      
-      // Calculate total file size for this group (simple query by groupId)
-      const files = await db.collection('files').find({ groupId: group._id }).toArray();
-      const usedStorage = files.reduce((sum, f) => sum + (f.size || 0), 0);
-      
-      return {
-        ...group,
-        orgNames: orgs.map(o => o.name),
-        organizationIds: orgs.map(o => o._id.toString()),
-        usedStorage
-      };
+    const groups = await db('SELECT * FROM groups');
+    const groupsWithDetails = await Promise.all(groups.rows.map(async (group) => {
+      const orgs = await db('SELECT id, name FROM organizations WHERE group_id = $1', [group.id]);
+      const filesRes = await db('SELECT COALESCE(SUM(size), 0) as total FROM files WHERE group_id = $1', [group.id]);
+      return { ...group, orgNames: orgs.rows.map(o => o.name), organizationIds: orgs.rows.map(o => o.id), usedStorage: parseInt(filesRes.rows[0].total) };
     }));
-    
     res.json(groupsWithDetails);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get groups' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to get groups' }); }
 });
 
 app.post('/api/groups', auth, hasPermission(), async (req, res) => {
   try {
     const { name, storageLimitGB, organizationIds, chatQuota, quotaType, renewDay } = req.body;
-    
-    const group = {
-      name,
-      storageLimitGB,
-      chatQuota: chatQuota || 0,           // 0 = unlimited
-      quotaType: quotaType || 'individual', // 'individual' or 'total'
-      renewDay: renewDay || 1,              // 1-31
-      createdAt: new Date()
-    };
-    
-    const result = await db.collection('groups').insertOne(group);
-    
-    // Update organizations with groupId
-    if (organizationIds && organizationIds.length > 0) {
-      await db.collection('organizations').updateMany(
-        { _id: { $in: organizationIds.map(id => new ObjectId(id)) } },
-        { $set: { groupId: result.insertedId } }
-      );
+    const result = await db('INSERT INTO groups (name, storage_limit_gb, chat_quota, quota_type, renew_day) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+      [name, storageLimitGB, chatQuota || 0, quotaType || 'individual', renewDay || 1]);
+    if (organizationIds?.length > 0) {
+      await db('UPDATE organizations SET group_id = $1 WHERE id = ANY($2::uuid[])', [result.rows[0].id, organizationIds]);
     }
-    
-    res.json({ success: true, groupId: result.insertedId });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to create group' });
-  }
+    res.json({ success: true, groupId: result.rows[0].id });
+  } catch (error) { res.status(500).json({ error: 'Failed to create group' }); }
 });
 
 app.put('/api/groups/:id', auth, hasPermission(), async (req, res) => {
   try {
     const { name, storageLimitGB, organizationIds, chatQuota, quotaType, renewDay } = req.body;
-    
-    await db.collection('groups').updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: { 
-        name, 
-        storageLimitGB,
-        chatQuota: chatQuota || 0,
-        quotaType: quotaType || 'individual',
-        renewDay: renewDay || 1
-      } }
-    );
-    
-    // Remove groupId from all orgs first
-    await db.collection('organizations').updateMany(
-      { groupId: new ObjectId(req.params.id) },
-      { $set: { groupId: null } }
-    );
-    
-    // Set new groupId for selected orgs
-    if (organizationIds && organizationIds.length > 0) {
-      await db.collection('organizations').updateMany(
-        { _id: { $in: organizationIds.map(id => new ObjectId(id)) } },
-        { $set: { groupId: new ObjectId(req.params.id) } }
-      );
+    await db('UPDATE groups SET name=$1, storage_limit_gb=$2, chat_quota=$3, quota_type=$4, renew_day=$5 WHERE id=$6',
+      [name, storageLimitGB, chatQuota || 0, quotaType || 'individual', renewDay || 1, req.params.id]);
+    await db('UPDATE organizations SET group_id = NULL WHERE group_id = $1', [req.params.id]);
+    if (organizationIds?.length > 0) {
+      await db('UPDATE organizations SET group_id = $1 WHERE id = ANY($2::uuid[])', [req.params.id, organizationIds]);
     }
-    
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update group' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to update group' }); }
 });
 
 app.delete('/api/groups/:id', auth, hasPermission(), async (req, res) => {
   try {
-    const groupId = req.params.id;
-    
-    // Remove groupId from all orgs in this group
-    await db.collection('organizations').updateMany(
-      { groupId: new ObjectId(groupId) },
-      { $set: { groupId: null } }
-    );
-    
-    // Delete related chat_counts
-    await db.collection('chat_counts').deleteMany({ groupId: groupId });
-    
-    // Delete related chat_resets
-    await db.collection('chat_resets').deleteMany({ groupId: new ObjectId(groupId) });
-    
-    // Delete the group
-    await db.collection('groups').deleteOne({ _id: new ObjectId(groupId) });
-    
+    await db('UPDATE organizations SET group_id = NULL WHERE group_id = $1', [req.params.id]);
+    await db('DELETE FROM chat_counts WHERE group_id = $1', [req.params.id]);
+    await db('DELETE FROM chat_resets WHERE group_id = $1', [req.params.id]);
+    await db('DELETE FROM groups WHERE id = $1', [req.params.id]);
     res.json({ success: true });
-  } catch (error) {
-    console.error('Delete group error:', error);
-    res.status(500).json({ error: 'Failed to delete group' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to delete group' }); }
 });
 
-// Reset chat quota for a group (developer only)
 app.post('/api/groups/:id/reset-quota', auth, hasPermission(), async (req, res) => {
   try {
-    const groupId = new ObjectId(req.params.id);
-    const currentMonth = new Date().toISOString().slice(0, 7); // "2026-02"
-    
-    // Delete all chat counts for this group in current month (try both formats)
-    await db.collection('chat_counts').deleteMany({ 
-      groupId: groupId, // ObjectId format
-      month: currentMonth 
-    });
-    
-    await db.collection('chat_counts').deleteMany({ 
-      groupId: groupId.toString(), // String format
-      month: currentMonth 
-    });
-    
-    // Mark as reset
-    await db.collection('chat_resets').updateOne(
-      { groupId: groupId.toString(), month: currentMonth },
-      { $set: { resetAt: new Date() } },
-      { upsert: true }
-    );
-    
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    await db('DELETE FROM chat_counts WHERE group_id = $1 AND month = $2', [req.params.id, currentMonth]);
+    await db('INSERT INTO chat_resets (group_id, month) VALUES ($1, $2) ON CONFLICT (group_id, month) DO UPDATE SET reset_at = NOW()', [req.params.id, currentMonth]);
     res.json({ success: true, message: 'Chat quota reset successfully' });
-  } catch (error) {
-    console.error('Reset quota error:', error);
-    res.status(500).json({ error: 'Failed to reset quota' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to reset quota' }); }
 });
 
-// Add bonus quota to a group (developer only)
 app.post('/api/groups/:id/add-bonus', auth, hasPermission(), async (req, res) => {
   try {
     const { bonusQuota } = req.body;
-    if (!bonusQuota || bonusQuota <= 0) {
-      return res.status(400).json({ error: 'Invalid bonus quota' });
-    }
-    
-    const groupId = new ObjectId(req.params.id);
-    
-    // Add bonus quota field (temporary, resets on renewDay)
-    await db.collection('groups').updateOne(
-      { _id: groupId },
-      { $inc: { bonusQuota: bonusQuota } }
-    );
-    
+    if (!bonusQuota || bonusQuota <= 0) return res.status(400).json({ error: 'Invalid bonus quota' });
+    await db('UPDATE groups SET bonus_quota = bonus_quota + $1 WHERE id = $2', [bonusQuota, req.params.id]);
     res.json({ success: true, message: `Added ${bonusQuota} bonus chats` });
-  } catch (error) {
-    console.error('Add bonus error:', error);
-    res.status(500).json({ error: 'Failed to add bonus quota' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to add bonus quota' }); }
 });
 
-// Override renew day for a group (developer only)
 app.put('/api/groups/:id/renew-day', auth, hasPermission(), async (req, res) => {
   try {
     const { renewDay } = req.body;
-    if (!renewDay || renewDay < 1 || renewDay > 31) {
-      return res.status(400).json({ error: 'Invalid renew day (1-31)' });
-    }
-    
-    const groupId = new ObjectId(req.params.id);
-    
-    await db.collection('groups').updateOne(
-      { _id: groupId },
-      { $set: { renewDay: renewDay } }
-    );
-    
+    if (!renewDay || renewDay < 1 || renewDay > 31) return res.status(400).json({ error: 'Invalid renew day (1-31)' });
+    await db('UPDATE groups SET renew_day = $1 WHERE id = $2', [renewDay, req.params.id]);
     res.json({ success: true, message: `Renew day updated to ${renewDay}` });
-  } catch (error) {
-    console.error('Update renew day error:', error);
-    res.status(500).json({ error: 'Failed to update renew day' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to update renew day' }); }
 });
 
-// Get chat usage for current user
+// Chat usage
 app.get('/api/chat-usage', auth, async (req, res) => {
   try {
-    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
-    
-    // Get user's groupId from their organization assignments
-    let groupId = user.groupId;
-    
-    if (!groupId) {
-      // Get from user's organizations
-      const assignments = await db.collection('user_organization_assignments').find({ 
-        userId: user._id
-      }).toArray();
-      
-      if (assignments.length > 0) {
-        const org = await db.collection('organizations').findOne({ 
-          _id: assignments[0].organizationId 
-        });
-        groupId = org?.groupId;
-      }
-    }
-    
-    if (!groupId) {
-      return res.json({ 
-        hasQuota: false,
-        unlimited: true
-      });
-    }
-    
-    const group = await db.collection('groups').findOne({ _id: groupId });
-    
-    if (!group || group.chatQuota === 0) {
-      return res.json({ 
-        hasQuota: false,
-        unlimited: true
-      });
-    }
-    
+    const userRes = await db('SELECT * FROM users WHERE id = $1', [req.user.id]);
+    const user = userRes.rows[0];
+    const assignRes = await db(
+      `SELECT o.group_id FROM user_org_assignments uoa JOIN organizations o ON o.id = uoa.organization_id WHERE uoa.user_id = $1 AND o.group_id IS NOT NULL LIMIT 1`, [user.id]
+    );
+    const groupId = assignRes.rows[0]?.group_id;
+    if (!groupId) return res.json({ hasQuota: false, unlimited: true });
+
+    const groupRes = await db('SELECT * FROM groups WHERE id = $1', [groupId]);
+    const group = groupRes.rows[0];
+    if (!group || group.chat_quota === 0) return res.json({ hasQuota: false, unlimited: true });
+
     const currentMonth = new Date().toISOString().substring(0, 7);
-    
     let used = 0;
-    if (group.quotaType === 'individual') {
-      const userCount = await db.collection('chat_counts').findOne({ 
-        groupId: group._id, 
-        userId: user._id, 
-        month: currentMonth 
-      });
-      used = userCount?.count || 0;
+    if (group.quota_type === 'individual') {
+      const c = await db('SELECT count FROM chat_counts WHERE group_id = $1 AND user_id = $2 AND month = $3', [group.id, user.id, currentMonth]);
+      used = c.rows[0]?.count || 0;
     } else {
-      const counts = await db.collection('chat_counts').find({ 
-        groupId: group._id, 
-        month: currentMonth 
-      }).toArray();
-      used = counts.reduce((sum, c) => sum + c.count, 0);
+      const c = await db('SELECT COALESCE(SUM(count), 0) as total FROM chat_counts WHERE group_id = $1 AND month = $2', [group.id, currentMonth]);
+      used = parseInt(c.rows[0].total);
     }
-    
-    const effectiveQuota = group.chatQuota + (group.bonusQuota || 0);
-    const percentage = (used / effectiveQuota * 100).toFixed(6);
-    
-    // Calculate next reset date
+
+    const effectiveQuota = group.chat_quota + (group.bonus_quota || 0);
     const now = new Date();
-    let resetDate = new Date(now.getFullYear(), now.getMonth(), group.renewDay);
-    if (resetDate <= now) {
-      resetDate = new Date(now.getFullYear(), now.getMonth() + 1, group.renewDay);
-    }
-    
-    res.json({
-      hasQuota: true,
-      used,
-      limit: effectiveQuota,
-      baseLimit: group.chatQuota,
-      bonusQuota: group.bonusQuota || 0,
-      percentage: parseFloat(percentage),
-      quotaType: group.quotaType,
-      resetDate: resetDate.toISOString(),
-      renewDay: group.renewDay
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get chat usage' });
-  }
+    let resetDate = new Date(now.getFullYear(), now.getMonth(), group.renew_day);
+    if (resetDate <= now) resetDate = new Date(now.getFullYear(), now.getMonth() + 1, group.renew_day);
+
+    res.json({ hasQuota: true, used, limit: effectiveQuota, baseLimit: group.chat_quota, bonusQuota: group.bonus_quota || 0, percentage: parseFloat((used / effectiveQuota * 100).toFixed(6)), quotaType: group.quota_type, resetDate: resetDate.toISOString(), renewDay: group.renew_day });
+  } catch (error) { res.status(500).json({ error: 'Failed to get chat usage' }); }
 });
 
 // Update user name
 app.put('/api/user/name', auth, async (req, res) => {
   try {
-    const { fullName } = req.body;
-    
-    await db.collection('users').updateOne(
-      { _id: new ObjectId(req.user.id) },
-      { $set: { fullName } }
-    );
-    
+    await db('UPDATE users SET full_name = $1 WHERE id = $2', [req.body.fullName, req.user.id]);
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update name' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to update name' }); }
 });
 
 // Upload logo
 app.post('/api/upload-logo', auth, hasPermission(), upload.single('logo'), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-
-    // For logo, we'll store it locally in public/logos folder
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     const logoDir = join(__dirname, 'public', 'logos');
-    if (!fs.existsSync(logoDir)) {
-      fs.mkdirSync(logoDir, { recursive: true });
-    }
-
-    // Copy file to public/logos (use copyFileSync instead of renameSync for cross-device)
+    if (!fs.existsSync(logoDir)) fs.mkdirSync(logoDir, { recursive: true });
     const logoFileName = `logo-${Date.now()}.${req.file.originalname.split('.').pop()}`;
     const logoPath = join(logoDir, logoFileName);
     fs.copyFileSync(req.file.path, logoPath);
-    fs.unlinkSync(req.file.path); // Delete original upload
-
-    // Store relative URL in database
+    fs.unlinkSync(req.file.path);
     const logoUrl = `/logos/${logoFileName}`;
-
-    await db.collection('settings').updateOne(
-      { _id: 'config' },
-      { $set: { logo: logoUrl } },
-      { upsert: true }
-    );
-
+    await updateSettings({ logo: logoUrl });
     res.json({ success: true, logo: logoUrl });
-  } catch (error) {
-    console.error('Logo upload error:', error);
-    res.status(500).json({ error: 'Upload failed' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Upload failed' }); }
 });
 
 app.post('/api/test-webhook', auth, hasPermission('system:manage_settings'), async (req, res) => {
-  try {
-    const response = await axios.post(req.body.url, { test: true }, { timeout: 5000 });
-    res.json({ success: true });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
+  try { await axios.post(req.body.url, { test: true }, { timeout: 5000 }); res.json({ success: true }); }
+  catch (error) { res.json({ success: false, error: error.message }); }
 });
 
 app.post('/api/test-s3', auth, hasPermission('system:manage_settings'), async (req, res) => {
   try {
     const { s3Bucket, s3Region, s3AccessKey, s3SecretKey } = req.body;
-    
-    if (!s3Bucket || !s3Region || !s3AccessKey || !s3SecretKey) {
-      return res.json({ success: false, error: 'Missing S3 configuration' });
-    }
-
-    const testClient = new S3Client({
-      region: s3Region,
-      credentials: {
-        accessKeyId: s3AccessKey,
-        secretAccessKey: s3SecretKey
-      }
-    });
-
-    // Test by checking bucket access
+    if (!s3Bucket || !s3Region || !s3AccessKey || !s3SecretKey) return res.json({ success: false, error: 'Missing S3 configuration' });
+    const testClient = new S3Client({ region: s3Region, credentials: { accessKeyId: s3AccessKey, secretAccessKey: s3SecretKey } });
     await testClient.send(new HeadBucketCommand({ Bucket: s3Bucket }));
-    
     res.json({ success: true });
   } catch (error) {
-    console.error('S3 test error:', error);
-    
-    // Extract meaningful error message
     let errorMsg = 'S3 connection failed';
-    
-    if (error.name === 'NoSuchBucket') {
-      errorMsg = 'Bucket does not exist';
-    } else if (error.name === 'InvalidAccessKeyId') {
-      errorMsg = 'Invalid Access Key ID';
-    } else if (error.name === 'SignatureDoesNotMatch') {
-      errorMsg = 'Invalid Secret Access Key';
-    } else if (error.name === 'AccessDenied') {
-      errorMsg = 'Access denied - check bucket permissions';
-    } else if (error.$metadata?.httpStatusCode === 400) {
-      errorMsg = 'Bad request - check bucket name and region';
-    } else if (error.$metadata?.httpStatusCode === 403) {
-      errorMsg = 'Access forbidden - check credentials and permissions';
-    } else if (error.$metadata?.httpStatusCode === 404) {
-      errorMsg = 'Bucket not found in this region';
-    } else if (error.message) {
-      errorMsg = error.message;
-    }
-    
+    if (error.name === 'NoSuchBucket') errorMsg = 'Bucket does not exist';
+    else if (error.name === 'InvalidAccessKeyId') errorMsg = 'Invalid Access Key ID';
+    else if (error.name === 'SignatureDoesNotMatch') errorMsg = 'Invalid Secret Access Key';
+    else if (error.name === 'AccessDenied') errorMsg = 'Access denied - check bucket permissions';
+    else if (error.message) errorMsg = error.message;
     res.json({ success: false, error: errorMsg });
   }
 });
 
-// Transcribe audio
+// ============= TRANSCRIBE =============
 app.post('/api/transcribe', auth, upload.single('audio'), async (req, res) => {
   try {
-    const settings = await db.collection('settings').findOne({ _id: 'config' });
-    const voiceMode = settings?.voiceMode || 'browser';
-    const voiceLanguage = settings?.voiceLanguage || 'auto';
-    
+    const settings = await getSettings();
+    const voiceMode = settings.voiceMode || 'browser';
+    const voiceLanguage = settings.voiceLanguage || 'auto';
+
     if (voiceMode === 'local') {
-      // Use local Whisper service
+      const whisperUrl = settings.whisperUrl || process.env.WHISPER_API_URL;
+      if (!whisperUrl) { fs.unlinkSync(req.file.path); return res.status(400).json({ error: 'Whisper URL not configured.' }); }
       const formData = new FormData();
-      formData.append('audio_file', fs.createReadStream(req.file.path), {
-        filename: req.file.originalname,
-        contentType: req.file.mimetype
-      });
-      
-      let whisperUrl = process.env.WHISPER_API_URL + '/asr?task=transcribe&output=json';
-      if (voiceLanguage !== 'auto') {
-        whisperUrl += `&language=${voiceLanguage}`;
-      }
-      
-      const { data } = await axios.post(whisperUrl, formData, {
-        headers: formData.getHeaders()
-      });
-      
+      formData.append('file', fs.createReadStream(req.file.path), { filename: req.file.originalname, contentType: req.file.mimetype });
+      formData.append('model', 'Systran/faster-whisper-small');
+      if (voiceLanguage !== 'auto') formData.append('language', voiceLanguage);
+      const { data } = await axios.post(whisperUrl + '/v1/audio/transcriptions', formData, { headers: formData.getHeaders() });
       fs.unlinkSync(req.file.path);
       res.json({ text: data.text || '', language: voiceLanguage });
-      
     } else if (voiceMode === 'gemini') {
-      // Use Gemini AI for transcription
-      const geminiSttApiKey = settings?.geminiSttApiKey;
-      
-      if (!geminiSttApiKey) {
-        fs.unlinkSync(req.file.path);
-        return res.status(400).json({ error: 'Gemini STT API Key not configured. Please set it in Settings.' });
-      }
+      const geminiSttApiKey = settings.geminiSttApiKey;
+      if (!geminiSttApiKey) { fs.unlinkSync(req.file.path); return res.status(400).json({ error: 'Gemini STT API Key not configured.' }); }
       try {
         const ai = new GoogleGenAI({ apiKey: geminiSttApiKey });
-
-        // Read audio file
         const audioData = fs.readFileSync(req.file.path);
         const base64Audio = audioData.toString('base64');
-        const mimeType = req.file.mimetype || 'audio/webm';
-
         const response = await ai.models.generateContent({
           model: 'gemini-2.5-flash',
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                {
-                  inlineData: {
-                    mimeType,
-                    data: base64Audio
-                  }
-                },
-                {
-                  text: 'Transcribe this audio to text. Keep mixed languages as spoken and do not translate unless asked. Return only the transcription.'
-                }
-              ]
-            }
-          ]
+          contents: [{ role: 'user', parts: [{ inlineData: { mimeType: req.file.mimetype || 'audio/webm', data: base64Audio } }, { text: 'Transcribe this audio to text. Keep mixed languages as spoken and do not translate unless asked. Return only the transcription.' }] }]
         });
-
         fs.unlinkSync(req.file.path);
-
         const responseText = typeof response.text === 'function' ? response.text() : response.text;
-        const fallbackText = response?.candidates?.[0]?.content?.parts
-          ?.map(part => part.text)
-          ?.filter(Boolean)
-          ?.join('');
-        const transcript = (responseText || fallbackText || '').trim();
-        res.json({ text: transcript, language: voiceLanguage });
-      } catch (geminiError) {
-        fs.unlinkSync(req.file.path);
-        console.error('Gemini API Error:', geminiError.message);
-        return res.status(500).json({ 
-          error: `Gemini error: ${geminiError.message}. Please check your API key.` 
-        });
-      }
-      
+        const fallbackText = response?.candidates?.[0]?.content?.parts?.map(part => part.text)?.filter(Boolean)?.join('');
+        res.json({ text: (responseText || fallbackText || '').trim(), language: voiceLanguage });
+      } catch (geminiError) { fs.unlinkSync(req.file.path); return res.status(500).json({ error: `Gemini error: ${geminiError.message}` }); }
     } else if (voiceMode === 'elevenlabs') {
-      // Use ElevenLabs for transcription
-      const elevenlabsApiKey = settings?.elevenlabsApiKey;
-      
-      if (!elevenlabsApiKey) {
-        fs.unlinkSync(req.file.path);
-        return res.status(400).json({ error: 'ElevenLabs API Key not configured. Please set it in Settings.' });
-      }
-
+      const elevenlabsApiKey = settings.elevenlabsApiKey;
+      if (!elevenlabsApiKey) { fs.unlinkSync(req.file.path); return res.status(400).json({ error: 'ElevenLabs API Key not configured.' }); }
       try {
         const formData = new FormData();
-        formData.append('audio', fs.createReadStream(req.file.path), {
-          filename: 'audio.webm',
-          contentType: 'audio/webm'
-        });
-
-        const { data } = await axios.post('https://api.elevenlabs.io/v1/audio-to-text', formData, {
-          headers: {
-            ...formData.getHeaders(),
-            'xi-api-key': elevenlabsApiKey
-          },
-          timeout: 30000
-        });
-
+        formData.append('audio', fs.createReadStream(req.file.path), { filename: 'audio.webm', contentType: 'audio/webm' });
+        const { data } = await axios.post('https://api.elevenlabs.io/v1/audio-to-text', formData, { headers: { ...formData.getHeaders(), 'xi-api-key': elevenlabsApiKey }, timeout: 30000 });
         fs.unlinkSync(req.file.path);
         res.json({ text: data.text || '', language: voiceLanguage });
-      } catch (elevenlabsError) {
-        fs.unlinkSync(req.file.path);
-        console.error('ElevenLabs API Error:', elevenlabsError.message);
-        return res.status(500).json({ 
-          error: `ElevenLabs error: ${elevenlabsError.response?.data?.detail || elevenlabsError.message}` 
-        });
-      }
-      
+      } catch (e) { fs.unlinkSync(req.file.path); return res.status(500).json({ error: `ElevenLabs error: ${e.response?.data?.detail || e.message}` }); }
     } else if (voiceMode === 'api') {
-      // Use external webhook
       const webhooks = await getWebhookUrls();
-      
-      if (!webhooks.transcribe || webhooks.transcribe === 'http://localhost:5678/webhook/transcribe') {
-        fs.unlinkSync(req.file.path);
-        return res.status(400).json({ error: 'Transcribe webhook not configured. Please set it in Settings.' });
-      }
-      
+      if (!webhooks.transcribe || webhooks.transcribe === 'http://localhost:5678/webhook/transcribe') { fs.unlinkSync(req.file.path); return res.status(400).json({ error: 'Transcribe webhook not configured.' }); }
       const formData = new FormData();
-      formData.append('file', fs.createReadStream(req.file.path), {
-        filename: req.file.originalname,
-        contentType: req.file.mimetype
-      });
-      
-      const { data } = await axios.post(webhooks.transcribe, formData, {
-        headers: formData.getHeaders()
-      });
-      
+      formData.append('file', fs.createReadStream(req.file.path), { filename: req.file.originalname, contentType: req.file.mimetype });
+      const { data } = await axios.post(webhooks.transcribe, formData, { headers: formData.getHeaders() });
       fs.unlinkSync(req.file.path);
       res.json({ text: data.text || '', language: data.language });
-      
-    } else {
-      fs.unlinkSync(req.file.path);
-      return res.status(400).json({ error: 'Voice mode not supported for backend transcription' });
-    }
+    } else { fs.unlinkSync(req.file.path); return res.status(400).json({ error: 'Voice mode not supported' }); }
   } catch (error) {
     console.error('Transcription error:', error.message);
     if (req.file?.path) fs.unlinkSync(req.file.path);
@@ -2881,437 +1359,133 @@ app.post('/api/transcribe', auth, upload.single('audio'), async (req, res) => {
   }
 });
 
-// Text-to-Speech
+// ============= TTS =============
 app.post('/api/tts', auth, async (req, res) => {
   try {
     const { text, language, mode } = req.body;
-    
-    if (!text) {
-      return res.status(400).json({ error: 'Text is required' });
-    }
+    if (!text) return res.status(400).json({ error: 'Text is required' });
+    const settings = await getSettings();
+    const ttsMode = mode || settings.ttsMode || 'browser';
 
-    const settings = await db.collection('settings').findOne({ _id: 'config' });
-    const ttsMode = mode || settings?.ttsMode || 'browser';
-    
-    if (ttsMode === 'gemini') {
-      // Use Gemini 2.5 Flash TTS with full chunking for speed
-      const geminiTtsApiKey = settings?.geminiTtsApiKey;
-      if (!geminiTtsApiKey) {
-        return res.status(400).json({ error: 'Gemini TTS API Key not configured. Please set it in Settings.' });
-      }
-
+    if (ttsMode === 'local') {
+      const chatterboxUrl = settings.chatterboxUrl;
+      if (!chatterboxUrl) return res.status(400).json({ error: 'Chatterbox URL not configured.' });
       try {
-        const voiceName = settings?.geminiVoice || 'Aoede';
-
-        // Split text into sentences for parallel processing
+        const { data } = await axios.post(`${chatterboxUrl}/v1/audio/speech`, {
+          input: text, voice: settings.chatterboxVoice || 'default', model: 'chatterbox'
+        }, { responseType: 'arraybuffer', timeout: 30000 });
+        res.set('Content-Type', 'audio/wav'); res.send(Buffer.from(data));
+      } catch (e) { return res.status(500).json({ error: 'Chatterbox TTS failed: ' + (e.response?.data?.error || e.message) }); }
+    } else if (ttsMode === 'gemini') {
+      const geminiTtsApiKey = settings.geminiTtsApiKey;
+      if (!geminiTtsApiKey) return res.status(400).json({ error: 'Gemini TTS API Key not configured.' });
+      try {
+        const voiceName = settings.geminiVoice || 'Aoede';
         const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
-        
-        // Group sentences into chunks (max 2 sentences per chunk for speed)
         const chunks = [];
-        for (let i = 0; i < sentences.length; i += 2) {
-          chunks.push(sentences.slice(i, i + 2).join(' ').trim());
-        }
-
-        // Generate audio for all chunks in parallel
-        const audioPromises = chunks.map(async (chunk, index) => {
-          const requestBody = {
-            contents: [{
-              parts: [{ text: chunk }]
-            }],
-            generationConfig: {
-              responseModalities: ['AUDIO'],
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: {
-                    voiceName
-                  }
-                }
-              }
-            }
-          };
-
-          // Retry logic with exponential backoff
-          let retries = 3;
-          let delay = 1000;
-          
+        for (let i = 0; i < sentences.length; i += 2) chunks.push(sentences.slice(i, i + 2).join(' ').trim());
+        const audioPromises = chunks.map(async (chunk) => {
+          const requestBody = { contents: [{ parts: [{ text: chunk }] }], generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } } } };
+          let retries = 3, delay = 1000;
           for (let attempt = 0; attempt < retries; attempt++) {
             try {
-              const { data } = await axios.post(
-                `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${geminiTtsApiKey}`,
-                requestBody,
-                {
-                  timeout: 30000,
-                  headers: { 'Content-Type': 'application/json' }
-                }
-              );
-
+              const { data } = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${geminiTtsApiKey}`, requestBody, { timeout: 30000, headers: { 'Content-Type': 'application/json' } });
               return Buffer.from(data.candidates[0].content.parts[0].inlineData.data, 'base64');
-            } catch (error) {
-              if (attempt === retries - 1) throw error;
-              console.log(`Retry ${attempt + 1} for chunk ${index + 1} after ${delay}ms`);
-              await new Promise(resolve => setTimeout(resolve, delay));
-              delay *= 2; // Exponential backoff
-            }
+            } catch (error) { if (attempt === retries - 1) throw error; await new Promise(r => setTimeout(r, delay)); delay *= 2; }
           }
         });
-
-        // Wait for all chunks to complete
         const pcmChunks = await Promise.all(audioPromises);
-        
-        // Combine all PCM data
         const pcmData = Buffer.concat(pcmChunks);
-        
-        // Convert PCM to WAV (add WAV header)
-        // PCM format: 16-bit, 24000 Hz, mono
-        const sampleRate = 24000;
-        const numChannels = 1;
-        const bitsPerSample = 16;
-        const byteRate = sampleRate * numChannels * bitsPerSample / 8;
-        const blockAlign = numChannels * bitsPerSample / 8;
-        const dataSize = pcmData.length;
-        
+        const sampleRate = 24000, numChannels = 1, bitsPerSample = 16;
         const wavHeader = Buffer.alloc(44);
-        wavHeader.write('RIFF', 0);
-        wavHeader.writeUInt32LE(36 + dataSize, 4);
-        wavHeader.write('WAVE', 8);
-        wavHeader.write('fmt ', 12);
-        wavHeader.writeUInt32LE(16, 16);
-        wavHeader.writeUInt16LE(1, 20);
-        wavHeader.writeUInt16LE(numChannels, 22);
-        wavHeader.writeUInt32LE(sampleRate, 24);
-        wavHeader.writeUInt32LE(byteRate, 28);
-        wavHeader.writeUInt16LE(blockAlign, 32);
-        wavHeader.writeUInt16LE(bitsPerSample, 34);
-        wavHeader.write('data', 36);
-        wavHeader.writeUInt32LE(dataSize, 40);
-        
-        const wavBuffer = Buffer.concat([wavHeader, pcmData]);
-        
-        res.set('Content-Type', 'audio/wav');
-        res.send(wavBuffer);
-      } catch (geminiError) {
-        console.error('Gemini TTS error:', geminiError.response?.data || geminiError.message);
-        return res.status(500).json({ error: 'Gemini TTS failed: ' + (geminiError.response?.data?.error?.message || geminiError.message) });
-      }
+        wavHeader.write('RIFF', 0); wavHeader.writeUInt32LE(36 + pcmData.length, 4); wavHeader.write('WAVE', 8); wavHeader.write('fmt ', 12);
+        wavHeader.writeUInt32LE(16, 16); wavHeader.writeUInt16LE(1, 20); wavHeader.writeUInt16LE(numChannels, 22); wavHeader.writeUInt32LE(sampleRate, 24);
+        wavHeader.writeUInt32LE(sampleRate * numChannels * bitsPerSample / 8, 28); wavHeader.writeUInt16LE(numChannels * bitsPerSample / 8, 32);
+        wavHeader.writeUInt16LE(bitsPerSample, 34); wavHeader.write('data', 36); wavHeader.writeUInt32LE(pcmData.length, 40);
+        res.set('Content-Type', 'audio/wav'); res.send(Buffer.concat([wavHeader, pcmData]));
+      } catch (e) { return res.status(500).json({ error: 'Gemini TTS failed: ' + (e.response?.data?.error?.message || e.message) }); }
     } else if (ttsMode === 'elevenlabs') {
-      // Use ElevenLabs TTS (fast, high quality)
-      const elevenlabsApiKey = settings?.elevenlabsApiKey;
-      if (!elevenlabsApiKey) {
-        return res.status(400).json({ error: 'ElevenLabs API Key not configured. Please set it in Settings.' });
-      }
-
+      const elevenlabsApiKey = settings.elevenlabsApiKey;
+      if (!elevenlabsApiKey) return res.status(400).json({ error: 'ElevenLabs API Key not configured.' });
       try {
-        const voiceId = settings?.elevenlabsVoice || 'onwK4e9ZLuTAKqWW03F9';
-
-        const requestBody = {
-          text,
-          model_id: 'eleven_multilingual_v2',
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.75
-          }
-        };
-
-        const { data } = await axios.post(
-          `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-          requestBody,
-          {
-            timeout: 15000,
-            headers: {
-              'Content-Type': 'application/json',
-              'xi-api-key': elevenlabsApiKey
-            },
-            responseType: 'arraybuffer'
-          }
-        );
-
-        res.set('Content-Type', 'audio/mpeg');
-        res.send(Buffer.from(data));
-      } catch (elevenlabsError) {
-        console.error('ElevenLabs TTS error:', elevenlabsError.response?.data || elevenlabsError.message);
-        return res.status(500).json({ error: 'ElevenLabs TTS failed: ' + (elevenlabsError.response?.data?.detail || elevenlabsError.message) });
-      }
+        const voiceId = settings.elevenlabsVoice || 'onwK4e9ZLuTAKqWW03F9';
+        const { data } = await axios.post(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, { text, model_id: 'eleven_multilingual_v2', voice_settings: { stability: 0.5, similarity_boost: 0.75 } }, { timeout: 15000, headers: { 'Content-Type': 'application/json', 'xi-api-key': elevenlabsApiKey }, responseType: 'arraybuffer' });
+        res.set('Content-Type', 'audio/mpeg'); res.send(Buffer.from(data));
+      } catch (e) { return res.status(500).json({ error: 'ElevenLabs TTS failed: ' + (e.response?.data?.detail || e.message) }); }
     } else if (ttsMode === 'gclas') {
-      // Google Cloud Long Audio Synthesis with service account
-      const gclasServiceAccount = settings?.gclasServiceAccount;
-      if (!gclasServiceAccount) {
-        return res.status(400).json({ error: 'Google Cloud Service Account not configured. Please set it in Settings.' });
-      }
-
+      const gclasServiceAccount = settings.gclasServiceAccount;
+      if (!gclasServiceAccount) return res.status(400).json({ error: 'Google Cloud Service Account not configured.' });
       try {
-        // Parse service account JSON
         const serviceAccount = JSON.parse(gclasServiceAccount);
-        
-        // Get OAuth2 access token
-        const auth = new GoogleAuth({
-          credentials: serviceAccount,
-          scopes: ['https://www.googleapis.com/auth/cloud-platform']
-        });
-        const client = await auth.getClient();
+        const authClient = new GoogleAuth({ credentials: serviceAccount, scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
+        const client = await authClient.getClient();
         const accessToken = await client.getAccessToken();
-
-        // Auto-detect language if set to auto
-        let languageCode = settings?.gclasLanguage || 'auto';
-        let voiceName = settings?.gclasVoice || 'en-US-Neural2-C';
-
+        let languageCode = settings.gclasLanguage || 'auto';
+        let voiceName = settings.gclasVoice || 'en-US-Neural2-C';
         if (languageCode === 'auto') {
-          // Simple language detection
+          const hasMalay = /\b(saya|aku|kau|awak|anda|dengan|untuk|ini|itu|yang|adalah|tidak|ada|boleh|akan|sudah|dari|ke|di|pada|atau|kalau|nak|buat|jadi)\b/i.test(text);
           const hasChinese = /[\u4e00-\u9fff]/.test(text);
           const hasTamil = /[\u0B80-\u0BFF]/.test(text);
-          const hasMalay = /\b(saya|aku|kau|awak|anda|kita|kami|mereka|dia|dengan|untuk|ini|itu|yang|adalah|tidak|tak|tiada|ada|boleh|akan|sudah|dah|belum|lagi|dari|daripada|ke|di|pada|atau|juga|kalau|bila|macam|mana|nak|hendak|mahu|perlu|mesti|harus|buat|bikin|bagi|ambil|dapat|jadi|jangan|siapa|apa|mana|bila|kenapa|mengapa|bagaimana|berapa|pun|sahaja|je|jer|la|lah|kah|tah|kan|pula|jugak|gak|gitu|gini|nanti|sekarang|tadi|esok|semalam|hari|masa|waktu|tempat|orang|benda|perkara|hal|soal|cerita|kata|cakap|bercakap|beritahu|tanya|jawab|dengar|tengok|lihat|nampak|rasa|fikir|ingat|tahu|kenal|faham|mengerti|belajar|ajar|kerja|rehat|tidur|bangun|makan|minum|masak|basuh|cuci|sapu|gosok|lap|buang|simpan|letak|taruh|angkat|bawa|hantar|terima|buka|tutup|masuk|keluar|naik|turun|datang|pergi|balik|sampai|tiba|mulai|mula|habis|tamat|selesai|siap|terus|berhenti|tunggu|cari|jumpa|temu|beli|jual|bayar|hutang|pinjam|sewa|guna|pakai|kena|cuba|tolong|bantu|ajak|jemput|panggil|telefon|whatsapp|mesej|sembang|borak|lepak|jalan|lari|duduk|berdiri|berbaring|baca|tulis|lukis|gambar|foto|video|rakam|lagu|muzik|nyanyi|menari|tarian|permainan|menang|kalah|seri|gol|mata|markah|tinggi|rendah|besar|kecil|panjang|pendek|lebar|sempit|tebal|nipis|berat|ringan|kuat|lemah|keras|lembut|kasar|halus|licin|tajam|tumpul|panas|sejuk|suam|dingin|hangat|basah|kering|lembap|kotor|bersih|cantik|hodoh|buruk|elok|bagus|baik|jahat|betul|salah|benar|palsu|tepat|silap|lurus|bengkok|senget|condong|tegak|rata|bulat|segi|empat|tiga|lima|enam|tujuh|lapan|sembilan|sepuluh|ratus|ribu|juta|bilion|satu|dua|sebelas|belas|puluh|pertama|kedua|ketiga|keempat|kelima|keenam|ketujuh|kelapan|kesembilan|kesepuluh|merah|biru|hijau|kuning|hitam|putih|kelabu|perang|oren|ungu|pink|jambu|coklat|emas|perak|warna|suka|benci|sayang|cinta|rindu|kangen|marah|geram|bengang|gembira|senang|seronok|sedih|dukacita|takut|gerun|cuak|risau|bimbang|harap|berharap|angan|impian|mimpi|ingin|pengen|lapar|kenyang|haus|dahaga|penat|letih|lesu|sakit|demam|batuk|selsema|selesema|pening|kepala|perut|mual|loya|muntah|cirit|birit|sembelit|gatal|pedih|seram|ngeri|menakutkan|bahaya|selamat|aman|tenteram|damai)\b/i.test(text);
-          
-          if (hasChinese) {
-            languageCode = 'cmn-CN';
-            voiceName = 'cmn-CN-Standard-A';
-          } else if (hasTamil) {
-            languageCode = 'ta-IN';
-            voiceName = 'ta-IN-Standard-A';
-          } else if (hasMalay) {
-            languageCode = 'ms-MY';
-            voiceName = 'ms-MY-Standard-A';
-          } else {
-            languageCode = 'en-US';
-            voiceName = 'en-US-Neural2-C';
-          }
+          if (hasChinese) { languageCode = 'cmn-CN'; voiceName = 'cmn-CN-Standard-A'; }
+          else if (hasTamil) { languageCode = 'ta-IN'; voiceName = 'ta-IN-Standard-A'; }
+          else if (hasMalay) { languageCode = 'ms-MY'; voiceName = 'ms-MY-Standard-A'; }
+          else { languageCode = 'en-US'; voiceName = 'en-US-Neural2-C'; }
         }
-
-        const requestBody = {
-          input: { text },
-          voice: {
-            languageCode,
-            name: voiceName
-          },
-          audioConfig: {
-            audioEncoding: 'MP3'
-          }
-        };
-
-        const { data } = await axios.post(
-          'https://texttospeech.googleapis.com/v1/text:synthesize',
-          requestBody,
-          {
-            timeout: 15000,
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${accessToken.token}`
-            }
-          }
-        );
-
-        const audioBuffer = Buffer.from(data.audioContent, 'base64');
-        res.set('Content-Type', 'audio/mpeg');
-        res.send(audioBuffer);
-      } catch (gclasError) {
-        console.error('GCLAS error:', gclasError.response?.data || gclasError.message);
-        return res.status(500).json({ error: 'Google Cloud TTS failed: ' + (gclasError.response?.data?.error?.message || gclasError.message) });
-      }
-    } else {
-      return res.status(400).json({ error: 'Invalid TTS mode' });
-    }
-  } catch (error) {
-    console.error('TTS error:', error.response?.data || error.message);
-    res.status(500).json({ error: 'TTS failed: ' + (error.response?.data?.error?.message || error.message) });
-  }
+        const { data } = await axios.post('https://texttospeech.googleapis.com/v1/text:synthesize', { input: { text }, voice: { languageCode, name: voiceName }, audioConfig: { audioEncoding: 'MP3' } }, { timeout: 15000, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken.token}` } });
+        res.set('Content-Type', 'audio/mpeg'); res.send(Buffer.from(data.audioContent, 'base64'));
+      } catch (e) { return res.status(500).json({ error: 'Google Cloud TTS failed: ' + (e.response?.data?.error?.message || e.message) }); }
+    } else { return res.status(400).json({ error: 'Invalid TTS mode' }); }
+  } catch (error) { res.status(500).json({ error: 'TTS failed: ' + (error.response?.data?.error?.message || error.message) }); }
 });
 
-// ============= API KEY MANAGEMENT =============
-
-// Generate API key
-function generateApiKey() {
-  return 'gbc_' + Array.from({ length: 32 }, () => 
-    'abcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(Math.random() * 36)]
-  ).join('');
-}
-
-// Get all API keys (developer only)
-app.get('/api/keys', auth, async (req, res) => {
+// ============= OLLAMA TEST =============
+app.post('/api/test-ollama', auth, hasPermission(), async (req, res) => {
   try {
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access required' });
-    }
-
-    const keys = await db.collection('apiKeys').find({ createdBy: req.user.userId }).toArray();
-    res.json(keys);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+    const s = await getSettings();
+    const url = s.ollamaUrl || process.env.OLLAMA_URL || 'http://ollama:11434';
+    const { data } = await axios.get(`${url}/api/tags`, { timeout: 5000 });
+    res.json({ success: true, models: data.models?.map(m => m.name) || [] });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// Create new API key (developer only)
-app.post('/api/keys', auth, async (req, res) => {
-  try {
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access required' });
-    }
-
-    const { name, userId } = req.body;
-    
-    if (!userId) {
-      return res.status(400).json({ error: 'User ID is required' });
-    }
-
-    const apiKey = generateApiKey();
-
-    const newKey = {
-      key: apiKey,
-      userId: userId, // User yang akan guna API key ni
-      createdBy: req.user.userId, // Developer yang create
-      name: name || 'Unnamed Key',
-      isActive: true,
-      createdAt: new Date(),
-      lastUsedAt: null
-    };
-
-    await db.collection('apiKeys').insertOne(newKey);
-    res.json(newKey);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Toggle API key status (developer only)
-app.patch('/api/keys/:id', auth, async (req, res) => {
-  try {
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access required' });
-    }
-
-    const { isActive } = req.body;
-    await db.collection('apiKeys').updateOne(
-      { _id: new ObjectId(req.params.id), createdBy: req.user.userId },
-      { $set: { isActive } }
-    );
-
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Delete API key (developer only)
-app.delete('/api/keys/:id', auth, async (req, res) => {
-  try {
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access required' });
-    }
-
-    await db.collection('apiKeys').deleteOne({
-      _id: new ObjectId(req.params.id),
-      userId: req.user.userId
-    });
-
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get API usage logs (developer only)
-// Get API usage logs (developer only)
-app.get('/api/usage', auth, async (req, res) => {
-  try {
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access required' });
-    }
-
-    // Get API keys created by this developer
-    const apiKeys = await db.collection('apiKeys')
-      .find({ createdBy: req.user.userId })
-      .toArray();
-    
-    if (apiKeys.length === 0) {
-      return res.json([]);
-    }
-
-    const apiKeyIds = apiKeys.map(k => k._id);
-
-    // Get usage for those keys
-    const usage = await db.collection('apiUsage')
-      .find({ apiKeyId: { $in: apiKeyIds } })
-      .sort({ timestamp: -1 })
-      .limit(100)
-      .toArray();
-
-    res.json(usage);
-  } catch (error) {
-    console.error('API usage error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============= PUBLIC API ENDPOINTS =============
-
-// API Key authentication middleware
-// Text embedding endpoints (Developer only)
+// ============= TEXT EMBEDDINGS =============
 app.get('/api/text-embeddings', auth, async (req, res) => {
   try {
-    // Check if developer
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access only' });
-    }
-    
-    const embeddings = await db.collection('embedding_files')
-      .find({ fileId: null })
-      .sort({ uploadedAt: -1 })
-      .toArray();
-    
-    res.json(embeddings);
-  } catch (error) {
-    console.error('Load embeddings error:', error);
-    res.status(500).json({ error: 'Failed to load embeddings' });
-  }
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer access only' });
+    const result = await db('SELECT * FROM embeddings WHERE file_id IS NULL ORDER BY uploaded_at DESC');
+    res.json(result.rows);
+  } catch (error) { res.status(500).json({ error: 'Failed to load embeddings' }); }
 });
 
 app.post('/api/text-embeddings', auth, async (req, res) => {
   try {
-    // Check if developer
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access only' });
-    }
-    
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer access only' });
     const { text, fileName } = req.body;
-    
-    if (!text || !text.trim()) {
-      return res.status(400).json({ error: 'Text is required' });
+    if (!text || !text.trim()) return res.status(400).json({ error: 'Text is required' });
+
+    const settings = await getSettings();
+    let embedding;
+
+    const ollamaUrl = settings.ollamaUrl || process.env.OLLAMA_URL;
+    const embeddingModel = settings.ollamaEmbeddingModel || 'nomic-embed-text';
+
+    if (ollamaUrl) {
+      const response = await axios.post(`${ollamaUrl}/api/embed`, { model: embeddingModel, input: text.trim() });
+      embedding = response.data.embeddings[0];
+    } else {
+      const apiKey = settings.geminiSttApiKey || settings.geminiTtsApiKey;
+      if (!apiKey) return res.status(500).json({ error: 'No embedding service configured. Set up Ollama or Gemini API key.' });
+      const response = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${apiKey}`,
+        { model: 'models/gemini-embedding-001', content: { parts: [{ text: text.trim() }] } }
+      );
+      embedding = response.data.embedding.values;
     }
-    
-    // Get Gemini API key
-    const settings = await db.collection('settings').findOne({ _id: 'config' });
-    const apiKey = settings?.geminiSttApiKey || settings?.geminiTtsApiKey;
-    
-    if (!apiKey) {
-      return res.status(500).json({ error: 'Gemini API key not configured' });
-    }
-    
-    console.log('Generating embedding for text length:', text.trim().length);
-    
-    // Generate embedding using gemini-embedding-001 (same as n8n)
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${apiKey}`,
-      {
-        model: 'models/gemini-embedding-001',
-        content: {
-          parts: [{ text: text.trim() }]
-        }
-      }
+
+    await db(
+      `INSERT INTO embeddings (text, embedding, file_name, file_id, shared_with) VALUES ($1, $2::vector, $3, NULL, $4)`,
+      [text.trim(), `[${embedding.join(',')}]`, fileName?.trim() || 'Custom Knowledge', ['PUBLIC']]
     );
-    
-    const embedding = response.data.embedding.values;
-    console.log('Embedding generated, dimension:', embedding.length);
-    
-    // Insert into MongoDB
-    await db.collection('embedding_files').insertOne({
-      text: text.trim(),
-      embedding: embedding,
-      fileName: fileName?.trim() || 'Custom Knowledge',
-      fileId: null,
-      sharedWith: ["PUBLIC"], // Accessible to all
-      organizationId: null,
-      departmentId: null,
-      uploadedAt: new Date()
-    });
-    
-    console.log('Text embedded successfully');
     res.json({ success: true, message: 'Text embedded successfully' });
   } catch (error) {
     console.error('Text embedding error:', error.response?.data || error.message);
@@ -3321,227 +1495,97 @@ app.post('/api/text-embeddings', auth, async (req, res) => {
 
 app.delete('/api/text-embeddings/:id', auth, async (req, res) => {
   try {
-    // Check if developer
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access only' });
-    }
-    
-    await db.collection('embedding_files').deleteOne({ 
-      _id: new ObjectId(req.params.id),
-      fileId: null // Only allow deleting direct text embeddings
-    });
-    
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer access only' });
+    await db('DELETE FROM embeddings WHERE id = $1 AND file_id IS NULL', [req.params.id]);
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to delete' }); }
 });
 
-// Cleanup old deleted messages and API usage based on retention setting
+// ============= CLEANUP =============
 async function cleanupOldData() {
   try {
-    const settings = await db.collection('settings').findOne({ _id: 'config' });
-    const retentionDays = settings?.deletedChatRetentionDays || 360;
-    
+    const settings = await getSettings();
+    const retentionDays = settings.deletedChatRetentionDays || 360;
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
-    
-    // Cleanup deleted messages
-    const deletedMsgsResult = await db.collection('deleted_messages').deleteMany({
-      deletedAt: { $lt: cutoffDate }
-    });
-    
-    if (deletedMsgsResult.deletedCount > 0) {
-      console.log(`Cleaned up ${deletedMsgsResult.deletedCount} old deleted messages (older than ${retentionDays} days)`);
-    }
-    
-    // Cleanup API usage logs
-    const apiUsageResult = await db.collection('api_usage').deleteMany({
-      timestamp: { $lt: cutoffDate }
-    });
-    
-    if (apiUsageResult.deletedCount > 0) {
-      console.log(`Cleaned up ${apiUsageResult.deletedCount} old API usage logs (older than ${retentionDays} days)`);
-    }
-    
-    // Cleanup download tracking
-    const downloadResult = await db.collection('download_tracking').deleteMany({
-      downloadedAt: { $lt: cutoffDate }
-    });
-    
-    if (downloadResult.deletedCount > 0) {
-      console.log(`Cleaned up ${downloadResult.deletedCount} old download tracking (older than ${retentionDays} days)`);
-    }
-    
-  } catch (error) {
-    console.error('Cleanup error:', error);
-  }
+
+    const del1 = await db('DELETE FROM deleted_messages WHERE deleted_at < $1', [cutoffDate]);
+    if (del1.rowCount > 0) console.log(`Cleaned up ${del1.rowCount} old deleted messages`);
+    const del2 = await db('DELETE FROM api_usage WHERE timestamp < $1', [cutoffDate]);
+    if (del2.rowCount > 0) console.log(`Cleaned up ${del2.rowCount} old API usage logs`);
+    const del3 = await db('DELETE FROM download_tracking WHERE downloaded_at < $1', [cutoffDate]);
+    if (del3.rowCount > 0) console.log(`Cleaned up ${del3.rowCount} old download tracking`);
+  } catch (error) { console.error('Cleanup error:', error); }
 }
-
-// Run cleanup daily
 setInterval(cleanupOldData, 24 * 60 * 60 * 1000);
-cleanupOldData(); // Run on startup
+cleanupOldData();
 
-// ============================================
-// ROBOT SETTINGS ENDPOINTS
-// ============================================
-
-// Get all robot settings
+// ============= ROBOT SETTINGS =============
 app.get('/api/robot-settings', auth, hasPermission('developer'), async (req, res) => {
-  console.log('[ROBOT SETTINGS] GET /api/robot-settings called');
   try {
-    const robots = await db.collection('robot_settings').find().sort({ createdAt: -1 }).toArray();
-    console.log('[ROBOT SETTINGS] Found robots:', robots.length);
-    res.json(robots);
-  } catch (error) {
-    console.error('[ROBOT SETTINGS] Error:', error);
-    res.status(500).json({ error: 'Failed to get robot settings' });
-  }
+    const result = await db('SELECT * FROM robot_settings ORDER BY created_at DESC');
+    res.json(result.rows);
+  } catch (error) { res.status(500).json({ error: 'Failed to get robot settings' }); }
 });
 
-// Get one robot setting
 app.get('/api/robot-settings/:id', auth, hasPermission('developer'), async (req, res) => {
   try {
-    const robot = await db.collection('robot_settings').findOne({ _id: new ObjectId(req.params.id) });
-    if (!robot) {
-      return res.status(404).json({ error: 'Robot not found' });
-    }
-    res.json(robot);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get robot setting' });
-  }
+    const result = await db('SELECT * FROM robot_settings WHERE id = $1', [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Robot not found' });
+    res.json(result.rows[0]);
+  } catch (error) { res.status(500).json({ error: 'Failed to get robot setting' }); }
 });
 
-// Create robot setting
 app.post('/api/robot-settings', auth, hasPermission('developer'), async (req, res) => {
   try {
     const { name, description } = req.body;
-    
-    const robot = {
-      name,
-      description: description || '',
-      navigation: [],
-      motion: [],
-      emotion: [],
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-    
-    const result = await db.collection('robot_settings').insertOne(robot);
-    res.json({ success: true, id: result.insertedId });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to create robot setting' });
-  }
+    const result = await db('INSERT INTO robot_settings (name, description) VALUES ($1, $2) RETURNING id', [name, description || '']);
+    res.json({ success: true, id: result.rows[0].id });
+  } catch (error) { res.status(500).json({ error: 'Failed to create robot setting' }); }
 });
 
-// Update robot setting
 app.put('/api/robot-settings/:id', auth, hasPermission('developer'), async (req, res) => {
   try {
     const { name, description, navigation, motion, emotion } = req.body;
-    
-    const update = {
-      name,
-      description,
-      navigation,
-      motion,
-      emotion,
-      updatedAt: new Date()
-    };
-    
-    await db.collection('robot_settings').updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: update }
-    );
-    
+    await db('UPDATE robot_settings SET name=$1, description=$2, navigation=$3, motion=$4, emotion=$5, updated_at=NOW() WHERE id=$6',
+      [name, description, JSON.stringify(navigation), JSON.stringify(motion), JSON.stringify(emotion), req.params.id]);
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update robot setting' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to update robot setting' }); }
 });
 
-// Delete robot setting (with protection)
 app.delete('/api/robot-settings/:id', auth, hasPermission('developer'), async (req, res) => {
   try {
-    const robotId = new ObjectId(req.params.id);
-    
-    // Check if any API keys are linked to this robot
-    const linkedKeys = await db.collection('api_keys').find({ robotSettingId: robotId }).toArray();
-    
-    if (linkedKeys.length > 0) {
-      const keyNames = linkedKeys.map(k => `${k.name} (${k.shortKey || k.key.substring(0, 10) + '...'})`);
-      return res.status(400).json({ 
-        error: 'Cannot delete robot',
-        message: `This robot is linked to ${linkedKeys.length} API key(s): ${keyNames.join(', ')}. Please unlink or delete these API keys first.`,
-        linkedKeys: keyNames
-      });
+    const linked = await db('SELECT id, name, short_key, key FROM api_keys WHERE robot_setting_id = $1', [req.params.id]);
+    if (linked.rows.length > 0) {
+      const keyNames = linked.rows.map(k => `${k.name} (${k.short_key || k.key.substring(0, 10) + '...'})`);
+      return res.status(400).json({ error: 'Cannot delete robot', message: `Linked to ${linked.rows.length} API key(s): ${keyNames.join(', ')}`, linkedKeys: keyNames });
     }
-    
-    await db.collection('robot_settings').deleteOne({ _id: robotId });
+    await db('DELETE FROM robot_settings WHERE id = $1', [req.params.id]);
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete robot setting' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to delete robot setting' }); }
 });
 
-// Get robot data by API key (for robot to call)
 app.get('/api/robot-data', authenticateApiKey, async (req, res) => {
   try {
-    if (!req.apiKey.robotSettingId) {
-      return res.status(404).json({ error: 'No robot setting linked to this API key' });
-    }
-    
-    const robot = await db.collection('robot_settings').findOne({ _id: req.apiKey.robotSettingId });
-    
-    if (!robot) {
-      return res.status(404).json({ error: 'Robot setting not found' });
-    }
-    
-    res.json({
-      name: robot.name,
-      navigation: robot.navigation,
-      motion: robot.motion,
-      emotion: robot.emotion
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get robot data' });
-  }
+    if (!req.apiKey.robot_setting_id) return res.status(404).json({ error: 'No robot setting linked to this API key' });
+    const result = await db('SELECT * FROM robot_settings WHERE id = $1', [req.apiKey.robot_setting_id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Robot setting not found' });
+    const r = result.rows[0];
+    res.json({ name: r.name, navigation: r.navigation, motion: r.motion, emotion: r.emotion });
+  } catch (error) { res.status(500).json({ error: 'Failed to get robot data' }); }
 });
 
-// Sync navigation data from robot
 app.post('/api/robot-navigation', authenticateApiKey, async (req, res) => {
   try {
-    if (!req.apiKey.robotSettingId) {
-      return res.status(404).json({ error: 'No robot setting linked to this API key' });
-    }
-    
+    if (!req.apiKey.robot_setting_id) return res.status(404).json({ error: 'No robot setting linked to this API key' });
     const { navigation } = req.body;
-    
-    if (!Array.isArray(navigation)) {
-      return res.status(400).json({ error: 'navigation must be an array of { id, title, description }' });
-    }
-    
-    const robot = await db.collection('robot_settings').findOne({ _id: req.apiKey.robotSettingId });
-    
-    if (!robot) {
-      return res.status(404).json({ error: 'Robot setting not found' });
-    }
-    
-    // Compare - only update if different
-    const isSame = JSON.stringify(robot.navigation) === JSON.stringify(navigation);
-    
-    if (isSame) {
-      return res.json({ updated: false, message: 'Navigation data unchanged' });
-    }
-    
-    await db.collection('robot_settings').updateOne(
-      { _id: req.apiKey.robotSettingId },
-      { $set: { navigation, updatedAt: new Date() } }
-    );
-    
+    if (!Array.isArray(navigation)) return res.status(400).json({ error: 'navigation must be an array' });
+    const result = await db('SELECT navigation FROM robot_settings WHERE id = $1', [req.apiKey.robot_setting_id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Robot setting not found' });
+    if (JSON.stringify(result.rows[0].navigation) === JSON.stringify(navigation)) return res.json({ updated: false, message: 'Navigation data unchanged' });
+    await db('UPDATE robot_settings SET navigation = $1, updated_at = NOW() WHERE id = $2', [JSON.stringify(navigation), req.apiKey.robot_setting_id]);
     res.json({ updated: true, message: `Navigation updated with ${navigation.length} entries` });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update navigation' });
-  }
+  } catch (error) { res.status(500).json({ error: 'Failed to update navigation' }); }
 });
 
 // Serve React app for all other routes
