@@ -26,6 +26,22 @@ const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
 const connTest = await db('SELECT 1');
 console.log('Connected to PostgreSQL');
 
+// Helper: map PostgreSQL snake_case rows to MongoDB-compatible camelCase with _id
+function mapRow(row) {
+  if (!row) return row;
+  const mapped = { _id: row.id, id: row.id };
+  for (const [k, v] of Object.entries(row)) {
+    if (k === 'id') continue;
+    const camel = k.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+    mapped[camel] = v;
+    if (k !== camel) mapped[k] = v;
+  }
+  // Fix known abbreviation mismatches
+  if ('storageLimitGb' in mapped) mapped.storageLimitGB = mapped.storageLimitGb;
+  return mapped;
+}
+function mapRows(rows) { return rows.map(mapRow); }
+
 // Helper: get settings
 async function getSettings() {
   const res = await db('SELECT data FROM settings WHERE id = $1', ['config']);
@@ -54,9 +70,9 @@ async function getS3Client() {
 async function getWebhookUrls() {
   const settings = await getSettings();
   return {
-    chat: settings.chatWebhook || 'http://localhost:5678/webhook/chat',
-    upload: settings.uploadWebhook || 'http://localhost:5678/webhook/upload',
-    transcribe: settings.transcribeWebhook || 'http://localhost:5678/webhook/transcribe'
+    chat: settings.chatWebhook || 'http://n8n:5678/webhook/chat',
+    upload: settings.uploadWebhook || 'http://n8n:5678/webhook/upload',
+    transcribe: settings.transcribeWebhook || 'http://n8n:5678/webhook/transcribe'
   };
 }
 
@@ -205,8 +221,8 @@ app.post('/api/organizations', auth, hasPermission(), async (req, res) => {
       path = [...(p.rows[0].path || []), name];
     }
     const result = await db(
-      'INSERT INTO organizations (name, path, parent_id, created_at) VALUES ($1, $2, $3, NOW()) RETURNING id',
-      [name, JSON.stringify(path), parentId || null]
+      'INSERT INTO organizations (name, type, path, parent_id, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id',
+      [name, type || 'organization', JSON.stringify(path), parentId || null]
     );
     res.json({ success: true, organizationId: result.rows[0].id });
   } catch (error) { res.status(500).json({ error: 'Failed to create organization' }); }
@@ -233,7 +249,7 @@ app.get('/api/my-organizations', auth, async (req, res) => {
        JOIN user_org_assignments uoa ON o.id = uoa.organization_id
        WHERE uoa.user_id = $1`, [req.user.id]
     );
-    res.json({ organizations: result.rows });
+    res.json({ organizations: mapRows(result.rows) });
   } catch (error) { res.status(500).json({ error: 'Failed to get organizations' }); }
 });
 
@@ -255,7 +271,7 @@ app.get('/api/my-organizations-hierarchy', auth, async (req, res) => {
     }
 
     const allOrgs = await db('SELECT * FROM organizations WHERE id = ANY($1::uuid[])', [Array.from(allOrgIds)]);
-    res.json({ organizations: allOrgs.rows });
+    res.json({ organizations: mapRows(allOrgs.rows) });
   } catch (error) {
     console.error('Error in my-organizations-hierarchy:', error);
     res.status(500).json({ error: 'Failed to get organizations hierarchy' });
@@ -265,7 +281,7 @@ app.get('/api/my-organizations-hierarchy', auth, async (req, res) => {
 app.get('/api/organizations', auth, hasPermission(), async (req, res) => {
   try {
     const result = await db('SELECT * FROM organizations');
-    res.json({ organizations: result.rows });
+    res.json({ organizations: mapRows(result.rows) });
   } catch (error) { res.status(500).json({ error: 'Failed to get organizations' }); }
 });
 
@@ -278,7 +294,7 @@ app.put('/api/organizations/:id', auth, hasPermission(), async (req, res) => {
       if (!p.rows[0]) return res.status(404).json({ error: 'Parent not found' });
       path = [...(p.rows[0].path || []), name];
     }
-    await db('UPDATE organizations SET name = $1, path = $2, updated_at = NOW() WHERE id = $3', [name, JSON.stringify(path), req.params.id]);
+    await db('UPDATE organizations SET name = $1, type = $2, path = $3, parent_id = $4, updated_at = NOW() WHERE id = $5', [name, type || 'organization', JSON.stringify(path), parentId || null, req.params.id]);
     res.json({ success: true });
   } catch (error) { res.status(500).json({ error: 'Failed to update organization' }); }
 });
@@ -295,7 +311,7 @@ app.delete('/api/organizations/:id', auth, hasPermission(), async (req, res) => 
 app.get('/api/users', auth, hasPermission(), async (req, res) => {
   try {
     const result = await db('SELECT * FROM users');
-    res.json(result.rows);
+    res.json(mapRows(result.rows));
   } catch (error) { res.status(500).json({ error: 'Failed to get users' }); }
 });
 
@@ -317,7 +333,7 @@ app.put('/api/users/:id', auth, hasPermission(), async (req, res) => {
 app.get('/api/user-assignments/:userId', auth, hasPermission(), async (req, res) => {
   try {
     const result = await db('SELECT * FROM user_org_assignments WHERE user_id = $1', [req.params.userId]);
-    res.json(result.rows);
+    res.json(mapRows(result.rows));
   } catch (error) { res.status(500).json({ error: 'Failed to get user assignments' }); }
 });
 
@@ -775,7 +791,7 @@ app.get('/api/files', auth, async (req, res) => {
         const orgs = await db('SELECT name FROM organizations WHERE id = ANY($1::uuid[])', [f.shared_with]);
         sharedOrgNames = orgs.rows.map(o => o.name);
       }
-      return { id: f.id, name: f.name, uploadedAt: f.uploaded_at, uploadedBy: f.uploaded_by || 'Unknown', userId: f.user_id, sharedWith: sharedOrgNames };
+      return { _id: f.id, id: f.id, name: f.name, uploadedAt: f.uploaded_at, uploadedBy: f.uploaded_by || 'Unknown', userId: f.user_id, sharedWith: sharedOrgNames };
     }));
     res.json(filesWithInfo);
   } catch (error) { console.error('Get files error:', error); res.status(500).json({ error: error.message }); }
@@ -842,7 +858,7 @@ app.get('/api/download-tracking', auth, async (req, res) => {
   try {
     if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer access only' });
     const result = await db('SELECT * FROM download_tracking ORDER BY downloaded_at DESC LIMIT 1000');
-    res.json(result.rows);
+    res.json(mapRows(result.rows));
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
@@ -885,17 +901,17 @@ app.delete('/api/files/:id', auth, async (req, res) => {
 // ============= PERMISSIONS & ROLES =============
 app.get('/api/permissions', auth, hasPermission('role:manage'), async (req, res) => {
   const result = await db('SELECT * FROM permissions');
-  res.json(result.rows);
+  res.json(mapRows(result.rows));
 });
 
 app.get('/api/roles/list', auth, async (req, res) => {
   const result = await db("SELECT * FROM roles WHERE status = 'active'");
-  res.json(result.rows);
+  res.json(mapRows(result.rows));
 });
 
 app.get('/api/roles', auth, hasPermission('role:manage'), async (req, res) => {
   const result = await db('SELECT * FROM roles');
-  res.json(result.rows);
+  res.json(mapRows(result.rows));
 });
 
 app.post('/api/roles', auth, hasPermission('role:manage'), async (req, res) => {
@@ -924,7 +940,7 @@ app.delete('/api/roles/:id', auth, hasPermission('role:manage', 'system:delete')
 // ============= ORGANIZATIONS (RBAC) =============
 app.get('/api/organizations', auth, hasPermission('org:view'), async (req, res) => {
   const result = await db('SELECT * FROM organizations');
-  res.json(result.rows);
+  res.json(mapRows(result.rows));
 });
 
 app.post('/api/organizations', auth, hasPermission('org:manage'), async (req, res) => {
@@ -956,7 +972,7 @@ app.get('/api/departments', auth, hasPermission('dept:view'), async (req, res) =
   } else {
     result = await db('SELECT d.*, o.name as organization_name FROM departments d LEFT JOIN organizations o ON o.id = d.organization_id');
   }
-  res.json(result.rows.map(d => ({ ...d, organizationName: d.organization_name })));
+  res.json(result.rows.map(d => ({ ...mapRow(d), organizationName: d.organization_name })));
 });
 
 app.post('/api/departments', auth, hasPermission('dept:manage'), async (req, res) => {
@@ -1077,13 +1093,13 @@ app.get('/api/settings', auth, hasPermission(), async (req, res) => {
 });
 
 app.post('/api/settings', auth, hasPermission(), async (req, res) => {
-  await updateSettings(req.body);
-  res.json({ success: true });
+  try { await updateSettings(req.body); res.json({ success: true }); }
+  catch (e) { console.error('[SETTINGS SAVE ERROR]', e.message); res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/settings', auth, hasPermission(), async (req, res) => {
-  await updateSettings(req.body);
-  res.json({ success: true });
+  try { await updateSettings(req.body); res.json({ success: true }); }
+  catch (e) { console.error('[SETTINGS SAVE ERROR]', e.message); res.status(500).json({ error: e.message }); }
 });
 
 // ============= API KEYS =============
@@ -1094,7 +1110,7 @@ app.get('/api/keys', auth, hasPermission(), async (req, res) => {
       const userRes = await db('SELECT email FROM users WHERE id = $1', [key.user_id]);
       let robotName = null;
       if (key.robot_setting_id) { const r = await db('SELECT name FROM robot_settings WHERE id = $1', [key.robot_setting_id]); robotName = r.rows[0]?.name; }
-      return { ...key, userEmail: userRes.rows[0]?.email || 'Unknown', robotName };
+      return { ...mapRow(key), userEmail: userRes.rows[0]?.email || 'Unknown', robotName };
     }));
     res.json(keysWithUser);
   } catch (error) { res.status(500).json({ error: 'Failed to get API keys' }); }
@@ -1140,7 +1156,7 @@ app.delete('/api/keys/:id', auth, hasPermission(), async (req, res) => {
 app.get('/api/usage', auth, hasPermission(), async (req, res) => {
   try {
     const result = await db('SELECT * FROM api_usage ORDER BY timestamp DESC LIMIT 100');
-    res.json(result.rows);
+    res.json(mapRows(result.rows));
   } catch (error) { res.status(500).json({ error: 'Failed to get API usage' }); }
 });
 
@@ -1151,7 +1167,7 @@ app.get('/api/groups', auth, hasPermission(), async (req, res) => {
     const groupsWithDetails = await Promise.all(groups.rows.map(async (group) => {
       const orgs = await db('SELECT id, name FROM organizations WHERE group_id = $1', [group.id]);
       const filesRes = await db('SELECT COALESCE(SUM(size), 0) as total FROM files WHERE group_id = $1', [group.id]);
-      return { ...group, orgNames: orgs.rows.map(o => o.name), organizationIds: orgs.rows.map(o => o.id), usedStorage: parseInt(filesRes.rows[0].total) };
+      return { ...mapRow(group), orgNames: orgs.rows.map(o => o.name), organizationIds: orgs.rows.map(o => o.id), usedStorage: parseInt(filesRes.rows[0].total) };
     }));
     res.json(groupsWithDetails);
   } catch (error) { res.status(500).json({ error: 'Failed to get groups' }); }
@@ -1438,14 +1454,79 @@ app.post('/api/tts', auth, async (req, res) => {
   } catch (error) { res.status(500).json({ error: 'TTS failed: ' + (error.response?.data?.error?.message || error.message) }); }
 });
 
+// ============= WEBHOOK TEST (proxy through backend) =============
+app.post('/api/test-webhook', auth, hasPermission(), async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'URL required' });
+    const { status } = await axios.post(url, { test: true }, { timeout: 10000 });
+    res.json({ success: true, status });
+  } catch (e) { res.json({ success: false, error: e.message }); }
+});
+
 // ============= OLLAMA TEST =============
 app.post('/api/test-ollama', auth, hasPermission(), async (req, res) => {
   try {
     const s = await getSettings();
     const url = s.ollamaUrl || process.env.OLLAMA_URL || 'http://ollama:11434';
     const { data } = await axios.get(`${url}/api/tags`, { timeout: 5000 });
-    res.json({ success: true, models: data.models?.map(m => m.name) || [] });
+    const models = data.models?.map(m => ({ name: m.name, size: m.size, family: m.details?.family })) || [];
+    res.json({ success: true, models });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.post('/api/ollama/pull', auth, hasPermission(), async (req, res) => {
+  try {
+    const s = await getSettings();
+    const url = s.ollamaUrl || process.env.OLLAMA_URL || 'http://ollama:11434';
+    const { model } = req.body;
+    if (!model) return res.status(400).json({ error: 'Model name required' });
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    const { data: stream } = await axios.post(`${url}/api/pull`, { name: model, stream: true }, { responseType: 'stream', timeout: 600000 });
+    let buf = '';
+    stream.on('data', chunk => {
+      buf += chunk.toString();
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try { res.write(`data: ${line}\n\n`); } catch {}
+      }
+    });
+    stream.on('end', () => { res.write(`data: {"status":"done"}\n\n`); res.end(); });
+    stream.on('error', e => { res.write(`data: {"error":"${e.message}"}\n\n`); res.end(); });
+    req.on('close', () => stream.destroy());
+  } catch (e) { res.status(500).json({ error: e.response?.data?.error || e.message }); }
+});
+
+app.post('/api/ollama/delete', auth, hasPermission(), async (req, res) => {
+  try {
+    const s = await getSettings();
+    const url = s.ollamaUrl || process.env.OLLAMA_URL || 'http://ollama:11434';
+    const { model } = req.body;
+    if (!model) return res.status(400).json({ error: 'Model name required' });
+    await axios.delete(`${url}/api/delete`, { data: { name: model }, timeout: 30000 });
+    res.json({ success: true, message: `Model ${model} deleted` });
+  } catch (e) { res.status(500).json({ error: e.response?.data?.error || e.message }); }
+});
+
+app.post('/api/ollama/chat', auth, hasPermission(), async (req, res) => {
+  try {
+    const s = await getSettings();
+    const url = s.ollamaUrl || process.env.OLLAMA_URL || 'http://ollama:11434';
+    const { model, message } = req.body;
+    if (!model || !message) return res.status(400).json({ error: 'Model and message required' });
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    const { data: stream } = await axios.post(`${url}/api/generate`, { model, prompt: message, stream: true }, { responseType: 'stream', timeout: 120000 });
+    stream.on('data', chunk => { try { res.write(`data: ${chunk.toString().trim()}\n\n`); } catch {} });
+    stream.on('end', () => res.end());
+    stream.on('error', e => { res.write(`data: {"error":"${e.message}"}\n\n`); res.end(); });
+    req.on('close', () => stream.destroy());
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ============= TEXT EMBEDDINGS =============
@@ -1453,7 +1534,7 @@ app.get('/api/text-embeddings', auth, async (req, res) => {
   try {
     if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer access only' });
     const result = await db('SELECT * FROM embeddings WHERE file_id IS NULL ORDER BY uploaded_at DESC');
-    res.json(result.rows);
+    res.json(mapRows(result.rows));
   } catch (error) { res.status(500).json({ error: 'Failed to load embeddings' }); }
 });
 
@@ -1524,7 +1605,7 @@ cleanupOldData();
 app.get('/api/robot-settings', auth, hasPermission('developer'), async (req, res) => {
   try {
     const result = await db('SELECT * FROM robot_settings ORDER BY created_at DESC');
-    res.json(result.rows);
+    res.json(mapRows(result.rows));
   } catch (error) { res.status(500).json({ error: 'Failed to get robot settings' }); }
 });
 
@@ -1532,7 +1613,7 @@ app.get('/api/robot-settings/:id', auth, hasPermission('developer'), async (req,
   try {
     const result = await db('SELECT * FROM robot_settings WHERE id = $1', [req.params.id]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Robot not found' });
-    res.json(result.rows[0]);
+    res.json(mapRow(result.rows[0]));
   } catch (error) { res.status(500).json({ error: 'Failed to get robot setting' }); }
 });
 

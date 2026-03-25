@@ -259,7 +259,7 @@ class API {
       headers: this.getHeaders(),
       body: JSON.stringify(settings),
     })
-    if (!res.ok) throw new Error('Failed to update settings')
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Failed to update settings'); }
     return res.json()
   }
 

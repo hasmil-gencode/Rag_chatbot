@@ -168,22 +168,22 @@ export const TextEmbeddedPage = () => {
             <div className="space-y-3">
               {embeddings.map((item) => (
                 <div
-                  key={item._id}
+                  key={item.id}
                   className="flex items-start justify-between p-4 border rounded-lg hover:bg-muted/50"
                 >
                   <div className="flex-1 min-w-0">
-                    <h3 className="font-medium">{item.fileName}</h3>
+                    <h3 className="font-medium">{item.file_name || item.fileName}</h3>
                     <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
                       {item.text}
                     </p>
                     <p className="text-xs text-muted-foreground mt-2">
-                      Added: {new Date(item.uploadedAt).toLocaleString()}
+                      Added: {new Date(item.uploaded_at || item.uploadedAt).toLocaleString()}
                     </p>
                   </div>
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => handleDelete(item._id)}
+                    onClick={() => handleDelete(item.id)}
                     className="ml-4 text-destructive hover:text-destructive"
                   >
                     <Trash2 className="w-4 h-4" />

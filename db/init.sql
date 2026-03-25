@@ -49,6 +49,7 @@ INSERT INTO settings (id, data) VALUES ('config', '{
 CREATE TABLE organizations (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'organization',
   path JSONB,
   parent_id UUID REFERENCES organizations(id) ON DELETE SET NULL,
   group_id UUID,
@@ -191,6 +192,7 @@ CREATE TABLE embeddings (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   text TEXT,
   embedding vector(768),
+  metadata JSONB,
   file_name TEXT,
   file_id UUID REFERENCES files(id) ON DELETE CASCADE,
   shared_with TEXT[] DEFAULT '{}',

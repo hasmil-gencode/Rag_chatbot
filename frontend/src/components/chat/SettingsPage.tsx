@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Save } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Save, Trash2, Download, X, Loader2, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,11 +14,112 @@ export const SettingsPage = () => {
   const [webhookTestResult, setWebhookTestResult] = useState<any>(null);
   const [s3TestResult, setS3TestResult] = useState<any>(null);
   const [ollamaTestResult, setOllamaTestResult] = useState<any>(null);
+  const [ollamaModels, setOllamaModels] = useState<any[]>([]);
+  const [showModelManager, setShowModelManager] = useState(false);
+  const [pullModelName, setPullModelName] = useState("");
+  const [isPulling, setIsPulling] = useState(false);
+  const [pullProgress, setPullProgress] = useState<{ status: string; percent: number } | null>(null);
+  const [termModel, setTermModel] = useState("");
+  const [termInput, setTermInput] = useState("");
+  const [termOutput, setTermOutput] = useState<string[]>([]);
+  const [termLoading, setTermLoading] = useState(false);
+  const termRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { loadSettings(); }, []);
 
   const loadSettings = async () => {
     try { setSettings(await api.getSettings()); } catch (error) { console.error(error); }
+    loadOllamaModels();
+  };
+
+  const loadOllamaModels = async () => {
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch("/api/test-ollama", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } });
+      const data = await res.json();
+      if (data.success) setOllamaModels(data.models || []);
+    } catch {}
+  };
+
+  const handlePullModel = async () => {
+    if (!pullModelName.trim()) return;
+    setIsPulling(true);
+    setPullProgress({ status: 'Starting...', percent: 0 });
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch("/api/ollama/pull", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: pullModelName.trim() }) });
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      if (!reader) throw new Error("No stream");
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const d = JSON.parse(line.slice(6));
+            if (d.error) { setPullProgress({ status: `Error: ${d.error}`, percent: 0 }); continue; }
+            if (d.status === 'done') { setPullProgress({ status: 'Done!', percent: 100 }); continue; }
+            const pct = d.total ? Math.round((d.completed || 0) / d.total * 100) : 0;
+            const sizeMB = d.total ? `${((d.completed || 0) / 1e6).toFixed(0)}/${(d.total / 1e6).toFixed(0)} MB` : '';
+            setPullProgress({ status: `${d.status}${sizeMB ? ' — ' + sizeMB : ''}`, percent: pct });
+          } catch {}
+        }
+      }
+      setPullModelName("");
+      await loadOllamaModels();
+      setTimeout(() => setPullProgress(null), 2000);
+    } catch (e: any) { setPullProgress({ status: `Error: ${e.message}`, percent: 0 }); }
+    finally { setIsPulling(false); }
+  };
+
+  const handleDeleteModel = async (name: string) => {
+    if (!confirm(`Delete model "${name}"?`)) return;
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch("/api/ollama/delete", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: name }) });
+      const data = await res.json();
+      if (res.ok) { await loadOllamaModels(); alert(data.message); }
+      else alert(data.error || "Failed to delete");
+    } catch (e: any) { alert(e.message); }
+  };
+
+  const handleTermSend = async () => {
+    if (!termInput.trim() || !termModel || termLoading) return;
+    const msg = termInput.trim();
+    setTermInput("");
+    setTermOutput(prev => [...prev, `> ${msg}`]);
+    setTermLoading(true);
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch("/api/ollama/chat", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: termModel, message: msg }) });
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      if (!reader) throw new Error("No stream");
+      let full = '';
+      setTermOutput(prev => [...prev, '']);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const lines = decoder.decode(value, { stream: true }).split('\n');
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const d = JSON.parse(line.slice(6));
+            if (d.response) {
+              full += d.response;
+              setTermOutput(prev => [...prev.slice(0, -1), full]);
+            }
+          } catch {}
+        }
+      }
+      setTimeout(() => termRef.current?.scrollTo(0, termRef.current.scrollHeight), 50);
+    } catch (e: any) { setTermOutput(prev => [...prev, `Error: ${e.message}`]); }
+    finally { setTermLoading(false); }
   };
 
   const updateSetting = (key: string, value: any) => setSettings({ ...settings, [key]: value });
@@ -34,8 +135,10 @@ export const SettingsPage = () => {
     setWebhookTestResult(null);
     try {
       const url = type === 'chat' ? settings.chatWebhook : settings.uploadWebhook;
-      const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ test: true }) });
-      setWebhookTestResult(response.ok ? { type: 'success', message: `${type} webhook is working!` } : { type: 'error', message: `Webhook returned ${response.status}` });
+      const token = localStorage.getItem("token");
+      const response = await fetch("/api/test-webhook", { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
+      const data = await response.json();
+      setWebhookTestResult(data.success ? { type: 'success', message: `${type} webhook is working!` } : { type: 'error', message: data.error || 'Webhook test failed' });
     } catch (error: any) { setWebhookTestResult({ type: 'error', message: error.message }); }
   };
 
@@ -49,7 +152,9 @@ export const SettingsPage = () => {
     setOllamaTestResult(null);
     try {
       const result = await api.testOllama();
-      setOllamaTestResult({ type: 'success', message: `Connected! Models: ${result.models?.join(', ') || 'none'}` });
+      const names = result.models?.map((m: any) => m.name || m) || [];
+      setOllamaModels(result.models || []);
+      setOllamaTestResult({ type: 'success', message: `Connected! Models: ${names.join(', ') || 'none'}` });
     } catch (error: any) { setOllamaTestResult({ type: 'error', message: error.message }); }
   };
 
@@ -302,7 +407,12 @@ export const SettingsPage = () => {
         {/* ===== AI MODELS ===== */}
         <TabsContent value="ai">
           <Card>
-            <CardHeader><CardTitle>Ollama Configuration</CardTitle></CardHeader>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle>Ollama Configuration</CardTitle>
+                <Button variant="outline" size="sm" onClick={() => { setShowModelManager(true); loadOllamaModels(); }}>Manage Models</Button>
+              </div>
+            </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-sm text-muted-foreground">Configure local AI models for chat and embedding. Used by n8n workflows.</p>
               <div>
@@ -312,13 +422,24 @@ export const SettingsPage = () => {
               </div>
               <div>
                 <Label>Chat Model</Label>
-                <Input value={settings.ollamaModel || ""} onChange={(e) => updateSetting("ollamaModel", e.target.value)} placeholder="qwen3:8b" />
-                <p className="text-xs text-muted-foreground mt-1">LLM model for chat responses. Default: qwen3:8b (119 languages, tool calling).</p>
+                <select value={settings.ollamaModel || ""} onChange={(e) => updateSetting("ollamaModel", e.target.value)} className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm">
+                  <option value="">-- Select Model --</option>
+                  {ollamaModels.filter(m => m.family !== 'nomic-bert').map(m => (
+                    <option key={m.name} value={m.name}>{m.name} ({(m.size / 1e9).toFixed(1)}GB)</option>
+                  ))}
+                </select>
+                {settings.ollamaModel && !ollamaModels.find(m => m.name === settings.ollamaModel) && ollamaModels.length > 0 && (
+                  <p className="text-xs text-red-500 mt-1">⚠ Model "{settings.ollamaModel}" not found. Pull it or select another.</p>
+                )}
               </div>
               <div>
                 <Label>Embedding Model</Label>
-                <Input value={settings.ollamaEmbeddingModel || ""} onChange={(e) => updateSetting("ollamaEmbeddingModel", e.target.value)} placeholder="nomic-embed-text" />
-                <p className="text-xs text-muted-foreground mt-1">Model for vector embeddings. Default: nomic-embed-text (768 dims).</p>
+                <select value={settings.ollamaEmbeddingModel || ""} onChange={(e) => updateSetting("ollamaEmbeddingModel", e.target.value)} className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm">
+                  <option value="">-- Select Model --</option>
+                  {ollamaModels.filter(m => m.family === 'nomic-bert' || m.name.includes('embed')).map(m => (
+                    <option key={m.name} value={m.name}>{m.name} ({(m.size / 1e6).toFixed(0)}MB)</option>
+                  ))}
+                </select>
               </div>
               <ResultBanner result={ollamaTestResult} />
               <div className="flex gap-2">
@@ -327,6 +448,82 @@ export const SettingsPage = () => {
               </div>
             </CardContent>
           </Card>
+
+          {/* Model Manager Modal */}
+          {showModelManager && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowModelManager(false)}>
+              <div className="bg-background border rounded-lg w-full max-w-2xl mx-4 max-h-[90vh] overflow-hidden" onClick={e => e.stopPropagation()}>
+                <div className="flex items-center justify-between p-4 border-b">
+                  <h3 className="font-semibold text-lg">Manage Ollama Models</h3>
+                  <Button variant="ghost" size="sm" onClick={() => setShowModelManager(false)}><X className="w-4 h-4" /></Button>
+                </div>
+                <div className="p-4 space-y-4 overflow-y-auto max-h-[78vh]">
+                  {/* Pull new model */}
+                  <div>
+                    <Label>Pull New Model</Label>
+                    <div className="flex gap-2 mt-1">
+                      <Input value={pullModelName} onChange={e => setPullModelName(e.target.value)} placeholder="e.g. qwen2.5:3b, gemma3:4b" className="flex-1" disabled={isPulling} onKeyDown={e => e.key === 'Enter' && handlePullModel()} />
+                      <Button onClick={handlePullModel} disabled={isPulling || !pullModelName.trim()}>
+                        {isPulling ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">Browse models at <a href="https://ollama.com/library" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">ollama.com/library</a></p>
+                    {pullProgress && (
+                      <div className="mt-2 space-y-1">
+                        <div className="w-full bg-muted rounded-full h-3 overflow-hidden">
+                          <div className="bg-primary h-full rounded-full transition-all duration-300" style={{ width: `${pullProgress.percent}%` }} />
+                        </div>
+                        <p className="text-xs text-muted-foreground">{pullProgress.status} {pullProgress.percent > 0 && pullProgress.percent < 100 ? `(${pullProgress.percent}%)` : ''}</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Installed models */}
+                  <div>
+                    <Label>Installed Models ({ollamaModels.length})</Label>
+                    <div className="mt-2 space-y-2">
+                      {ollamaModels.length === 0 && <p className="text-sm text-muted-foreground">No models installed</p>}
+                      {ollamaModels.map(m => (
+                        <div key={m.name} className="flex items-center justify-between p-3 border rounded-lg">
+                          <div>
+                            <p className="font-medium text-sm">{m.name}</p>
+                            <p className="text-xs text-muted-foreground">{(m.size / 1e9).toFixed(2)} GB • {m.family || 'unknown'}</p>
+                          </div>
+                          <Button variant="ghost" size="sm" onClick={() => handleDeleteModel(m.name)} className="text-destructive hover:text-destructive"><Trash2 className="w-4 h-4" /></Button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Terminal - Test Model */}
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <Terminal className="w-4 h-4" />
+                      <Label>Test Model</Label>
+                    </div>
+                    <select value={termModel} onChange={e => { setTermModel(e.target.value); setTermOutput([]); }} className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm mb-2">
+                      <option value="">-- Select Model --</option>
+                      {ollamaModels.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
+                    </select>
+                    {termModel && (
+                      <>
+                        <div ref={termRef} className="bg-black text-green-400 font-mono text-xs p-3 rounded-lg h-48 overflow-y-auto whitespace-pre-wrap">
+                          <p className="text-muted-foreground mb-1">ollama run {termModel}</p>
+                          {termOutput.map((line, i) => <p key={i} className={line.startsWith('>') ? 'text-white' : ''}>{line}</p>)}
+                          {termLoading && <span className="animate-pulse">▊</span>}
+                        </div>
+                        <div className="flex gap-2 mt-2">
+                          <Input value={termInput} onChange={e => setTermInput(e.target.value)} placeholder="Type a message..." className="flex-1 font-mono text-sm" disabled={termLoading} onKeyDown={e => e.key === 'Enter' && handleTermSend()} />
+                          <Button size="sm" onClick={handleTermSend} disabled={termLoading || !termInput.trim()}>Send</Button>
+                          <Button size="sm" variant="outline" onClick={() => setTermOutput([])}>Clear</Button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </TabsContent>
       </Tabs>
       </div>
