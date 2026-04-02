@@ -722,6 +722,50 @@ class API {
     if (!res.ok) throw new Error(json.error || json.message || 'Failed to delete robot setting')
     return json
   }
+
+  // Ollama
+  async getOllamaStatus() {
+    const res = await fetch(`${API_BASE}/ollama/status`)
+    return res.json()
+  }
+
+  async pullOllamaModel(model: string, onProgress: (data: any) => void) {
+    const token = localStorage.getItem('token')
+    const res = await fetch(`${API_BASE}/ollama/pull`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(token && { Authorization: `Bearer ${token}` }) },
+      body: JSON.stringify({ model })
+    })
+    const reader = res.body?.getReader()
+    if (!reader) return
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) {
+        if (line.startsWith('data: [DONE]')) return
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6))
+            onProgress(data)
+            if (data.status === 'success') return
+          } catch {}
+        }
+      }
+    }
+  }
+
+  async deleteOllamaModel(name: string) {
+    const res = await fetchWithAuth(`${API_BASE}/ollama/models/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      headers: this.getHeaders()
+    })
+    return res.json()
+  }
 }
 
 export const api = new API()

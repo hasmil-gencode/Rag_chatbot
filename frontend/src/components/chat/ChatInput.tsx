@@ -681,7 +681,7 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
             onKeyDown={handleKeyDown}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
-            placeholder="Message Genie..."
+            placeholder="Message Genia..."
             rows={1}
             className="flex-1 bg-transparent border-none outline-none resize-none text-foreground placeholder:text-muted-foreground text-sm py-2 max-h-32"
           />

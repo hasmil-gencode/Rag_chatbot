@@ -12,6 +12,7 @@ import crypto from 'crypto';
 import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
 import { GoogleGenAI } from '@google/genai';
 import { GoogleAuth } from 'google-auth-library';
+import { QdrantClient } from '@qdrant/js-client-rest';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -32,6 +33,21 @@ await client.connect();
 db = client.db(); // Use database from connection string
 console.log(`Connected to MongoDB (${db.databaseName})`);
 
+// Initialize Qdrant
+const QDRANT_URL = process.env.QDRANT_URL || 'http://qdrant:6333';
+const QDRANT_COLLECTION = 'embeddings';
+const qdrant = new QdrantClient({ url: QDRANT_URL });
+
+try {
+  await qdrant.getCollection(QDRANT_COLLECTION);
+} catch {
+  await qdrant.createCollection(QDRANT_COLLECTION, {
+    vectors: { size: 768, distance: 'Cosine' }
+  });
+  console.log('Qdrant collection created');
+}
+console.log('Connected to Qdrant');
+
 // Initialize default settings
 const settingsExists = await db.collection('settings').findOne({ _id: 'config' });
 if (!settingsExists) {
@@ -44,8 +60,6 @@ if (!settingsExists) {
     googleTtsApiKey: '',
     geminiSttApiKey: '',
     geminiTtsApiKey: '',
-    elevenlabsApiKey: '',
-    elevenlabsVoice: 'onwK4e9ZLuTAKqWW03F9',
     gclasServiceAccount: '',
     gclasLanguage: 'auto',
     gclasVoice: 'en-US-Neural2-C',
@@ -57,10 +71,14 @@ if (!settingsExists) {
     uploadWebhook: '',
     transcribeWebhook: '',
     formSubmissionWebhook: '',
+    storageMode: 'local',
     s3Bucket: '',
     s3Region: '',
     s3AccessKey: '',
-    s3SecretKey: ''
+    s3SecretKey: '',
+    ollamaUrl: 'http://ollama:11434',
+    ollamaChatModel: '',
+    ollamaEmbeddingModel: ''
   });
   console.log('Default settings initialized');
 }
@@ -84,9 +102,9 @@ async function getS3Client() {
 async function getWebhookUrls() {
   const settings = await db.collection('settings').findOne({ _id: 'config' });
   return {
-    chat: settings?.chatWebhook || 'http://localhost:5678/webhook/chat',
-    upload: settings?.uploadWebhook || 'http://localhost:5678/webhook/upload',
-    transcribe: settings?.transcribeWebhook || 'http://localhost:5678/webhook/transcribe'
+    chat: settings?.chatWebhook || 'http://n8n:5678/webhook/chat',
+    upload: settings?.uploadWebhook || 'http://n8n:5678/webhook/upload',
+    transcribe: settings?.transcribeWebhook || 'http://n8n:5678/webhook/transcribe'
   };
 }
 
@@ -1174,7 +1192,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     
     let fileUrl;
     
-    if (s3Client && settings.s3Bucket) {
+    if (settings.storageMode === 's3' && s3Client && settings.s3Bucket) {
       try {
         // Upload to S3
         const fileContent = fs.readFileSync(req.file.path);
@@ -1221,20 +1239,17 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     
     // Only send to n8n if type is 'document'
     if (fileType === 'document') {
-      // Send to n8n and WAIT for response (max 5 minutes)
       const webhooks = await getWebhookUrls();
-      
+
       try {
         const response = await axios.post(webhooks.upload, {
           fileId: result.insertedId.toString(),
           userId: req.user.id,
           sharedWith: sharedWith,
           fileName: req.file.originalname,
-          fileSize: req.file.size, // Send file size to n8n
+          fileSize: req.file.size,
           fileUrl: fileUrl
-        }, {
-          timeout: 300000 // 5 minutes
-        });
+        }, { timeout: 300000 });
         
         res.json({ 
           success: true, 
@@ -1244,10 +1259,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         });
       } catch (webhookError) {
         console.error('n8n webhook error:', webhookError.message);
-        res.status(500).json({ 
-          success: false, 
-          error: 'File uploaded but embedding failed. Please try again.' 
-        });
+        res.status(500).json({ success: false, error: 'File uploaded but embedding failed. Please try again.' });
       }
     } else {
       // For forms, just return success without n8n processing
@@ -1796,14 +1808,14 @@ app.delete('/api/files/:id', auth, async (req, res) => {
     // Delete from MongoDB files collection
     await db.collection('files').deleteOne({ _id: new ObjectId(req.params.id) });
     
-    // Delete from embedding_files collection
+    // Delete from Qdrant embeddings
     console.log(`Deleting embeddings for fileId: ${req.params.id}`);
     
-    const deleteResult = await db.collection('embedding_files').deleteMany({ 
-      fileId: req.params.id
+    await qdrant.delete(QDRANT_COLLECTION, {
+      filter: { must: [{ key: 'fileId', match: { value: req.params.id } }] }
     });
     
-    console.log(`Deleted ${deleteResult.deletedCount} embeddings`);
+    console.log(`Deleted embeddings for fileId: ${req.params.id}`);
     
     res.json({ success: true });
   } catch (error) {
@@ -2197,8 +2209,6 @@ app.get('/api/settings', auth, hasPermission(), async (req, res) => {
     googleTtsApiKey: settings.googleTtsApiKey || '',
     geminiSttApiKey: settings.geminiSttApiKey || '',
     geminiTtsApiKey: settings.geminiTtsApiKey || '',
-    elevenlabsApiKey: settings.elevenlabsApiKey || '',
-    elevenlabsVoice: settings.elevenlabsVoice || 'onwK4e9ZLuTAKqWW03F9',
     gclasServiceAccount: settings.gclasServiceAccount || '',
     gclasLanguage: settings.gclasLanguage || 'auto',
     gclasVoice: settings.gclasVoice || 'en-US-Neural2-C',
@@ -2210,10 +2220,14 @@ app.get('/api/settings', auth, hasPermission(), async (req, res) => {
     uploadWebhook: settings.uploadWebhook || '',
     transcribeWebhook: settings.transcribeWebhook || '',
     formSubmissionWebhook: settings.formSubmissionWebhook || '',
+    storageMode: settings.storageMode || 'local',
     s3Bucket: settings.s3Bucket || '',
     s3Region: settings.s3Region || '',
     s3AccessKey: settings.s3AccessKey || '',
-    s3SecretKey: settings.s3SecretKey || ''
+    s3SecretKey: settings.s3SecretKey || '',
+    ollamaUrl: settings.ollamaUrl || 'http://ollama:11434',
+    ollamaChatModel: settings.ollamaChatModel || '',
+    ollamaEmbeddingModel: settings.ollamaEmbeddingModel || ''
   });
 });
 
@@ -2233,6 +2247,46 @@ app.put('/api/settings', auth, hasPermission(), async (req, res) => {
     { upsert: true }
   );
   res.json({ success: true });
+});
+
+// Ollama API endpoints
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://ollama:11434';
+
+app.get('/api/ollama/status', async (req, res) => {
+  try {
+    const resp = await axios.get(`${OLLAMA_URL}/api/tags`, { timeout: 3000 });
+    res.json({ online: true, models: resp.data.models || [] });
+  } catch {
+    res.json({ online: false, models: [] });
+  }
+});
+
+app.post('/api/ollama/pull', auth, hasPermission(), async (req, res) => {
+  try {
+    const { model } = req.body;
+    if (!model) return res.status(400).json({ error: 'Model name required' });
+
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+
+    const resp = await axios.post(`${OLLAMA_URL}/api/pull`, { name: model }, { responseType: 'stream', timeout: 600000 });
+    resp.data.on('data', chunk => {
+      const lines = chunk.toString().split('\n').filter(l => l.trim());
+      for (const line of lines) res.write(`data: ${line}\n\n`);
+    });
+    resp.data.on('end', () => { res.write('data: [DONE]\n\n'); res.end(); });
+    resp.data.on('error', () => res.end());
+  } catch (error) {
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/ollama/models/:name', auth, hasPermission(), async (req, res) => {
+  try {
+    await axios.delete(`${OLLAMA_URL}/api/delete`, { data: { name: req.params.name } });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // API Key Management (Developer only)
@@ -2814,45 +2868,11 @@ app.post('/api/transcribe', auth, upload.single('audio'), async (req, res) => {
         });
       }
       
-    } else if (voiceMode === 'elevenlabs') {
-      // Use ElevenLabs for transcription
-      const elevenlabsApiKey = settings?.elevenlabsApiKey;
-      
-      if (!elevenlabsApiKey) {
-        fs.unlinkSync(req.file.path);
-        return res.status(400).json({ error: 'ElevenLabs API Key not configured. Please set it in Settings.' });
-      }
-
-      try {
-        const formData = new FormData();
-        formData.append('audio', fs.createReadStream(req.file.path), {
-          filename: 'audio.webm',
-          contentType: 'audio/webm'
-        });
-
-        const { data } = await axios.post('https://api.elevenlabs.io/v1/audio-to-text', formData, {
-          headers: {
-            ...formData.getHeaders(),
-            'xi-api-key': elevenlabsApiKey
-          },
-          timeout: 30000
-        });
-
-        fs.unlinkSync(req.file.path);
-        res.json({ text: data.text || '', language: voiceLanguage });
-      } catch (elevenlabsError) {
-        fs.unlinkSync(req.file.path);
-        console.error('ElevenLabs API Error:', elevenlabsError.message);
-        return res.status(500).json({ 
-          error: `ElevenLabs error: ${elevenlabsError.response?.data?.detail || elevenlabsError.message}` 
-        });
-      }
-      
     } else if (voiceMode === 'api') {
       // Use external webhook
       const webhooks = await getWebhookUrls();
       
-      if (!webhooks.transcribe || webhooks.transcribe === 'http://localhost:5678/webhook/transcribe') {
+      if (!webhooks.transcribe || webhooks.transcribe === 'http://n8n:5678/webhook/transcribe') {
         fs.unlinkSync(req.file.path);
         return res.status(400).json({ error: 'Transcribe webhook not configured. Please set it in Settings.' });
       }
@@ -2992,44 +3012,6 @@ app.post('/api/tts', auth, async (req, res) => {
       } catch (geminiError) {
         console.error('Gemini TTS error:', geminiError.response?.data || geminiError.message);
         return res.status(500).json({ error: 'Gemini TTS failed: ' + (geminiError.response?.data?.error?.message || geminiError.message) });
-      }
-    } else if (ttsMode === 'elevenlabs') {
-      // Use ElevenLabs TTS (fast, high quality)
-      const elevenlabsApiKey = settings?.elevenlabsApiKey;
-      if (!elevenlabsApiKey) {
-        return res.status(400).json({ error: 'ElevenLabs API Key not configured. Please set it in Settings.' });
-      }
-
-      try {
-        const voiceId = settings?.elevenlabsVoice || 'onwK4e9ZLuTAKqWW03F9';
-
-        const requestBody = {
-          text,
-          model_id: 'eleven_multilingual_v2',
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.75
-          }
-        };
-
-        const { data } = await axios.post(
-          `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-          requestBody,
-          {
-            timeout: 15000,
-            headers: {
-              'Content-Type': 'application/json',
-              'xi-api-key': elevenlabsApiKey
-            },
-            responseType: 'arraybuffer'
-          }
-        );
-
-        res.set('Content-Type', 'audio/mpeg');
-        res.send(Buffer.from(data));
-      } catch (elevenlabsError) {
-        console.error('ElevenLabs TTS error:', elevenlabsError.response?.data || elevenlabsError.message);
-        return res.status(500).json({ error: 'ElevenLabs TTS failed: ' + (elevenlabsError.response?.data?.detail || elevenlabsError.message) });
       }
     } else if (ttsMode === 'gclas') {
       // Google Cloud Long Audio Synthesis with service account
@@ -3250,10 +3232,19 @@ app.get('/api/text-embeddings', auth, async (req, res) => {
       return res.status(403).json({ error: 'Developer access only' });
     }
     
-    const embeddings = await db.collection('embedding_files')
-      .find({ fileId: null })
-      .sort({ uploadedAt: -1 })
-      .toArray();
+    const result = await qdrant.scroll(QDRANT_COLLECTION, {
+      filter: { must: [{ key: 'fileId', match: { value: '' } }] },
+      with_payload: true,
+      limit: 100
+    });
+    
+    const embeddings = result.points.map(p => ({
+      _id: p.id,
+      text: p.payload.text,
+      fileName: p.payload.fileName,
+      fileId: null,
+      uploadedAt: p.payload.uploadedAt
+    })).sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
     
     res.json(embeddings);
   } catch (error) {
@@ -3299,16 +3290,22 @@ app.post('/api/text-embeddings', auth, async (req, res) => {
     const embedding = response.data.embedding.values;
     console.log('Embedding generated, dimension:', embedding.length);
     
-    // Insert into MongoDB
-    await db.collection('embedding_files').insertOne({
-      text: text.trim(),
-      embedding: embedding,
-      fileName: fileName?.trim() || 'Custom Knowledge',
-      fileId: null,
-      sharedWith: ["PUBLIC"], // Accessible to all
-      organizationId: null,
-      departmentId: null,
-      uploadedAt: new Date()
+    // Insert into Qdrant
+    const pointId = crypto.randomUUID();
+    await qdrant.upsert(QDRANT_COLLECTION, {
+      points: [{
+        id: pointId,
+        vector: embedding,
+        payload: {
+          text: text.trim(),
+          fileName: fileName?.trim() || 'Custom Knowledge',
+          fileId: '',
+          sharedWith: ['PUBLIC'],
+          organizationId: '',
+          departmentId: '',
+          uploadedAt: new Date().toISOString()
+        }
+      }]
     });
     
     console.log('Text embedded successfully');
@@ -3326,9 +3323,8 @@ app.delete('/api/text-embeddings/:id', auth, async (req, res) => {
       return res.status(403).json({ error: 'Developer access only' });
     }
     
-    await db.collection('embedding_files').deleteOne({ 
-      _id: new ObjectId(req.params.id),
-      fileId: null // Only allow deleting direct text embeddings
+    await qdrant.delete(QDRANT_COLLECTION, {
+      points: [req.params.id]
     });
     
     res.json({ success: true });
