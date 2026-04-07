@@ -1,30 +1,15 @@
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Button } from '@/components/ui/button';
-import { User, Building2, HardDrive, MessageSquare } from 'lucide-react';
+import { User, Building2, MessageSquare, Pencil, Check, X } from 'lucide-react';
+
+interface OrgItem { _id: string; name: string; type: string; parentId?: string; path?: string[] }
 
 interface UserSettings {
   fullName: string;
   email: string;
-  hierarchy: string[];
-  storageUsage?: {
-    used: number;
-    limit: number;
-    percentage: number;
-  };
-  chatUsage?: {
-    hasQuota: boolean;
-    unlimited?: boolean;
-    used?: number;
-    limit?: number;
-    percentage?: number;
-    quotaType?: string;
-    resetDate?: string;
-    renewDay?: number;
-  };
+  organizations: OrgItem[];
+  storageUsage?: { used: number; limit: number; percentage: number };
+  chatUsage?: { hasQuota: boolean; unlimited?: boolean; used?: number; limit?: number; percentage?: number; quotaType?: string; resetDate?: string; renewDay?: number };
 }
 
 export function UserSettingsPage() {
@@ -32,47 +17,29 @@ export function UserSettingsPage() {
   const [fullName, setFullName] = useState('');
   const [isEditing, setIsEditing] = useState(false);
 
-  useEffect(() => {
-    loadSettings();
-  }, []);
+  useEffect(() => { loadSettings(); }, []);
 
   const loadSettings = async () => {
     try {
-      // Get user info
-      const userEmail = localStorage.getItem('userEmail') || '';
-      
-      // Get storage info
+      const userInfo = await api.getUserInfo();
       const storageInfo = await api.getStorageInfo();
-      
-      // Get chat usage
       const chatUsage = await api.getChatUsage();
-      
-      // Get user's organizations for hierarchy
-      const orgsResponse = await api.getMyOrganizations();
-      const orgs = orgsResponse.organizations || [];
-      
-      // Build hierarchy from first org's path
-      let hierarchy: string[] = [];
-      if (orgs.length > 0 && orgs[0].path) {
-        hierarchy = orgs[0].path;
-      }
-      
+      const orgsResponse = await api.getMyOrganizationsHierarchy();
+      const orgs: OrgItem[] = orgsResponse.organizations || [];
+
       setSettings({
-        fullName: localStorage.getItem('userFullName') || userEmail.split('@')[0],
-        email: userEmail,
-        hierarchy,
+        fullName: userInfo.fullName || userInfo.email.split('@')[0],
+        email: userInfo.email,
+        organizations: orgs,
         storageUsage: storageInfo.limit > 0 ? {
-          used: storageInfo.used / (1024 * 1024 * 1024), // Convert to GB
+          used: storageInfo.used / (1024 * 1024 * 1024),
           limit: storageInfo.limit,
           percentage: (storageInfo.used / (storageInfo.limit * 1024 * 1024 * 1024) * 100)
         } : undefined,
         chatUsage
       });
-      
-      setFullName(localStorage.getItem('userFullName') || userEmail.split('@')[0]);
-    } catch (error) {
-      console.error('Failed to load settings:', error);
-    }
+      setFullName(userInfo.fullName || userInfo.email.split('@')[0]);
+    } catch (error) { console.error('Failed to load settings:', error); }
   };
 
   const handleSaveName = async () => {
@@ -80,160 +47,163 @@ export function UserSettingsPage() {
       await api.updateUserName(fullName);
       localStorage.setItem('userFullName', fullName);
       setIsEditing(false);
-      alert('Name updated successfully');
-    } catch (error: any) {
-      alert(error.message);
-    }
+    } catch (error: any) { alert(error.message); }
   };
 
-  const formatDate = (dateStr: string) => {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-MY', { day: 'numeric', month: 'long', year: 'numeric' });
-  };
-
-  if (!settings) {
-    return <div className="p-6">Loading...</div>;
-  }
+  if (!settings) return <div className="px-6 py-5 text-sm text-muted-foreground">Loading...</div>;
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="p-6 space-y-6 max-w-4xl">
-        <h1 className="text-2xl font-bold">User Settings</h1>
+      <div className="px-6 py-5">
+        {/* Header */}
+        <div className="mb-5">
+          <p className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">Account</p>
+          <h1 className="text-xl font-semibold">My Account</h1>
+          <p className="text-xs text-muted-foreground mt-0.5">Manage your profile, view usage and organization info.</p>
+        </div>
 
-      {/* Profile */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <User className="w-5 h-5" />
-            Profile
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div>
-            <Label>Email</Label>
-            <Input value={settings.email} disabled className="bg-muted" />
+        {/* Stats cards */}
+        <div className="grid grid-cols-4 gap-3 mb-5">
+          <div className="border rounded-lg px-4 py-3">
+            <p className="text-[11px] text-muted-foreground">Role</p>
+            <p className="text-lg font-semibold mt-0.5 capitalize">{localStorage.getItem('userRole') || 'user'}</p>
           </div>
-          <div>
-            <Label>Full Name</Label>
-            <div className="flex gap-2">
-              <Input 
-                value={fullName} 
-                onChange={(e) => setFullName(e.target.value)}
-                disabled={!isEditing}
-                className={!isEditing ? 'bg-muted' : ''}
-              />
-              {isEditing ? (
-                <>
-                  <Button onClick={handleSaveName}>Save</Button>
-                  <Button variant="outline" onClick={() => { setIsEditing(false); setFullName(settings.fullName); }}>Cancel</Button>
-                </>
-              ) : (
-                <Button onClick={() => setIsEditing(true)}>Edit</Button>
+          <div className="border rounded-lg px-4 py-3">
+            <p className="text-[11px] text-muted-foreground">Organization</p>
+            <p className="text-lg font-semibold mt-0.5 truncate">{settings.organizations.find(o => !o.parentId)?.name || settings.organizations[0]?.name || '—'}</p>
+          </div>
+          {settings.storageUsage && (
+            <div className="border rounded-lg px-4 py-3">
+              <p className="text-[11px] text-muted-foreground">Storage</p>
+              <p className="text-lg font-semibold mt-0.5">{(settings.storageUsage.used * 1024).toFixed(1)} MB</p>
+              <div className="w-full bg-muted rounded-full h-1.5 mt-1.5">
+                <div className="bg-foreground/50 h-1.5 rounded-full" style={{ width: `${Math.min(settings.storageUsage.percentage, 100)}%` }} />
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1">{settings.storageUsage.percentage.toFixed(1)}% of {settings.storageUsage.limit} GB</p>
+            </div>
+          )}
+          <div className="border rounded-lg px-4 py-3">
+            <p className="text-[11px] text-muted-foreground">Chat Quota</p>
+            {settings.chatUsage?.unlimited ? (
+              <p className="text-lg font-semibold mt-0.5">Unlimited</p>
+            ) : settings.chatUsage?.hasQuota ? (
+              <>
+                <p className="text-lg font-semibold mt-0.5">{settings.chatUsage.used} / {settings.chatUsage.limit}</p>
+                <div className="w-full bg-muted rounded-full h-1.5 mt-1.5">
+                  <div className="bg-foreground/50 h-1.5 rounded-full" style={{ width: `${Math.min(settings.chatUsage.percentage || 0, 100)}%` }} />
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-1">{settings.chatUsage.quotaType === 'individual' ? 'Per user' : 'Group total'}</p>
+              </>
+            ) : (
+              <p className="text-lg font-semibold mt-0.5">Unlimited</p>
+            )}
+          </div>
+        </div>
+
+        {/* Profile section */}
+        <div className="border rounded-lg overflow-hidden mb-5">
+          <div className="px-4 py-2.5 border-b">
+            <p className="text-xs font-medium flex items-center gap-1.5"><User className="w-3.5 h-3.5" /> Profile</p>
+          </div>
+          <div className="divide-y">
+            <div className="flex items-center justify-between px-4 py-2.5">
+              <div>
+                <p className="text-[11px] text-muted-foreground">Email</p>
+                <p className="text-[13px]">{settings.email}</p>
+              </div>
+            </div>
+            <div className="flex items-center justify-between px-4 py-2.5">
+              <div className="flex-1">
+                <p className="text-[11px] text-muted-foreground">Full Name</p>
+                {isEditing ? (
+                  <div className="flex items-center gap-2 mt-1">
+                    <input value={fullName} onChange={(e) => setFullName(e.target.value)}
+                      className="h-7 px-2 text-[13px] rounded border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring flex-1" autoFocus />
+                    <button onClick={handleSaveName} className="p-1 rounded hover:bg-muted text-green-500"><Check className="w-4 h-4" /></button>
+                    <button onClick={() => { setIsEditing(false); setFullName(settings.fullName); }} className="p-1 rounded hover:bg-muted text-muted-foreground"><X className="w-4 h-4" /></button>
+                  </div>
+                ) : (
+                  <p className="text-[13px]">{settings.fullName}</p>
+                )}
+              </div>
+              {!isEditing && (
+                <button onClick={() => setIsEditing(true)} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground">
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
               )}
             </div>
           </div>
-        </CardContent>
-      </Card>
+        </div>
 
-      {/* Hierarchy */}
-      {settings.hierarchy.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Building2 className="w-5 h-5" />
-              Organization Hierarchy
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center gap-2 text-sm">
-              {settings.hierarchy.map((org, index) => (
-                <div key={index} className="flex items-center gap-2">
-                  <span className="px-3 py-1 bg-muted rounded-md">{org}</span>
-                  {index < settings.hierarchy.length - 1 && <span className="text-muted-foreground">→</span>}
-                </div>
-              ))}
+        {/* Organization Hierarchy */}
+        {settings.organizations.length > 0 && (
+          <div className="border rounded-lg overflow-hidden mb-5">
+            <div className="px-4 py-2.5 border-b">
+              <p className="text-xs font-medium flex items-center gap-1.5"><Building2 className="w-3.5 h-3.5" /> Organization Hierarchy</p>
             </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Storage Usage */}
-      {settings.storageUsage && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <HardDrive className="w-5 h-5" />
-              File Storage Usage
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <div className="flex justify-between text-sm">
-                <span>{settings.storageUsage.used.toFixed(6)} GB / {settings.storageUsage.limit} GB</span>
-                <span className="text-muted-foreground">({settings.storageUsage.percentage.toFixed(6)}%)</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
-                <div 
-                  className="bg-blue-600 h-3 rounded-full transition-all duration-300"
-                  style={{ 
-                    width: `${Math.max(Math.min(settings.storageUsage.percentage, 100), 1)}%`,
-                    minWidth: '4px'
-                  }}
-                />
-              </div>
+            <div className="px-4 py-3">
+              {(() => {
+                const roots = settings.organizations.filter(o => !o.parentId);
+                const getChildren = (pid: string) => settings.organizations.filter(o => o.parentId === pid);
+                return roots.map(root => (
+                  <div key={root._id}>
+                    <div className="flex items-center gap-2 text-[13px] font-medium">
+                      <span className="px-2.5 py-1 bg-muted rounded-md text-xs">{root.name}</span>
+                      <span className="text-[10px] text-muted-foreground">{root.type}</span>
+                    </div>
+                    {getChildren(root._id).length > 0 && (
+                      <div className="ml-4 mt-1.5 space-y-1 border-l pl-3">
+                        {getChildren(root._id).map(child => (
+                          <div key={child._id}>
+                            <div className="flex items-center gap-2 text-[13px]">
+                              <span className="px-2.5 py-1 bg-muted rounded-md text-xs">{child.name}</span>
+                              <span className="text-[10px] text-muted-foreground">{child.type}</span>
+                            </div>
+                            {getChildren(child._id).length > 0 && (
+                              <div className="ml-4 mt-1 space-y-1 border-l pl-3">
+                                {getChildren(child._id).map(sub => (
+                                  <div key={sub._id} className="flex items-center gap-2 text-[13px]">
+                                    <span className="px-2.5 py-1 bg-muted rounded-md text-xs">{sub.name}</span>
+                                    <span className="text-[10px] text-muted-foreground">{sub.type}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ));
+              })()}
             </div>
-          </CardContent>
-        </Card>
-      )}
+          </div>
+        )}
 
-      {/* Chat Usage */}
-      {settings.chatUsage?.hasQuota && !settings.chatUsage.unlimited && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <MessageSquare className="w-5 h-5" />
-              Chat Usage
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span>{settings.chatUsage.used} / {settings.chatUsage.limit} chats</span>
-                  <span className="text-muted-foreground">({settings.chatUsage.percentage?.toFixed(6)}%)</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
-                  <div 
-                    className="bg-blue-600 h-3 rounded-full transition-all duration-300"
-                    style={{ 
-                      width: `${Math.max(Math.min(settings.chatUsage.percentage || 0, 100), 1)}%`,
-                      minWidth: '4px'
-                    }}
-                  />
-                </div>
-              </div>
-              <div className="text-sm text-muted-foreground space-y-1">
-                <p>Quota Type: <span className="font-medium text-foreground">{settings.chatUsage.quotaType === 'individual' ? 'Individual (per user)' : 'Total (entire group)'}</span></p>
-                <p>Resets on: <span className="font-medium text-foreground">{formatDate(settings.chatUsage.resetDate || '')}</span></p>
-              </div>
+        {/* Chat Usage Details */}
+        {settings.chatUsage?.hasQuota && !settings.chatUsage.unlimited && (
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-2.5 border-b">
+              <p className="text-xs font-medium flex items-center gap-1.5"><MessageSquare className="w-3.5 h-3.5" /> Chat Usage Details</p>
             </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {settings.chatUsage?.unlimited && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <MessageSquare className="w-5 h-5" />
-              Chat Usage
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">Unlimited chats available</p>
-          </CardContent>
-        </Card>
-      )}
+            <div className="divide-y">
+              <div className="flex items-center justify-between px-4 py-2.5">
+                <p className="text-[11px] text-muted-foreground">Quota Type</p>
+                <p className="text-[13px]">{settings.chatUsage.quotaType === 'individual' ? 'Individual (per user)' : 'Total (entire group)'}</p>
+              </div>
+              <div className="flex items-center justify-between px-4 py-2.5">
+                <p className="text-[11px] text-muted-foreground">Used</p>
+                <p className="text-[13px]">{settings.chatUsage.used} / {settings.chatUsage.limit} chats</p>
+              </div>
+              {settings.chatUsage.resetDate && (
+                <div className="flex items-center justify-between px-4 py-2.5">
+                  <p className="text-[11px] text-muted-foreground">Resets on</p>
+                  <p className="text-[13px]">{new Date(settings.chatUsage.resetDate).toLocaleDateString('en-MY', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

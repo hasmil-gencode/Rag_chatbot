@@ -4,52 +4,52 @@
 
 @layer base {
   :root {
-    /* Dark Theme - Matching Login */
-    --background: 217 33% 17%;
+    /* Dark Theme */
+    --background: 0 0% 13%;
     --foreground: 0 0% 95%;
 
-    --card: 215 28% 17%;
+    --card: 0 0% 15%;
     --card-foreground: 0 0% 95%;
 
-    --popover: 222 47% 11%;
+    --popover: 0 0% 12%;
     --popover-foreground: 0 0% 95%;
 
-    --primary: 217 91% 60%;
-    --primary-foreground: 0 0% 100%;
+    --primary: 0 0% 100%;
+    --primary-foreground: 0 0% 0%;
 
-    --secondary: 217 32% 22%;
+    --secondary: 0 0% 18%;
     --secondary-foreground: 0 0% 95%;
 
-    --muted: 215 20% 30%;
-    --muted-foreground: 215 16% 70%;
+    --muted: 0 0% 18%;
+    --muted-foreground: 0 0% 65%;
 
-    --accent: 217 91% 60%;
-    --accent-foreground: 0 0% 100%;
+    --accent: 0 0% 18%;
+    --accent-foreground: 0 0% 95%;
 
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 215 25% 27%;
-    --input: 215 25% 27%;
-    --ring: 217 91% 60%;
+    --border: 0 0% 20%;
+    --input: 0 0% 20%;
+    --ring: 0 0% 40%;
 
     --radius: 0.5rem;
 
-    /* Sidebar - Black for mobile */
-    --sidebar-background: 0 0% 0%;
+    /* Sidebar - Dark */
+    --sidebar-background: 0 0% 9%;
     --sidebar-foreground: 0 0% 100%;
-    --sidebar-primary: 217 91% 60%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 0 0% 10%;
+    --sidebar-primary: 0 0% 100%;
+    --sidebar-primary-foreground: 0 0% 0%;
+    --sidebar-accent: 0 0% 15%;
     --sidebar-accent-foreground: 0 0% 100%;
     --sidebar-border: 0 0% 20%;
-    --sidebar-ring: 217 91% 60%;
+    --sidebar-ring: 0 0% 40%;
     --sidebar-muted: 0 0% 65%;
   }
 
   .light {
-    /* Light Theme - Glass morphism style */
-    --background: 0 0% 96.1%; /* #F5F5F5 base */
+    /* Light Theme */
+    --background: 0 0% 100%;
     --foreground: 0 0% 10%;
 
     --card: 0 0% 100%;
@@ -58,14 +58,14 @@
     --popover: 0 0% 100%;
     --popover-foreground: 0 0% 10%;
 
-    --primary: 217 91% 60%; /* Blue for user messages */
+    --primary: 0 0% 10%;
     --primary-foreground: 0 0% 100%;
 
     --secondary: 0 0% 96%;
     --secondary-foreground: 0 0% 10%;
 
-    --muted: 0 0% 100%; /* White/glass for bot messages */
-    --muted-foreground: 0 0% 10%; /* Black text */
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 45%;
 
     --accent: 0 0% 93%;
     --accent-foreground: 0 0% 10%;
@@ -73,21 +73,21 @@
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 0 0% 88%; /* Grey border for menu */
+    --border: 0 0% 90%;
     --input: 0 0% 100%;
-    --ring: 217 91% 60%;
+    --ring: 0 0% 60%;
 
     --radius: 0.5rem;
 
     /* Sidebar - Light */
     --sidebar-background: 0 0% 98%;
     --sidebar-foreground: 0 0% 10%;
-    --sidebar-primary: 217 91% 60%;
+    --sidebar-primary: 0 0% 10%;
     --sidebar-primary-foreground: 0 0% 100%;
     --sidebar-accent: 0 0% 93%;
     --sidebar-accent-foreground: 0 0% 10%;
     --sidebar-border: 0 0% 90%;
-    --sidebar-ring: 217 91% 60%;
+    --sidebar-ring: 0 0% 60%;
     --sidebar-muted: 0 0% 45%;
   }
 
@@ -101,121 +101,79 @@
 }
 
 @layer utilities {
-  /* Dark mode image background */
+  /* Dark mode solid background */
   .bg-background {
-    background-image: url('/logos/bg5_7680x4320_8k.webp') !important;
-    background-size: cover !important;
-    background-position: center !important;
-    background-attachment: fixed !important;
+    background-color: hsl(var(--background)) !important;
   }
 
-  /* Light mode image background */
+  /* Light mode solid background */
   .light .bg-background {
-    background-image: url('/logos/bg3_7680x4320_8k.webp') !important;
-    background-size: cover !important;
-    background-position: center !important;
-    background-attachment: fixed !important;
+    background-color: hsl(var(--background)) !important;
   }
 
-  /* Glass effect for bot messages in dark mode */
+  /* Dark mode - solid backgrounds */
   .bg-muted {
-    background: rgba(255, 255, 255, 0.1) !important;
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: hsl(var(--muted)) !important;
   }
 
-  /* Glass effect for user messages in dark mode */
   .bg-primary {
-    background: rgba(255, 255, 255, 0.1) !important;
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: hsl(var(--primary)) !important;
   }
 
-  /* Glass effect for cards/boxes in dark mode */
   .bg-card,
   .bg-popover,
   .bg-secondary {
-    background: rgba(255, 255, 255, 0.1) !important;
-    backdrop-filter: blur(10px);
+    background: hsl(var(--card)) !important;
   }
 
-  /* Light mode overrides */
-  /* Glass effect for bot messages in light mode */
+  /* Light mode - solid backgrounds */
   .light .bg-muted {
-    background: rgba(255, 255, 255, 0.6) !important;
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.3);
+    background: hsl(var(--muted)) !important;
   }
 
-  /* Glass effect for user messages in light mode */
   .light .bg-primary {
-    background: rgba(255, 255, 255, 0.6) !important;
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.3);
+    background: hsl(var(--primary)) !important;
   }
 
-  /* Glass effect for cards/boxes only (NOT main background) */
   .light .bg-card,
   .light .bg-popover,
   .light .bg-secondary,
   .light [class*="hover:bg-secondary"]:hover,
   .light .border.rounded-lg,
   .light .border.rounded-md {
-    background: rgba(255, 255, 255, 0.6) !important;
-    backdrop-filter: blur(10px);
-  }
-
-  /* Force black text in light mode chat bubbles */
-  .light .text-primary-foreground,
-  .light .text-foreground,
-  .light .prose {
-    color: #000 !important;
-  }
-
-  .light .prose * {
-    color: #000 !important;
-  }
-
-  /* Black border for download button in light mode */
-  .light button[variant="outline"],
-  .light .border {
-    border-color: rgba(0, 0, 0, 0.3) !important;
+    background: hsl(var(--card)) !important;
   }
 
   /* White border for chat input in dark mode */
   .border-border {
-    border-color: rgba(255, 255, 255, 0.5) !important;
+    border-color: hsl(var(--border)) !important;
   }
 
-  /* Black border for chat input in light mode */
+  /* Light mode border */
   .light .border-border {
-    border-color: rgba(0, 0, 0, 0.2) !important;
+    border-color: hsl(var(--border)) !important;
   }
 
   /* New Chat button - Dark mode */
   button.new-chat-btn {
-    background: white;
-    color: black;
-    border: 1px solid white;
+    background: transparent;
+    color: hsl(var(--sidebar-foreground));
+    border: 1px solid hsl(var(--sidebar-border));
   }
 
   button.new-chat-btn:hover {
-    background: black;
-    color: white;
-    border: 1px solid white;
+    background: hsl(var(--sidebar-accent));
   }
 
   /* New Chat button - Light mode */
   .light button.new-chat-btn {
-    background: black;
-    color: white;
-    border: 1px solid black;
+    background: transparent;
+    color: hsl(var(--sidebar-foreground));
+    border: 1px solid hsl(var(--sidebar-border));
   }
 
   .light button.new-chat-btn:hover {
-    background: white;
-    color: black;
-    border: 1px solid black;
+    background: hsl(var(--sidebar-accent));
   }
 
   .chat-scrollbar::-webkit-scrollbar {
@@ -236,8 +194,7 @@
   }
 
   .glass-effect {
-    backdrop-filter: blur(12px);
-    background: hsl(var(--card) / 0.8);
+    background: hsl(var(--card));
   }
 
   .glow-effect {
@@ -371,10 +328,7 @@
   }
 
   .frosted-glass {
-    background: rgba(255, 255, 255, 0.1);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: hsl(var(--card));
   }
 
   @keyframes mic-pulse {

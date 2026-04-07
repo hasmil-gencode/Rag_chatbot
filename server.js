@@ -177,12 +177,21 @@ const auth = async (req, res, next) => {
   }
 };
 
-// Permission check middleware (simplified for developer-only)
+// Permission check middleware
 const hasPermission = (...requiredPermissions) => {
   return (req, res, next) => {
-    // Only developer has all permissions
+    // Developer has all permissions
     if (req.user.role === 'developer') {
       return next();
+    }
+    
+    // Admin has limited permissions
+    if (req.user.role === 'admin') {
+      // Admin can manage users and departments under their org
+      const allowedForAdmin = ['user:manage', 'org:manage'];
+      if (requiredPermissions.length === 0 || requiredPermissions.some(p => allowedForAdmin.includes(p))) {
+        return next();
+      }
     }
     
     return res.status(403).json({ error: 'Insufficient permissions' });
@@ -344,9 +353,33 @@ app.get('/api/user/me', auth, async (req, res) => {
 
 
 // Create organization/entity/department
-app.post('/api/organizations', auth, hasPermission(), async (req, res) => {
+app.post('/api/organizations', auth, hasPermission('org:manage'), async (req, res) => {
   try {
     const { name, type, parentId } = req.body; // type: 'organization' | 'entity' | 'department'
+    
+    // Admin can only create departments, not organization or entity
+    if (req.user.role === 'admin' && (type === 'organization' || type === 'entity')) {
+      return res.status(403).json({ error: 'Admin can only create departments. Contact developer to create organization or entity.' });
+    }
+    
+    // Admin can only create under their assigned organizations
+    if (req.user.role === 'admin' && parentId) {
+      const userOrgs = await db.collection('user_organization_assignments').find({ userId: new ObjectId(req.user.id) }).toArray();
+      const userOrgIds = userOrgs.map(a => a.organizationId.toString());
+      
+      // Check if parent is in user's org hierarchy
+      const parent = await db.collection('organizations').findOne({ _id: new ObjectId(parentId) });
+      if (!parent) return res.status(404).json({ error: 'Parent not found' });
+      
+      // Get all ancestors of parent
+      let canCreate = userOrgIds.includes(parentId);
+      if (!canCreate && parent.parentId) {
+        canCreate = userOrgIds.includes(parent.parentId.toString());
+      }
+      if (!canCreate) {
+        return res.status(403).json({ error: 'You can only create departments under your assigned organizations' });
+      }
+    }
     
     let path = [name];
     if (parentId) {
@@ -370,8 +403,8 @@ app.post('/api/organizations', auth, hasPermission(), async (req, res) => {
   }
 });
 
-// Assign user to organizations (Developer only)
-app.post('/api/user-assignments', auth, hasPermission(), async (req, res) => {
+// Assign user to organizations
+app.post('/api/user-assignments', auth, hasPermission('user:manage'), async (req, res) => {
   try {
     const { userId, organizationIds } = req.body; // organizationIds is array
     
@@ -474,11 +507,43 @@ app.get('/api/my-organizations-hierarchy', auth, async (req, res) => {
   }
 });
 
-// Get all organizations (Developer only)
-app.get('/api/organizations', auth, hasPermission(), async (req, res) => {
+// Get all organizations (Developer sees all, Admin sees only their assigned orgs)
+app.get('/api/organizations', auth, hasPermission('org:manage'), async (req, res) => {
   try {
-    const organizations = await db.collection('organizations').find({}).toArray();
-    res.json({ organizations });
+    if (req.user.role === 'developer') {
+      const organizations = await db.collection('organizations').find({}).toArray();
+      return res.json({ organizations });
+    }
+    
+    // Admin: only see their assigned orgs and children
+    const assignments = await db.collection('user_organization_assignments').find({ userId: new ObjectId(req.user.id) }).toArray();
+    const assignedOrgIds = assignments.map(a => a.organizationId);
+    
+    if (assignedOrgIds.length === 0) {
+      return res.json({ organizations: [] });
+    }
+    
+    // Get assigned orgs
+    const assignedOrgs = await db.collection('organizations').find({ _id: { $in: assignedOrgIds } }).toArray();
+    
+    // Get all children of assigned orgs
+    const allOrgs = await db.collection('organizations').find({}).toArray();
+    const result = [];
+    
+    const addOrgAndChildren = (orgId) => {
+      const org = allOrgs.find(o => o._id.toString() === orgId.toString());
+      if (org && !result.find(r => r._id.toString() === org._id.toString())) {
+        result.push(org);
+        // Find children
+        allOrgs.filter(o => o.parentId && o.parentId.toString() === orgId.toString()).forEach(child => {
+          addOrgAndChildren(child._id);
+        });
+      }
+    };
+    
+    assignedOrgIds.forEach(id => addOrgAndChildren(id));
+    
+    res.json({ organizations: result });
   } catch (error) {
     res.status(500).json({ error: 'Failed to get organizations' });
   }
@@ -519,10 +584,47 @@ app.delete('/api/organizations/:id', auth, hasPermission(), async (req, res) => 
   }
 });
 
-// Get all users (Developer only)
-app.get('/api/users', auth, hasPermission(), async (req, res) => {
+// Get all users (Developer sees all, Admin sees only users in their orgs)
+app.get('/api/users', auth, hasPermission('user:manage'), async (req, res) => {
   try {
-    const users = await db.collection('users').find({}).toArray();
+    if (req.user.role === 'developer') {
+      const users = await db.collection('users').find({}).toArray();
+      return res.json(users);
+    }
+    
+    // Admin: only see users in their assigned orgs
+    const adminAssignments = await db.collection('user_organization_assignments').find({ userId: new ObjectId(req.user.id) }).toArray();
+    const adminOrgIds = adminAssignments.map(a => a.organizationId.toString());
+    
+    if (adminOrgIds.length === 0) {
+      return res.json([]);
+    }
+    
+    // Get all orgs to find children
+    const allOrgs = await db.collection('organizations').find({}).toArray();
+    const allowedOrgIds = new Set(adminOrgIds);
+    
+    // Add all children of admin's orgs
+    const addChildren = (parentId) => {
+      allOrgs.filter(o => o.parentId && o.parentId.toString() === parentId).forEach(child => {
+        allowedOrgIds.add(child._id.toString());
+        addChildren(child._id.toString());
+      });
+    };
+    adminOrgIds.forEach(id => addChildren(id));
+    
+    // Get users assigned to these orgs
+    const userAssignments = await db.collection('user_organization_assignments').find({
+      organizationId: { $in: Array.from(allowedOrgIds).map(id => new ObjectId(id)) }
+    }).toArray();
+    
+    const userIds = [...new Set(userAssignments.map(a => a.userId.toString()))];
+    
+    const users = await db.collection('users').find({
+      _id: { $in: userIds.map(id => new ObjectId(id)) },
+      role: { $ne: 'developer' } // Never show developer to admin
+    }).toArray();
+    
     res.json(users);
   } catch (error) {
     res.status(500).json({ error: 'Failed to get users' });
@@ -555,7 +657,7 @@ app.put('/api/users/:id', auth, hasPermission(), async (req, res) => {
 });
 
 // Get user assignments
-app.get('/api/user-assignments/:userId', auth, hasPermission(), async (req, res) => {
+app.get('/api/user-assignments/:userId', auth, hasPermission('user:manage'), async (req, res) => {
   try {
     const assignments = await db.collection('user_organization_assignments')
       .find({ userId: new ObjectId(req.params.userId) })
@@ -982,7 +1084,8 @@ app.get('/api/sessions', auth, async (req, res) => {
           lastMessageAt: { $last: '$createdAt' },
           messageCount: { $sum: 1 },
           startedBy: { $first: '$startedBy' },
-          startedByEmail: { $first: '$startedByEmail' }
+          startedByEmail: { $first: '$startedByEmail' },
+          allContent: { $push: '$content' }
         }},
         { $sort: { lastMessageAt: -1 } },
         { $limit: 50 }
@@ -994,7 +1097,8 @@ app.get('/api/sessions', auth, async (req, res) => {
       lastMessageAt: s.lastMessageAt,
       messageCount: s.messageCount,
       startedBy: s.startedBy || s.startedByEmail,
-      startedByEmail: s.startedByEmail
+      startedByEmail: s.startedByEmail,
+      searchContent: s.allContent.join(' ').toLowerCase()
     })));
   } catch (error) {
     console.error('Get sessions error:', error);
@@ -1137,7 +1241,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     
     // Check storage limit for user's group and get groupId
     let userGroupId = null;
-    const userId = req.user.id.toString(); // Convert to string
+    const userId = new ObjectId(req.user.id); // Use ObjectId
     const userAssignments = await db.collection('user_organization_assignments').find({ 
       userId: userId 
     }).toArray();
@@ -1392,10 +1496,11 @@ app.get('/api/storage-info', auth, async (req, res) => {
     }
     
     const files = await db.collection('files').find({ 
-      groupId: { $in: [groupObjectId, groupId.toString()] } // Match both formats
+      groupId: { $in: [groupObjectId, groupId.toString(), groupId] } // Match all formats
     }).toArray();
     
     console.log('Files found:', files.length);
+    console.log('Files groupIds:', files.map(f => ({ name: f.name, groupId: f.groupId, type: typeof f.groupId })));
     
     const usedBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
     
@@ -2064,12 +2169,15 @@ app.get('/api/users', auth, hasPermission('user:view'), async (req, res) => {
 
 app.post('/api/users', auth, hasPermission('user:manage'), async (req, res) => {
   try {
-    const { email, password, fullName, canUploadFiles } = req.body;
+    const { email, password, fullName, canUploadFiles, isAdmin } = req.body;
     
     const existingUser = await db.collection('users').findOne({ email });
     if (existingUser) {
       return res.status(400).json({ error: 'Email already exists' });
     }
+    
+    // Only developer can create admin users
+    const role = (isAdmin && req.user.role === 'developer') ? 'admin' : 'user';
     
     const hashedPassword = await bcrypt.hash(password, 10);
     
@@ -2077,7 +2185,7 @@ app.post('/api/users', auth, hasPermission('user:manage'), async (req, res) => {
       email,
       password: hashedPassword,
       fullName,
-      role: 'user',
+      role,
       status: 'active',
       canUploadFiles: canUploadFiles !== false,
       mustChangePassword: true, // Force password change on first login

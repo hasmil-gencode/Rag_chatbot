@@ -1,38 +1,10 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { Plus, Edit2, Save, X, Trash2 } from "lucide-react";
+import { Plus, Edit2, Save, X, Trash2, Bot } from "lucide-react";
 
-interface RobotSetting {
-  _id: string;
-  name: string;
-  description: string;
-  navigation: NavigationEntry[];
-  motion: MotionEntry[];
-  emotion: EmotionEntry[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface NavigationEntry {
-  id: string;
-  title: string;
-  description: string;
-}
-
-interface MotionEntry {
-  id: string;
-  name: string;
-}
-
-interface EmotionEntry {
-  id: string;
-  name: string;
-}
+interface RobotSetting { _id: string; name: string; description: string; navigation: { id: string; title: string; description: string }[]; motion: { id: string; name: string }[]; emotion: { id: string; name: string }[]; createdAt: string; updatedAt: string; }
 
 export const RobotSettingsPage = () => {
   const [robots, setRobots] = useState<RobotSetting[]>([]);
@@ -41,567 +13,273 @@ export const RobotSettingsPage = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newRobotName, setNewRobotName] = useState("");
   const [newRobotDesc, setNewRobotDesc] = useState("");
-
-  // Editing states
   const [editingNav, setEditingNav] = useState<string | null>(null);
   const [editingMotion, setEditingMotion] = useState<string | null>(null);
   const [editingEmotion, setEditingEmotion] = useState<string | null>(null);
   const [addingNav, setAddingNav] = useState(false);
   const [addingMotion, setAddingMotion] = useState(false);
   const [addingEmotion, setAddingEmotion] = useState(false);
-
-  // Form states
   const [navForm, setNavForm] = useState({ id: "", title: "", description: "" });
   const [motionForm, setMotionForm] = useState({ id: "", name: "" });
   const [emotionForm, setEmotionForm] = useState({ id: "", name: "" });
 
-  useEffect(() => {
-    loadRobots();
-  }, []);
+  useEffect(() => { loadRobots(); }, []);
+  useEffect(() => { if (selectedRobotId) loadRobot(selectedRobotId); }, [selectedRobotId]);
 
-  useEffect(() => {
-    if (selectedRobotId) {
-      loadRobot(selectedRobotId);
-    }
-  }, [selectedRobotId]);
-
-  const loadRobots = async () => {
-    try {
-      const data = await api.getRobotSettings();
-      setRobots(data);
-      if (data.length > 0 && !selectedRobotId) {
-        setSelectedRobotId(data[0]._id);
-      }
-    } catch (error: any) {
-      toast.error(error.message);
-    }
-  };
-
-  const loadRobot = async (id: string) => {
-    try {
-      const data = await api.getRobotSetting(id);
-      setSelectedRobot(data);
-    } catch (error: any) {
-      toast.error(error.message);
-    }
-  };
+  const loadRobots = async () => { try { const data = await api.getRobotSettings(); setRobots(data); if (data.length > 0 && !selectedRobotId) setSelectedRobotId(data[0]._id); } catch (e: any) { toast.error(e.message); } };
+  const loadRobot = async (id: string) => { try { setSelectedRobot(await api.getRobotSetting(id)); } catch (e: any) { toast.error(e.message); } };
 
   const handleCreateRobot = async () => {
-    if (!newRobotName) {
-      toast.error("Please enter robot name");
-      return;
-    }
-    try {
-      await api.createRobotSetting(newRobotName, newRobotDesc);
-      setShowCreateModal(false);
-      setNewRobotName("");
-      setNewRobotDesc("");
-      loadRobots();
-      toast.success("Robot created");
-    } catch (error: any) {
-      toast.error(error.message);
-    }
+    if (!newRobotName) { toast.error("Enter robot name"); return; }
+    try { await api.createRobotSetting(newRobotName, newRobotDesc); setShowCreateModal(false); setNewRobotName(""); setNewRobotDesc(""); loadRobots(); toast.success("Robot created"); }
+    catch (e: any) { toast.error(e.message); }
   };
 
   const handleDeleteRobot = async (id: string) => {
-    if (!confirm("Are you sure you want to delete this robot?")) return;
-    try {
-      await api.deleteRobotSetting(id);
-      loadRobots();
-      if (selectedRobotId === id) {
-        setSelectedRobotId(null);
-        setSelectedRobot(null);
-      }
-      toast.success("Robot deleted");
-    } catch (error: any) {
-      toast.error(error.message);
-    }
+    if (!confirm("Delete this robot?")) return;
+    try { await api.deleteRobotSetting(id); loadRobots(); if (selectedRobotId === id) { setSelectedRobotId(null); setSelectedRobot(null); } toast.success("Robot deleted"); }
+    catch (e: any) { toast.error(e.message); }
   };
 
   const saveRobot = async () => {
     if (!selectedRobot) return;
-    try {
-      await api.updateRobotSetting(selectedRobot._id, {
-        name: selectedRobot.name,
-        description: selectedRobot.description,
-        navigation: selectedRobot.navigation,
-        motion: selectedRobot.motion,
-        emotion: selectedRobot.emotion,
-      });
-      toast.success("Saved");
-      loadRobots();
-    } catch (error: any) {
-      toast.error(error.message);
-    }
+    try { await api.updateRobotSetting(selectedRobot._id, { name: selectedRobot.name, description: selectedRobot.description, navigation: selectedRobot.navigation, motion: selectedRobot.motion, emotion: selectedRobot.emotion }); toast.success("Saved"); loadRobots(); }
+    catch (e: any) { toast.error(e.message); }
   };
 
   // Navigation handlers
   const addNavEntry = () => {
-    if (!selectedRobot || !navForm.id || !navForm.title) {
-      toast.error("Please fill all fields");
-      return;
-    }
-    if (selectedRobot.navigation.some(n => n.id === navForm.id)) {
-      toast.error("ID already exists");
-      return;
-    }
-    setSelectedRobot({
-      ...selectedRobot,
-      navigation: [...selectedRobot.navigation, navForm]
-    });
-    setNavForm({ id: "", title: "", description: "" });
-    setAddingNav(false);
+    if (!selectedRobot || !navForm.id || !navForm.title) { toast.error("Fill all fields"); return; }
+    if (selectedRobot.navigation.some(n => n.id === navForm.id)) { toast.error("ID exists"); return; }
+    setSelectedRobot({ ...selectedRobot, navigation: [...selectedRobot.navigation, navForm] }); setNavForm({ id: "", title: "", description: "" }); setAddingNav(false);
   };
-
   const updateNavEntry = (oldId: string) => {
-    if (!selectedRobot || !navForm.id || !navForm.title) {
-      toast.error("Please fill all fields");
-      return;
-    }
-    if (oldId !== navForm.id && selectedRobot.navigation.some(n => n.id === navForm.id)) {
-      toast.error("ID already exists");
-      return;
-    }
-    setSelectedRobot({
-      ...selectedRobot,
-      navigation: selectedRobot.navigation.map(n => n.id === oldId ? navForm : n)
-    });
-    setEditingNav(null);
-    setNavForm({ id: "", title: "", description: "" });
+    if (!selectedRobot || !navForm.id || !navForm.title) { toast.error("Fill all fields"); return; }
+    if (oldId !== navForm.id && selectedRobot.navigation.some(n => n.id === navForm.id)) { toast.error("ID exists"); return; }
+    setSelectedRobot({ ...selectedRobot, navigation: selectedRobot.navigation.map(n => n.id === oldId ? navForm : n) }); setEditingNav(null); setNavForm({ id: "", title: "", description: "" });
   };
-
-  const deleteNavEntry = (id: string) => {
-    if (!selectedRobot) return;
-    setSelectedRobot({
-      ...selectedRobot,
-      navigation: selectedRobot.navigation.filter(n => n.id !== id)
-    });
-  };
+  const deleteNavEntry = (id: string) => { if (selectedRobot) setSelectedRobot({ ...selectedRobot, navigation: selectedRobot.navigation.filter(n => n.id !== id) }); };
 
   // Motion handlers
   const addMotionEntry = () => {
-    if (!selectedRobot || !motionForm.id || !motionForm.name) {
-      toast.error("Please fill all fields");
-      return;
-    }
-    if (selectedRobot.motion.some(m => m.id === motionForm.id)) {
-      toast.error("ID already exists");
-      return;
-    }
-    setSelectedRobot({
-      ...selectedRobot,
-      motion: [...selectedRobot.motion, motionForm]
-    });
-    setMotionForm({ id: "", name: "" });
-    setAddingMotion(false);
+    if (!selectedRobot || !motionForm.id || !motionForm.name) { toast.error("Fill all fields"); return; }
+    if (selectedRobot.motion.some(m => m.id === motionForm.id)) { toast.error("ID exists"); return; }
+    setSelectedRobot({ ...selectedRobot, motion: [...selectedRobot.motion, motionForm] }); setMotionForm({ id: "", name: "" }); setAddingMotion(false);
   };
-
   const updateMotionEntry = (oldId: string) => {
-    if (!selectedRobot || !motionForm.id || !motionForm.name) {
-      toast.error("Please fill all fields");
-      return;
-    }
-    if (oldId !== motionForm.id && selectedRobot.motion.some(m => m.id === motionForm.id)) {
-      toast.error("ID already exists");
-      return;
-    }
-    setSelectedRobot({
-      ...selectedRobot,
-      motion: selectedRobot.motion.map(m => m.id === oldId ? motionForm : m)
-    });
-    setEditingMotion(null);
-    setMotionForm({ id: "", name: "" });
+    if (!selectedRobot || !motionForm.id || !motionForm.name) { toast.error("Fill all fields"); return; }
+    if (oldId !== motionForm.id && selectedRobot.motion.some(m => m.id === motionForm.id)) { toast.error("ID exists"); return; }
+    setSelectedRobot({ ...selectedRobot, motion: selectedRobot.motion.map(m => m.id === oldId ? motionForm : m) }); setEditingMotion(null); setMotionForm({ id: "", name: "" });
   };
-
-  const deleteMotionEntry = (id: string) => {
-    if (!selectedRobot) return;
-    setSelectedRobot({
-      ...selectedRobot,
-      motion: selectedRobot.motion.filter(m => m.id !== id)
-    });
-  };
+  const deleteMotionEntry = (id: string) => { if (selectedRobot) setSelectedRobot({ ...selectedRobot, motion: selectedRobot.motion.filter(m => m.id !== id) }); };
 
   // Emotion handlers
   const addEmotionEntry = () => {
-    if (!selectedRobot || !emotionForm.id || !emotionForm.name) {
-      toast.error("Please fill all fields");
-      return;
-    }
-    if (selectedRobot.emotion.some(e => e.id === emotionForm.id)) {
-      toast.error("ID already exists");
-      return;
-    }
-    setSelectedRobot({
-      ...selectedRobot,
-      emotion: [...selectedRobot.emotion, emotionForm]
-    });
-    setEmotionForm({ id: "", name: "" });
-    setAddingEmotion(false);
+    if (!selectedRobot || !emotionForm.id || !emotionForm.name) { toast.error("Fill all fields"); return; }
+    if (selectedRobot.emotion.some(e => e.id === emotionForm.id)) { toast.error("ID exists"); return; }
+    setSelectedRobot({ ...selectedRobot, emotion: [...selectedRobot.emotion, emotionForm] }); setEmotionForm({ id: "", name: "" }); setAddingEmotion(false);
   };
-
   const updateEmotionEntry = (oldId: string) => {
-    if (!selectedRobot || !emotionForm.id || !emotionForm.name) {
-      toast.error("Please fill all fields");
-      return;
-    }
-    if (oldId !== emotionForm.id && selectedRobot.emotion.some(e => e.id === emotionForm.id)) {
-      toast.error("ID already exists");
-      return;
-    }
-    setSelectedRobot({
-      ...selectedRobot,
-      emotion: selectedRobot.emotion.map(e => e.id === oldId ? emotionForm : e)
-    });
-    setEditingEmotion(null);
-    setEmotionForm({ id: "", name: "" });
+    if (!selectedRobot || !emotionForm.id || !emotionForm.name) { toast.error("Fill all fields"); return; }
+    if (oldId !== emotionForm.id && selectedRobot.emotion.some(e => e.id === emotionForm.id)) { toast.error("ID exists"); return; }
+    setSelectedRobot({ ...selectedRobot, emotion: selectedRobot.emotion.map(e => e.id === oldId ? emotionForm : e) }); setEditingEmotion(null); setEmotionForm({ id: "", name: "" });
   };
+  const deleteEmotionEntry = (id: string) => { if (selectedRobot) setSelectedRobot({ ...selectedRobot, emotion: selectedRobot.emotion.filter(e => e.id !== id) }); };
 
-  const deleteEmotionEntry = (id: string) => {
-    if (!selectedRobot) return;
-    setSelectedRobot({
-      ...selectedRobot,
-      emotion: selectedRobot.emotion.filter(e => e.id !== id)
-    });
+  const renderTable = (title: string, items: any[], type: 'nav' | 'motion' | 'emotion') => {
+    const isNav = type === 'nav';
+    const editing = type === 'nav' ? editingNav : type === 'motion' ? editingMotion : editingEmotion;
+    const adding = type === 'nav' ? addingNav : type === 'motion' ? addingMotion : addingEmotion;
+    const form = type === 'nav' ? navForm : type === 'motion' ? motionForm : emotionForm;
+    const setForm = type === 'nav' ? setNavForm : type === 'motion' ? setMotionForm : setEmotionForm;
+    const setAdding = type === 'nav' ? setAddingNav : type === 'motion' ? setAddingMotion : setAddingEmotion;
+    const setEditing = type === 'nav' ? setEditingNav : type === 'motion' ? setEditingMotion : setEditingEmotion;
+    const addEntry = type === 'nav' ? addNavEntry : type === 'motion' ? addMotionEntry : addEmotionEntry;
+    const updateEntry = type === 'nav' ? updateNavEntry : type === 'motion' ? updateMotionEntry : updateEmotionEntry;
+    const deleteEntry = type === 'nav' ? deleteNavEntry : type === 'motion' ? deleteMotionEntry : deleteEmotionEntry;
+
+    return (
+      <div className="border rounded-lg overflow-hidden">
+        <div className="px-4 py-2.5 border-b flex items-center justify-between">
+          <p className="text-xs font-medium">{title}</p>
+          <button onClick={() => setAdding(true)} className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> Add</button>
+        </div>
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="border-b">
+              <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">ID</th>
+              <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">{isNav ? 'Title' : 'Name'}</th>
+              {isNav && <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">Description</th>}
+              <th className="px-4 py-2.5 w-20"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item) => (
+              <tr key={item.id} className="border-t hover:bg-muted/30 transition-colors">
+                {editing === item.id ? (
+                  <>
+                    <td className="px-4 py-2"><input value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value } as any)} className="w-full h-8 px-2 text-xs rounded border bg-transparent" /></td>
+                    <td className="px-4 py-2"><input value={isNav ? (form as any).title : (form as any).name} onChange={(e) => setForm(isNav ? { ...form, title: e.target.value } as any : { ...form, name: e.target.value } as any)} className="w-full h-8 px-2 text-xs rounded border bg-transparent" /></td>
+                    {isNav && <td className="px-4 py-2"><input value={(form as any).description} onChange={(e) => setForm({ ...form, description: e.target.value } as any)} className="w-full h-8 px-2 text-xs rounded border bg-transparent" /></td>}
+                    <td className="px-4 py-2 text-right">
+                      <button onClick={() => updateEntry(item.id)} className="p-1 rounded hover:bg-muted text-green-500"><Save className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => { setEditing(null); setForm(isNav ? { id: "", title: "", description: "" } as any : { id: "", name: "" } as any); }} className="p-1 rounded hover:bg-muted text-muted-foreground"><X className="w-3.5 h-3.5" /></button>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td className="px-4 py-2.5 text-muted-foreground">{item.id}</td>
+                    <td className="px-4 py-2.5">{isNav ? item.title : item.name}</td>
+                    {isNav && <td className="px-4 py-2.5 text-muted-foreground">{item.description}</td>}
+                    <td className="px-4 py-2.5 text-right">
+                      <button onClick={() => { setEditing(item.id); setForm(item as any); }} className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"><Edit2 className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => deleteEntry(item.id)} className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-destructive"><Trash2 className="w-3.5 h-3.5" /></button>
+                    </td>
+                  </>
+                )}
+              </tr>
+            ))}
+            {adding && (
+              <tr className="border-t bg-muted/30">
+                <td className="px-4 py-2"><input placeholder="ID" value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value } as any)} className="w-full h-8 px-2 text-xs rounded border bg-transparent" /></td>
+                <td className="px-4 py-2"><input placeholder={isNav ? "Title" : "Name"} value={isNav ? (form as any).title : (form as any).name} onChange={(e) => setForm(isNav ? { ...form, title: e.target.value } as any : { ...form, name: e.target.value } as any)} className="w-full h-8 px-2 text-xs rounded border bg-transparent" /></td>
+                {isNav && <td className="px-4 py-2"><input placeholder="Description" value={(form as any).description} onChange={(e) => setForm({ ...form, description: e.target.value } as any)} className="w-full h-8 px-2 text-xs rounded border bg-transparent" /></td>}
+                <td className="px-4 py-2 text-right">
+                  <button onClick={addEntry} className="p-1 rounded hover:bg-muted text-green-500"><Save className="w-3.5 h-3.5" /></button>
+                  <button onClick={() => { setAdding(false); setForm(isNav ? { id: "", title: "", description: "" } as any : { id: "", name: "" } as any); }} className="p-1 rounded hover:bg-muted text-muted-foreground"><X className="w-3.5 h-3.5" /></button>
+                </td>
+              </tr>
+            )}
+            {items.length === 0 && !adding && <tr><td colSpan={isNav ? 4 : 3} className="px-4 py-8 text-center text-sm text-muted-foreground">No entries</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    );
   };
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="p-6">
-        <div className="flex justify-between items-center mb-6">
+      <div className="px-6 py-5">
+        {/* Header */}
+        <div className="flex items-start justify-between mb-5">
           <div>
-            <h1 className="text-2xl font-bold">Robot Settings</h1>
-            <p className="text-muted-foreground">Manage robot navigation, motion, and emotion data</p>
+            <p className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">Hardware</p>
+            <h1 className="text-xl font-semibold">Robot Settings</h1>
+            <p className="text-xs text-muted-foreground mt-0.5">Manage robot navigation, motion, and emotion data.</p>
           </div>
-          <Button onClick={() => setShowCreateModal(true)}>
-            <Plus className="w-4 h-4 mr-2" />
-            Add Robot
+          <Button size="sm" onClick={() => setShowCreateModal(true)} className="text-xs h-8 rounded-lg">
+            <Plus className="w-3.5 h-3.5 mr-1.5" /> Add Robot
           </Button>
         </div>
 
-        <div className="grid grid-cols-4 gap-6">
-          {/* Robot List Sidebar */}
-          <Card className="col-span-1">
-            <CardHeader>
-              <CardTitle>Robots</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-2">
-                {robots.map((robot) => (
-                  <div
-                    key={robot._id}
-                    className={`p-3 rounded-lg cursor-pointer flex justify-between items-center ${
-                      selectedRobotId === robot._id ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'
-                    }`}
-                    onClick={() => setSelectedRobotId(robot._id)}
-                  >
-                    <span className="font-medium">{robot.name}</span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteRobot(robot._id);
-                      }}
-                      className="text-red-500 hover:text-red-700"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+        {/* Stats */}
+        <div className="grid grid-cols-4 gap-3 mb-5">
+          <div className="border rounded-lg px-4 py-3">
+            <p className="text-[11px] text-muted-foreground">Total Robots</p>
+            <p className="text-2xl font-semibold mt-0.5">{robots.length}</p>
+          </div>
+          <div className="border rounded-lg px-4 py-3">
+            <p className="text-[11px] text-muted-foreground">Navigation Points</p>
+            <p className="text-2xl font-semibold mt-0.5">{selectedRobot?.navigation.length || 0}</p>
+          </div>
+          <div className="border rounded-lg px-4 py-3">
+            <p className="text-[11px] text-muted-foreground">Motions</p>
+            <p className="text-2xl font-semibold mt-0.5">{selectedRobot?.motion.length || 0}</p>
+          </div>
+          <div className="border rounded-lg px-4 py-3">
+            <p className="text-[11px] text-muted-foreground">Emotions</p>
+            <p className="text-2xl font-semibold mt-0.5">{selectedRobot?.emotion.length || 0}</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-4 gap-5">
+          {/* Robot List */}
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-2.5 border-b">
+              <p className="text-xs font-medium flex items-center gap-1.5"><Bot className="w-3.5 h-3.5" /> Robots</p>
+            </div>
+            <div className="p-2 space-y-1">
+              {robots.map((robot) => (
+                <div key={robot._id} onClick={() => setSelectedRobotId(robot._id)}
+                  className={`px-3 py-2 rounded-lg cursor-pointer flex justify-between items-center text-[13px] ${selectedRobotId === robot._id ? 'bg-foreground text-background' : 'hover:bg-muted'}`}>
+                  <span className="font-medium truncate">{robot.name}</span>
+                  <button onClick={(e) => { e.stopPropagation(); handleDeleteRobot(robot._id); }} className={`p-1 rounded ${selectedRobotId === robot._id ? 'hover:bg-background/20' : 'hover:bg-muted'}`}>
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+              {robots.length === 0 && <p className="text-xs text-muted-foreground text-center py-4">No robots</p>}
+            </div>
+          </div>
 
           {/* Robot Details */}
-          <div className="col-span-3 space-y-6">
+          <div className="col-span-3 space-y-5">
             {selectedRobot ? (
               <>
-                <Card>
-                  <CardHeader>
-                    <div className="flex justify-between items-center">
-                      <CardTitle>{selectedRobot.name}</CardTitle>
-                      <Button onClick={saveRobot}>
-                        <Save className="w-4 h-4 mr-2" />
-                        Save All Changes
-                      </Button>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <p className="text-sm text-muted-foreground">{selectedRobot.description}</p>
-                  </CardContent>
-                </Card>
-
-                {/* Navigation Table */}
-                <Card>
-                  <CardHeader>
-                    <div className="flex justify-between items-center">
-                      <CardTitle>📍 Navigation</CardTitle>
-                      <Button size="sm" onClick={() => setAddingNav(true)}>
-                        <Plus className="w-4 h-4 mr-2" />
-                        Add
-                      </Button>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <table className="w-full">
-                      <thead>
-                        <tr className="border-b">
-                          <th className="text-left p-2">ID</th>
-                          <th className="text-left p-2">Title</th>
-                          <th className="text-left p-2">Description</th>
-                          <th className="text-right p-2">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedRobot.navigation.map((nav) => (
-                          <tr key={nav.id} className="border-b">
-                            {editingNav === nav.id ? (
-                              <>
-                                <td className="p-2"><Input value={navForm.id} onChange={(e) => setNavForm({...navForm, id: e.target.value})} /></td>
-                                <td className="p-2"><Input value={navForm.title} onChange={(e) => setNavForm({...navForm, title: e.target.value})} /></td>
-                                <td className="p-2"><Input value={navForm.description} onChange={(e) => setNavForm({...navForm, description: e.target.value})} /></td>
-                                <td className="p-2 text-right space-x-2">
-                                  <Button size="sm" onClick={() => updateNavEntry(nav.id)}><Save className="w-4 h-4" /></Button>
-                                  <Button size="sm" variant="outline" onClick={() => { setEditingNav(null); setNavForm({ id: "", title: "", description: "" }); }}><X className="w-4 h-4" /></Button>
-                                </td>
-                              </>
-                            ) : (
-                              <>
-                                <td className="p-2">{nav.id}</td>
-                                <td className="p-2">{nav.title}</td>
-                                <td className="p-2">{nav.description}</td>
-                                <td className="p-2 text-right space-x-2">
-                                  <Button size="sm" variant="outline" onClick={() => { setEditingNav(nav.id); setNavForm(nav); }}><Edit2 className="w-4 h-4" /></Button>
-                                  <Button size="sm" variant="outline" onClick={() => deleteNavEntry(nav.id)}><Trash2 className="w-4 h-4" /></Button>
-                                </td>
-                              </>
-                            )}
-                          </tr>
-                        ))}
-                        {addingNav && (
-                          <tr className="border-b bg-muted">
-                            <td className="p-2"><Input placeholder="ID" value={navForm.id} onChange={(e) => setNavForm({...navForm, id: e.target.value})} /></td>
-                            <td className="p-2"><Input placeholder="Title" value={navForm.title} onChange={(e) => setNavForm({...navForm, title: e.target.value})} /></td>
-                            <td className="p-2"><Input placeholder="Description" value={navForm.description} onChange={(e) => setNavForm({...navForm, description: e.target.value})} /></td>
-                            <td className="p-2 text-right space-x-2">
-                              <Button size="sm" onClick={addNavEntry}><Save className="w-4 h-4" /></Button>
-                              <Button size="sm" variant="outline" onClick={() => { setAddingNav(false); setNavForm({ id: "", title: "", description: "" }); }}><X className="w-4 h-4" /></Button>
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </CardContent>
-                </Card>
-
-                {/* Motion Table */}
-                <Card>
-                  <CardHeader>
-                    <div className="flex justify-between items-center">
-                      <CardTitle>🏃 Motion</CardTitle>
-                      <Button size="sm" onClick={() => setAddingMotion(true)}>
-                        <Plus className="w-4 h-4 mr-2" />
-                        Add
-                      </Button>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <table className="w-full">
-                      <thead>
-                        <tr className="border-b">
-                          <th className="text-left p-2">ID</th>
-                          <th className="text-left p-2">Name</th>
-                          <th className="text-right p-2">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedRobot.motion.map((motion) => (
-                          <tr key={motion.id} className="border-b">
-                            {editingMotion === motion.id ? (
-                              <>
-                                <td className="p-2"><Input value={motionForm.id} onChange={(e) => setMotionForm({...motionForm, id: e.target.value})} /></td>
-                                <td className="p-2"><Input value={motionForm.name} onChange={(e) => setMotionForm({...motionForm, name: e.target.value})} /></td>
-                                <td className="p-2 text-right space-x-2">
-                                  <Button size="sm" onClick={() => updateMotionEntry(motion.id)}><Save className="w-4 h-4" /></Button>
-                                  <Button size="sm" variant="outline" onClick={() => { setEditingMotion(null); setMotionForm({ id: "", name: "" }); }}><X className="w-4 h-4" /></Button>
-                                </td>
-                              </>
-                            ) : (
-                              <>
-                                <td className="p-2">{motion.id}</td>
-                                <td className="p-2">{motion.name}</td>
-                                <td className="p-2 text-right space-x-2">
-                                  <Button size="sm" variant="outline" onClick={() => { setEditingMotion(motion.id); setMotionForm(motion); }}><Edit2 className="w-4 h-4" /></Button>
-                                  <Button size="sm" variant="outline" onClick={() => deleteMotionEntry(motion.id)}><Trash2 className="w-4 h-4" /></Button>
-                                </td>
-                              </>
-                            )}
-                          </tr>
-                        ))}
-                        {addingMotion && (
-                          <tr className="border-b bg-muted">
-                            <td className="p-2"><Input placeholder="ID" value={motionForm.id} onChange={(e) => setMotionForm({...motionForm, id: e.target.value})} /></td>
-                            <td className="p-2"><Input placeholder="Name" value={motionForm.name} onChange={(e) => setMotionForm({...motionForm, name: e.target.value})} /></td>
-                            <td className="p-2 text-right space-x-2">
-                              <Button size="sm" onClick={addMotionEntry}><Save className="w-4 h-4" /></Button>
-                              <Button size="sm" variant="outline" onClick={() => { setAddingMotion(false); setMotionForm({ id: "", name: "" }); }}><X className="w-4 h-4" /></Button>
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </CardContent>
-                </Card>
-
-                {/* Emotion Table */}
-                <Card>
-                  <CardHeader>
-                    <div className="flex justify-between items-center">
-                      <CardTitle>😊 Emotion</CardTitle>
-                      <Button size="sm" onClick={() => setAddingEmotion(true)}>
-                        <Plus className="w-4 h-4 mr-2" />
-                        Add
-                      </Button>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <table className="w-full">
-                      <thead>
-                        <tr className="border-b">
-                          <th className="text-left p-2">ID</th>
-                          <th className="text-left p-2">Name</th>
-                          <th className="text-right p-2">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedRobot.emotion.map((emotion) => (
-                          <tr key={emotion.id} className="border-b">
-                            {editingEmotion === emotion.id ? (
-                              <>
-                                <td className="p-2"><Input value={emotionForm.id} onChange={(e) => setEmotionForm({...emotionForm, id: e.target.value})} /></td>
-                                <td className="p-2"><Input value={emotionForm.name} onChange={(e) => setEmotionForm({...emotionForm, name: e.target.value})} /></td>
-                                <td className="p-2 text-right space-x-2">
-                                  <Button size="sm" onClick={() => updateEmotionEntry(emotion.id)}><Save className="w-4 h-4" /></Button>
-                                  <Button size="sm" variant="outline" onClick={() => { setEditingEmotion(null); setEmotionForm({ id: "", name: "" }); }}><X className="w-4 h-4" /></Button>
-                                </td>
-                              </>
-                            ) : (
-                              <>
-                                <td className="p-2">{emotion.id}</td>
-                                <td className="p-2">{emotion.name}</td>
-                                <td className="p-2 text-right space-x-2">
-                                  <Button size="sm" variant="outline" onClick={() => { setEditingEmotion(emotion.id); setEmotionForm(emotion); }}><Edit2 className="w-4 h-4" /></Button>
-                                  <Button size="sm" variant="outline" onClick={() => deleteEmotionEntry(emotion.id)}><Trash2 className="w-4 h-4" /></Button>
-                                </td>
-                              </>
-                            )}
-                          </tr>
-                        ))}
-                        {addingEmotion && (
-                          <tr className="border-b bg-muted">
-                            <td className="p-2"><Input placeholder="ID" value={emotionForm.id} onChange={(e) => setEmotionForm({...emotionForm, id: e.target.value})} /></td>
-                            <td className="p-2"><Input placeholder="Name" value={emotionForm.name} onChange={(e) => setEmotionForm({...emotionForm, name: e.target.value})} /></td>
-                            <td className="p-2 text-right space-x-2">
-                              <Button size="sm" onClick={addEmotionEntry}><Save className="w-4 h-4" /></Button>
-                              <Button size="sm" variant="outline" onClick={() => { setAddingEmotion(false); setEmotionForm({ id: "", name: "" }); }}><X className="w-4 h-4" /></Button>
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </CardContent>
-                </Card>
+                <div className="border rounded-lg overflow-hidden">
+                  <div className="px-4 py-2.5 border-b flex items-center justify-between">
+                    <p className="text-xs font-medium">{selectedRobot.name}</p>
+                    <Button size="sm" onClick={saveRobot} className="text-xs h-7"><Save className="w-3.5 h-3.5 mr-1" /> Save All</Button>
+                  </div>
+                  <div className="px-4 py-3">
+                    <p className="text-xs text-muted-foreground">{selectedRobot.description || 'No description'}</p>
+                  </div>
+                </div>
+                {renderTable('📍 Navigation', selectedRobot.navigation, 'nav')}
+                {renderTable('🏃 Motion', selectedRobot.motion, 'motion')}
+                {renderTable('😊 Emotion', selectedRobot.emotion, 'emotion')}
               </>
             ) : (
-              <Card>
-                <CardContent className="p-12 text-center text-muted-foreground">
-                  Select a robot or create a new one
-                </CardContent>
-              </Card>
+              <div className="border rounded-lg px-4 py-12 text-center text-sm text-muted-foreground">Select a robot or create a new one</div>
             )}
           </div>
         </div>
 
-        {/* Create Robot Modal */}
-        {showCreateModal && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-            <Card className="w-full max-w-md">
-              <CardHeader>
-                <CardTitle>Add Robot</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div>
-                  <Label>Robot Name</Label>
-                  <Input
-                    placeholder="e.g., Robot Alpha"
-                    value={newRobotName}
-                    onChange={(e) => setNewRobotName(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <Label>Description</Label>
-                  <Input
-                    placeholder="e.g., Main lobby robot"
-                    value={newRobotDesc}
-                    onChange={(e) => setNewRobotDesc(e.target.value)}
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <Button onClick={handleCreateRobot} disabled={!newRobotName}>Create</Button>
-                  <Button variant="outline" onClick={() => setShowCreateModal(false)}>Cancel</Button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        )}
-
         {/* API Documentation */}
-        <Card className="mt-6">
-          <CardHeader>
-            <CardTitle>Robot API Documentation</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6">
+        <div className="border rounded-lg overflow-hidden mt-5">
+          <div className="px-4 py-2.5 border-b">
+            <p className="text-xs font-medium">Robot API Documentation</p>
+          </div>
+          <div className="p-4 space-y-4">
             <div>
-              <h3 className="font-semibold mb-2">Get Robot Data</h3>
-              <p className="text-sm text-muted-foreground mb-2">Returns all robot settings (navigation, motion, emotion) linked to the API key.</p>
-              <div className="bg-muted p-3 rounded text-sm font-mono">GET /api/robot-data</div>
-              <p className="text-sm text-muted-foreground mt-2">Headers:</p>
-              <div className="bg-muted p-3 rounded text-sm font-mono mt-1">x-api-key: YOUR_API_KEY</div>
-              <p className="text-sm text-muted-foreground mt-2">Response:</p>
-              <div className="bg-muted p-3 rounded text-sm font-mono mt-1 whitespace-pre">{`{
-  "name": "Robot 1",
-  "navigation": [
-    { "id": "lobby", "title": "Lobby", "description": "Main entrance" }
-  ],
-  "motion": [
-    { "id": "wave", "name": "Wave Hand" }
-  ],
-  "emotion": [
-    { "id": "happy", "name": "Happy" }
-  ]
-}`}</div>
+              <p className="text-[11px] text-muted-foreground mb-1">Get Robot Data</p>
+              <code className="block text-xs bg-muted px-3 py-2 rounded">GET /api/robot-data</code>
             </div>
-
             <div>
-              <h3 className="font-semibold mb-2">Sync Navigation Data</h3>
-              <p className="text-sm text-muted-foreground mb-2">Send navigation data from robot on startup. Only updates if data has changed.</p>
-              <div className="bg-muted p-3 rounded text-sm font-mono">POST /api/robot-navigation</div>
-              <p className="text-sm text-muted-foreground mt-2">Headers:</p>
-              <div className="bg-muted p-3 rounded text-sm font-mono mt-1">{`x-api-key: YOUR_API_KEY
-Content-Type: application/json`}</div>
-              <p className="text-sm text-muted-foreground mt-2">Request Body:</p>
-              <div className="bg-muted p-3 rounded text-sm font-mono mt-1 whitespace-pre">{`{
-  "navigation": [
-    { "id": "lobby", "title": "Lobby", "description": "Main entrance area" },
-    { "id": "room_a", "title": "Meeting Room A", "description": "First floor" }
-  ]
-}`}</div>
-              <p className="text-sm text-muted-foreground mt-2">Response (unchanged):</p>
-              <div className="bg-muted p-3 rounded text-sm font-mono mt-1">{`{ "updated": false, "message": "Navigation data unchanged" }`}</div>
-              <p className="text-sm text-muted-foreground mt-2">Response (updated):</p>
-              <div className="bg-muted p-3 rounded text-sm font-mono mt-1">{`{ "updated": true, "message": "Navigation updated with 2 entries" }`}</div>
+              <p className="text-[11px] text-muted-foreground mb-1">Sync Navigation</p>
+              <code className="block text-xs bg-muted px-3 py-2 rounded">POST /api/robot-navigation</code>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       </div>
+
+      {/* Create Modal */}
+      {showCreateModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowCreateModal(false)}>
+          <div className="bg-background rounded-xl p-5 w-full max-w-md mx-4 border" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold">Add Robot</h2>
+              <button onClick={() => setShowCreateModal(false)} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="text-[11px] text-muted-foreground">Robot Name</label>
+                <input value={newRobotName} onChange={(e) => setNewRobotName(e.target.value)} placeholder="e.g., Robot Alpha"
+                  className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="text-[11px] text-muted-foreground">Description</label>
+                <input value={newRobotDesc} onChange={(e) => setNewRobotDesc(e.target.value)} placeholder="e.g., Main lobby robot"
+                  className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <Button size="sm" onClick={handleCreateRobot} disabled={!newRobotName} className="text-xs h-8 flex-1">Create</Button>
+                <Button size="sm" variant="outline" onClick={() => setShowCreateModal(false)} className="text-xs h-8">Cancel</Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

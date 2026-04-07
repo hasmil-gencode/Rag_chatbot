@@ -15,11 +15,12 @@ interface ChatAreaProps {
   onSendMessage: (message: string, fileId?: string | null) => void;
   isLoading?: boolean;
   userEmail?: string;
+  userFullName?: string;
   hasActiveSession?: boolean;
   onWebViewOpen?: (url: string) => void;
 }
 
-export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, hasActiveSession, onWebViewOpen }: ChatAreaProps) => {
+export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, userFullName, hasActiveSession, onWebViewOpen }: ChatAreaProps) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [waitingForResponse, setWaitingForResponse] = useState(false);
@@ -59,6 +60,7 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, hasAct
   }, [messages, waitingForResponse]);
 
   const getUserName = () => {
+    if (userFullName) return userFullName;
     if (!userEmail) return "User";
     const name = userEmail.split("@")[0];
     return name.charAt(0).toUpperCase() + name.slice(1);
@@ -99,8 +101,8 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, hasAct
       ) : (
         <>
           {/* Messages Area */}
-          <div className="flex-1 overflow-y-auto chat-scrollbar p-6">
-            <div className="max-w-4xl mx-auto">
+          <div className="flex-1 overflow-y-auto chat-scrollbar px-4 py-6">
+            <div className="max-w-3xl mx-auto space-y-1">
               {messages.map((msg) => (
                 <ChatMessage 
                   key={msg.id} 

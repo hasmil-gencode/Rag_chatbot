@@ -638,11 +638,11 @@ class API {
     return res.json()
   }
 
-  async createUser(email: string, password: string, fullName: string, canUploadFiles: boolean = true) {
+  async createUser(email: string, password: string, fullName: string, canUploadFiles: boolean = true, isAdmin: boolean = false) {
     const res = await fetchWithAuth(`${API_BASE}/users`, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({ email, password, fullName, canUploadFiles }),
+      body: JSON.stringify({ email, password, fullName, canUploadFiles, isAdmin }),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to create user')

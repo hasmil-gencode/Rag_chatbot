@@ -1,9 +1,7 @@
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { Download, File, Trash2, Upload } from "lucide-react";
+import { Download, FileText, Trash2, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
 import { downloadFile } from "@/lib/fileHelper";
 
@@ -12,238 +10,318 @@ export const FilesPage = () => {
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [selectedOrgs, setSelectedOrgs] = useState<string[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [showUploadModal, setShowUploadModal] = useState(false);
   const [storageInfo, setStorageInfo] = useState<{ used: number; limit: number } | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortBy, setSortBy] = useState<string>('date');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const userRole = localStorage.getItem('userRole') || 'user';
   const userId = localStorage.getItem('userId') || '';
   const isDeveloper = userRole.toLowerCase() === 'developer';
 
-  useEffect(() => {
-    loadFiles();
-    loadOrganizations();
-    loadStorageInfo();
-  }, []);
+  useEffect(() => { loadFiles(); loadOrganizations(); loadStorageInfo(); }, []);
 
-  const loadFiles = async () => {
-    try {
-      // For Files page, show files from all user's orgs (not just current org)
-      // Pass null to get all accessible files
-      const data = await api.getFiles(null);
-      setFiles(data);
-    } catch (error) {
-      console.error(error);
-    }
-  };
-
-  const loadOrganizations = async () => {
-    try {
-      // Developer sees all orgs, regular users see assigned orgs + children
-      const data = isDeveloper 
-        ? await api.getAllOrganizations()
-        : await api.getMyOrganizationsHierarchy();
-      setOrganizations(data.organizations || []);
-    } catch (error) {
-      console.error('Error loading organizations:', error);
-    }
-  };
-
-  const loadStorageInfo = async () => {
-    try {
-      const data = await api.getStorageInfo();
-      setStorageInfo(data);
-    } catch (error) {
-      console.error('Error loading storage info:', error);
-    }
-  };
+  const loadFiles = async () => { try { setFiles(await api.getFiles(null)); } catch (e) { console.error(e); } };
+  const loadOrganizations = async () => { try { const d = isDeveloper ? await api.getAllOrganizations() : await api.getMyOrganizationsHierarchy(); setOrganizations(d.organizations || []); } catch (e) { console.error(e); } };
+  const loadStorageInfo = async () => { try { setStorageInfo(await api.getStorageInfo()); } catch (e) { console.error(e); } };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     setIsUploading(true);
     try {
       await api.uploadFile(file, selectedOrgs);
       await loadFiles();
-      await loadStorageInfo(); // Refresh storage info
+      await loadStorageInfo();
       setSelectedOrgs([]);
+      setShowUploadModal(false);
       toast.success("File uploaded successfully");
-    } catch (error: any) {
-      toast.error(error.message);
-    } finally {
-      setIsUploading(false);
-    }
+    } catch (error: any) { toast.error(error.message); }
+    finally { setIsUploading(false); if (e.target) e.target.value = ''; }
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this file?")) return;
-    
-    try {
-      await api.deleteFile(id);
-      await loadFiles();
-      await loadStorageInfo(); // Refresh storage info
-      toast.success("File deleted");
-    } catch (error: any) {
-      toast.error(error.message);
-    }
+    try { await api.deleteFile(id); await loadFiles(); await loadStorageInfo(); toast.success("File deleted"); }
+    catch (error: any) { toast.error(error.message); }
   };
 
   const handleDownload = async (id: string) => {
-    try {
-      const fileName = await downloadFile(id);
-      toast.success(`Downloaded: ${fileName}`);
-    } catch (error: any) {
-      toast.error(error.message || "Download failed");
-    }
+    try { const fn = await downloadFile(id); toast.success(`Downloaded: ${fn}`); }
+    catch (error: any) { toast.error(error.message || "Download failed"); }
   };
 
-  const formatSize = (bytes: number) => {
-    const gb = bytes / 1024 / 1024 / 1024;
-    return gb.toFixed(6); // Show 6 decimal places
+  const getExt = (name: string) => name.split('.').pop()?.toLowerCase() || '';
+  const getTypeLabel = (name: string) => {
+    const ext = getExt(name);
+    const map: Record<string, string> = { pdf: 'PDF', doc: 'Word', docx: 'Word', xls: 'Excel', xlsx: 'Excel', ppt: 'PPT', pptx: 'PPT', txt: 'Text', md: 'Markdown', csv: 'CSV', png: 'Image', jpg: 'Image', jpeg: 'Image' };
+    return map[ext] || ext.toUpperCase();
   };
+
+  // Build org tree hierarchy
+  const getChildren = (parentId: string) => organizations.filter(o => o.parentId === parentId);
+  const getAllDescendantIds = (orgId: string): string[] => {
+    const children = getChildren(orgId);
+    return children.flatMap(c => [c._id, ...getAllDescendantIds(c._id)]);
+  };
+  const getParentId = (orgId: string) => organizations.find(o => o._id === orgId)?.parentId;
+
+  const toggleOrg = (orgId: string) => {
+    const org = organizations.find(o => o._id === orgId);
+    if (!org) return;
+    let next = [...selectedOrgs];
+
+    if (next.includes(orgId)) {
+      // Deselect: remove this + all descendants
+      const toRemove = new Set([orgId, ...getAllDescendantIds(orgId)]);
+      next = next.filter(id => !toRemove.has(id));
+      // Also remove parent if it was selected (since not all children selected anymore)
+      let pid = getParentId(orgId);
+      while (pid) {
+        next = next.filter(id => id !== pid);
+        pid = getParentId(pid!);
+      }
+    } else {
+      // Select: add this + all descendants
+      next = [...new Set([...next, orgId, ...getAllDescendantIds(orgId)])];
+      // Auto-select parent if all siblings now selected
+      let pid = getParentId(orgId);
+      while (pid) {
+        const sibs = getChildren(pid);
+        if (sibs.every(s => next.includes(s._id))) {
+          next = [...new Set([...next, pid])];
+        } else break;
+        pid = getParentId(pid);
+      }
+    }
+    setSelectedOrgs(next);
+  };
+
+  // Org tree for rendering
+  const rootOrgs = organizations.filter(o => !o.parentId);
+  const allTypes = [...new Set(files.map(f => getTypeLabel(f.name)))];
+
+  const filtered = files.filter(f => {
+    if (searchQuery && !f.name.toLowerCase().includes(searchQuery.toLowerCase()) && !f.uploadedBy?.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+    return true;
+  }).sort((a, b) => {
+    let cmp = 0;
+    if (sortBy === 'name') cmp = a.name.localeCompare(b.name);
+    else if (sortBy === 'uploader') cmp = (a.uploadedBy || '').localeCompare(b.uploadedBy || '');
+    else if (sortBy === 'date') cmp = new Date(a.uploadedAt).getTime() - new Date(b.uploadedAt).getTime();
+    return sortDir === 'desc' ? -cmp : cmp;
+  });
+
+  const toggleSort = (col: string) => {
+    if (sortBy === col) setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
+    else { setSortBy(col); setSortDir('desc'); }
+  };
+  const sortIcon = (col: string) => sortBy === col ? (sortDir === 'desc' ? ' ↓' : ' ↑') : '';
+
+  const totalSizeBytes = storageInfo?.used || 0;
+  const totalSizeDisplay = totalSizeBytes >= 1024 * 1024 
+    ? `${(totalSizeBytes / 1024 / 1024).toFixed(1)} MB` 
+    : `${(totalSizeBytes / 1024).toFixed(1)} KB`;
+  const usedGB = (totalSizeBytes / 1024 / 1024 / 1024).toFixed(2);
+  const limitGB = storageInfo?.limit || 0;
+  const usedPercent = limitGB > 0 ? Math.min((totalSizeBytes / (limitGB * 1024 * 1024 * 1024)) * 100, 100) : 0;
+  const recentCount = files.filter(f => {
+    const d = new Date(f.uploadedAt);
+    const now = new Date();
+    return (now.getTime() - d.getTime()) < 7 * 24 * 60 * 60 * 1000;
+  }).length;
 
   return (
-    <div className="h-full overflow-y-auto"><div className="p-6 space-y-4">
-      {storageInfo && storageInfo.limit > 0 && (
-        <Card>
-          <CardContent className="pt-6">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Storage Usage:</span>
-                <span className="text-sm">
-                  {formatSize(storageInfo.used)} GB / {storageInfo.limit} GB
-                  <span className="text-xs text-muted-foreground ml-2">
-                    ({((storageInfo.used / (storageInfo.limit * 1024 * 1024 * 1024)) * 100).toFixed(6)}%)
-                  </span>
-                </span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
-                <div 
-                  className="bg-blue-600 h-3 rounded-full transition-all duration-300"
-                  style={{ 
-                    width: `${Math.max(Math.min((storageInfo.used / (storageInfo.limit * 1024 * 1024 * 1024)) * 100, 100), 1)}%`,
-                    minWidth: '4px'
-                  }}
-                />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-      <Card>
-        <CardHeader>
-          <CardTitle>Upload Files</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="border-2 border-dashed rounded-lg p-8 text-center hover:border-primary transition-all">
-            <Upload className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-            <div className="space-y-4">
-              <div className="max-w-md mx-auto">
-                <Label>Share with Organizations</Label>
-                <div className="border rounded-md p-3 mt-1 max-h-32 overflow-y-auto space-y-2">
-                  {organizations.map((org) => (
-                    <label key={org._id} className="flex items-center gap-2 cursor-pointer hover:bg-muted p-1 rounded">
-                      <input
-                        type="checkbox"
-                        checked={selectedOrgs.includes(org._id)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedOrgs([...selectedOrgs, org._id]);
-                          } else {
-                            setSelectedOrgs(selectedOrgs.filter(id => id !== org._id));
-                          }
-                        }}
-                        className="w-4 h-4"
-                      />
-                      <span className="text-sm">{org.name} ({org.type})</span>
-                    </label>
-                  ))}
+    <div className="h-full overflow-y-auto">
+      <div className="px-6 py-5">
+        {/* Header */}
+        <div className="flex items-start justify-between mb-5">
+          <div>
+            <p className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">Document Center</p>
+            <h1 className="text-xl font-semibold">Files</h1>
+            <p className="text-xs text-muted-foreground mt-0.5">Manage uploads, permissions, and team access.</p>
+          </div>
+          <Button size="sm" onClick={() => setShowUploadModal(true)} className="text-xs h-8 rounded-lg">
+            + Upload File
+          </Button>
+        </div>
+
+        {/* Stats cards */}
+        <div className="grid grid-cols-4 gap-3 mb-5">
+          <div className="border rounded-lg px-4 py-3">
+            <p className="text-[11px] text-muted-foreground">Total Files</p>
+            <p className="text-2xl font-semibold mt-0.5">{files.length}</p>
+          </div>
+          <div className="border rounded-lg px-4 py-3">
+            <p className="text-[11px] text-muted-foreground">Uploaded This Week</p>
+            <p className="text-2xl font-semibold mt-0.5">{recentCount}</p>
+          </div>
+          <div className="border rounded-lg px-4 py-3">
+            <p className="text-[11px] text-muted-foreground">File Types</p>
+            <p className="text-2xl font-semibold mt-0.5">{allTypes.length}</p>
+          </div>
+          <div className="border rounded-lg px-4 py-3">
+            <p className="text-[11px] text-muted-foreground">Storage Used</p>
+            <p className="text-2xl font-semibold mt-0.5">{totalSizeDisplay}</p>
+            {limitGB > 0 && (
+              <>
+                <div className="w-full bg-muted rounded-full h-1.5 mt-2">
+                  <div className="bg-foreground/50 h-1.5 rounded-full transition-all" style={{ width: `${Math.max(usedPercent, 0.5)}%` }} />
                 </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Select organizations to share with. Leave empty for no restrictions.
-                </p>
-              </div>
-              
-              <div>
-                <input
-                  type="file"
-                  id="file-upload"
-                  className="hidden"
-                  onChange={handleFileSelect}
-                  disabled={isUploading}
-                />
-                <Button
-                  disabled={isUploading}
-                  onClick={() => document.getElementById('file-upload')?.click()}
-                >
-                  {isUploading ? "Uploading..." : "Choose File"}
-                </Button>
-              </div>
-            </div>
+                <p className="text-[10px] text-muted-foreground mt-1">{usedGB} GB of {limitGB} GB ({usedPercent.toFixed(2)}%)</p>
+              </>
+            )}
           </div>
-        </CardContent>
-      </Card>
+        </div>
 
-      <Card className="mt-6">
-        <CardHeader>
-          <CardTitle>Uploaded Files</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">{/* File list */}
+        {/* Search only */}
+        <div className="relative mb-5">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <input type="text" placeholder="Search by file name or uploader..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full h-9 pl-9 pr-3 text-xs rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+        </div>
 
-          {/* Files List */}
-          <div className="border rounded-lg overflow-x-auto">
-            <table className="w-full min-w-[600px]">
-              <thead className="bg-muted">
-                <tr>
-                  <th className="px-4 py-3 text-left">Name</th>
-                  <th className="px-4 py-3 text-left">Uploaded By</th>
-                  <th className="px-4 py-3 text-left">Shared With</th>
-                  <th className="px-4 py-3 text-left">Date</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {files.map((file) => (
-                  <tr key={file.id} className="border-t">
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <File className="w-4 h-4" />
-                        {file.name}
+        {/* File table */}
+        <div className="border rounded-lg overflow-hidden">
+          <table className="w-full text-[13px]">
+            <thead>
+              <tr className="border-b">
+                <th onClick={() => toggleSort('name')} className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground cursor-pointer hover:text-foreground select-none">Name{sortIcon('name')}</th>
+                <th onClick={() => toggleSort('uploader')} className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground cursor-pointer hover:text-foreground select-none">Uploaded By{sortIcon('uploader')}</th>
+                <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">Shared With</th>
+                <th onClick={() => toggleSort('date')} className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground cursor-pointer hover:text-foreground select-none">Date{sortIcon('date')}</th>
+                <th className="px-4 py-2.5 w-20"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr><td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">No files found</td></tr>
+              ) : filtered.map((file) => (
+                <tr key={file.id} className="border-t hover:bg-muted/30 transition-colors group">
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center flex-shrink-0">
+                        <FileText className="w-4 h-4 text-muted-foreground" />
                       </div>
-                    </td>
-                    <td className="px-4 py-3">{file.uploadedBy}</td>
-                    <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {file.sharedWith?.length > 0 ? file.sharedWith.join(', ') : 'All'}
-                    </td>
-                    <td className="px-4 py-3 text-sm">
-                      {new Date(file.uploadedAt).toLocaleDateString()}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleDownload(file.id)}
-                        aria-label={`Download ${file.name}`}
-                      >
-                        <Download className="w-4 h-4" />
-                      </Button>
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-[13px]">{file.name}</p>
+                        <p className="text-[11px] text-muted-foreground">{getTypeLabel(file.name)}{file.size ? ` · ${(file.size / 1024 / 1024).toFixed(1)} MB` : ''}</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2.5 text-muted-foreground">{file.uploadedBy}</td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex flex-wrap gap-1">
+                      {file.sharedWith?.length > 0 ? file.sharedWith.map((org: string) => (
+                        <span key={org} className="text-[10px] px-2 py-0.5 rounded-full bg-muted">{org}</span>
+                      )) : <span className="text-[11px] text-muted-foreground">All</span>}
+                    </div>
+                  </td>
+                  <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">{new Date(file.uploadedAt).toLocaleDateString()}</td>
+                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                      <button onClick={() => handleDownload(file.id)} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"><Download className="w-4 h-4" /></button>
                       {(file.userId === userId || isDeveloper) && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDelete(file.id)}
-                          aria-label={`Delete ${file.name}`}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
+                        <button onClick={() => handleDelete(file.id)} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-destructive"><Trash2 className="w-4 h-4" /></button>
                       )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Upload Modal */}
+      {showUploadModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => !isUploading && setShowUploadModal(false)}>
+          <div className="bg-background rounded-xl p-5 w-full max-w-md mx-4 border" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold">Upload File</h2>
+              <button onClick={() => !isUploading && setShowUploadModal(false)} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+            </div>
+
+            <p className="text-xs font-medium mb-2">Share with</p>
+            <div className="border rounded-lg p-3 mb-4 space-y-1">
+              {rootOrgs.map(root => {
+                const children = getChildren(root._id);
+                const isSelected = selectedOrgs.includes(root._id);
+                return (
+                  <div key={root._id}>
+                    <button onClick={() => toggleOrg(root._id)} className={`flex items-center gap-2 w-full text-left px-2 py-1.5 rounded-md text-xs transition-colors ${isSelected ? 'bg-foreground text-background' : 'hover:bg-muted'}`}>
+                      <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0 ${isSelected ? 'bg-foreground border-foreground' : 'border-muted-foreground/40'}`}>
+                        {isSelected && <span className="text-background text-[10px]">✓</span>}
+                      </span>
+                      <span className="font-medium">{root.name}</span>
+                      <span className="text-[10px] opacity-60">{root.type}</span>
+                    </button>
+                    {children.length > 0 && (
+                      <div className="ml-5 mt-0.5 space-y-0.5">
+                        {children.map(child => {
+                          const childSelected = selectedOrgs.includes(child._id);
+                          const subChildren = getChildren(child._id);
+                          return (
+                            <div key={child._id}>
+                              <button onClick={() => toggleOrg(child._id)} className={`flex items-center gap-2 w-full text-left px-2 py-1 rounded-md text-xs transition-colors ${childSelected ? 'bg-foreground/10' : 'hover:bg-muted'}`}>
+                                <span className={`w-3 h-3 rounded border flex items-center justify-center flex-shrink-0 ${childSelected ? 'bg-foreground border-foreground' : 'border-muted-foreground/40'}`}>
+                                  {childSelected && <span className="text-background text-[9px]">✓</span>}
+                                </span>
+                                {child.name}
+                                <span className="text-[10px] opacity-60">{child.type}</span>
+                              </button>
+                              {subChildren.length > 0 && (
+                                <div className="ml-5 mt-0.5 space-y-0.5">
+                                  {subChildren.map(sub => {
+                                    const subSel = selectedOrgs.includes(sub._id);
+                                    return (
+                                      <button key={sub._id} onClick={() => toggleOrg(sub._id)} className={`flex items-center gap-2 w-full text-left px-2 py-1 rounded-md text-xs transition-colors ${subSel ? 'bg-foreground/10' : 'hover:bg-muted'}`}>
+                                        <span className={`w-3 h-3 rounded border flex items-center justify-center flex-shrink-0 ${subSel ? 'bg-foreground border-foreground' : 'border-muted-foreground/40'}`}>
+                                          {subSel && <span className="text-background text-[9px]">✓</span>}
+                                        </span>
+                                        {sub.name}
+                                        <span className="text-[10px] opacity-60">{sub.type}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {storageInfo && storageInfo.limit > 0 && (
+              <div className="mb-4">
+                <div className="flex justify-between text-[11px] text-muted-foreground mb-1">
+                  <span>Storage</span>
+                  <span>{(storageInfo.used / 1024 / 1024).toFixed(1)} MB / {storageInfo.limit} GB</span>
+                </div>
+                <div className="w-full bg-muted rounded-full h-1.5">
+                  <div className="bg-foreground/50 h-1.5 rounded-full" style={{ width: `${Math.min((storageInfo.used / (storageInfo.limit * 1024 * 1024 * 1024)) * 100, 100)}%` }} />
+                </div>
+              </div>
+            )}
+
+            <input type="file" id="file-upload-modal" className="hidden" onChange={handleFileSelect} disabled={isUploading} accept=".pdf,.txt,.csv,.json,.docx,.html,.md,.xlsx,.xls" />
+            <div className="relative group">
+              <Button disabled={isUploading || selectedOrgs.length === 0} onClick={() => document.getElementById('file-upload-modal')?.click()} className="w-full text-xs h-9 rounded-lg">
+                {isUploading ? "Uploading..." : "Choose File & Upload"}
+              </Button>
+              {selectedOrgs.length === 0 && !isUploading && (
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-foreground text-background text-[11px] rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
+                  Please choose share with first
+                  <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-foreground" />
+                </div>
+              )}
+            </div>
+            <p className="text-[10px] text-muted-foreground/60 text-center mt-2">Supported: PDF, TXT, CSV, JSON, DOCX, HTML, MD, XLSX, XLS</p>
           </div>
-        </CardContent>
-      </Card>
-    </div>
+        </div>
+      )}
     </div>
   );
 };

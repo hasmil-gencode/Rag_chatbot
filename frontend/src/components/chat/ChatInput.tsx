@@ -632,15 +632,13 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
   };
 
   return (
-    <div className="bg-background p-4">
+    <div className="bg-background px-4 py-4">
       <div className="max-w-3xl mx-auto">
         <FileSelector selectedFileId={selectedFileId} onFileSelect={setSelectedFileId} />
         <div
           className={cn(
-            "flex items-center gap-2 bg-background rounded-2xl px-3 py-2 transition-all duration-200 border",
-            isFocused
-              ? "border-primary shadow-sm"
-              : "border-border"
+            "flex items-center gap-2 bg-muted/40 rounded-xl px-4 py-2.5 transition-all duration-200",
+            isFocused && "bg-muted/60 shadow-sm"
           )}
         >
         {!isContinuousMode && (
@@ -677,13 +675,18 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
         ) : (
           <textarea
             value={message}
-            onChange={(e) => setMessage(e.target.value)}
+            onChange={(e) => {
+              setMessage(e.target.value);
+              e.target.style.height = 'auto';
+              e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px';
+            }}
             onKeyDown={handleKeyDown}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
-            placeholder="Message Genie..."
+            placeholder="Message Genia..."
             rows={1}
-            className="flex-1 bg-transparent border-none outline-none resize-none text-foreground placeholder:text-muted-foreground text-sm py-2 max-h-32"
+            className="flex-1 bg-transparent border-none outline-none resize-none text-foreground placeholder:text-muted-foreground text-sm py-2 overflow-hidden"
+            style={{ maxHeight: '200px' }}
           />
         )}
 
@@ -718,6 +721,7 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
           <Send className="w-4 h-4" />
         </Button>
       </div>
+        <p className="text-[11px] text-muted-foreground/50 text-center mt-2">Genia can make mistakes. Check important info.</p>
       </div>
     </div>
   );

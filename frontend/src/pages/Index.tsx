@@ -43,6 +43,7 @@ const Index = () => {
   const currentSessionIdRef = useRef<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [userEmail, setUserEmail] = useState<string>("");
+  const [userFullName, setUserFullName] = useState<string>("");
   const [userRole, setUserRole] = useState<string>("");
   const [canUploadFiles, setCanUploadFiles] = useState<boolean>(true);
   const [userOrganizations, setUserOrganizations] = useState<any[]>([]);
@@ -155,6 +156,7 @@ const Index = () => {
       localStorage.setItem("userEmail", data.user?.email || email);
       localStorage.setItem("userRole", data.user?.role || "user");
       setUserEmail(data.user?.email || email);
+      setUserFullName(data.user?.fullName || "");
       setUserRole(data.user?.role || "user");
       setIsAuthenticated(true);
       unauthorizedHandledRef.current = false;
@@ -398,12 +400,9 @@ const Index = () => {
             <div className="absolute inset-0 bg-black/50" />
           </div>
           
-          {/* Logo & Company Name */}
-          <div className="relative z-10 flex items-center gap-3">
-            <div className="w-10 h-10 flex items-center justify-center overflow-hidden">
-              <img src="/logos/g14.png" alt="Logo" className="w-full h-full object-contain" />
-            </div>
-            <span className="text-white text-2xl font-bold">Genie</span>
+          {/* Logo */}
+          <div className="relative z-10 flex items-center">
+            <img src="/logos/g14_white_long_2.svg" alt="Logo" className="h-8 object-contain" />
           </div>
 
           {/* Marketing Content */}
@@ -413,9 +412,9 @@ const Index = () => {
             </p>
             <h1 className="text-4xl lg:text-5xl font-bold text-white mb-6 leading-tight">
               Streamline your<br />
-              <span className="text-primary">knowledge workflows.</span>
+              <span className="text-white">knowledge workflows.</span>
             </h1>
-            <p className="text-slate-300 text-lg mb-6 leading-relaxed">
+            <p className="text-white text-lg mb-6 leading-relaxed">
               Intelligent AI-powered conversations for your business. Streamline workflows, 
               enhance productivity, and unlock insights with advanced RAG technology.
             </p>
@@ -791,6 +790,7 @@ const Index = () => {
                 onSendMessage={handleSendMessage}
                 isLoading={isLoading}
                 userEmail={userEmail}
+                userFullName={userFullName}
                 hasActiveSession={!!currentSessionId}
                 onWebViewOpen={setWebViewUrl}
               />

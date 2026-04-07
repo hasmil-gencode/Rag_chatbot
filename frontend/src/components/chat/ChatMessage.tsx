@@ -1,4 +1,4 @@
-import { Bot, Volume2, Square, Loader2 } from "lucide-react";
+import { Volume2, Square, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useState, useEffect } from "react";
@@ -18,9 +18,8 @@ interface ChatMessageProps {
   onWebViewOpen?: (url: string) => void;
 }
 
-export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, startedBy, timestamp, onWebViewOpen }: ChatMessageProps) => {
+export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, onWebViewOpen }: ChatMessageProps) => {
   const isUser = role === "user";
-  const userInitial = userName ? userName.charAt(0).toUpperCase() : "U";
   const userRole = localStorage.getItem('userRole') || 'user';
   const showStartedBy = (userRole.toLowerCase() === 'developer' || userRole === 'admin' || userRole === 'manager') && startedBy;
   
@@ -197,75 +196,56 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, st
   };
 
   return (
-    <div className={cn("flex gap-3 mb-4 message-enter", isUser ? "justify-end" : "justify-start")}>
-      {!isUser && (
-        <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-          <Bot className="w-5 h-5 text-primary" />
-        </div>
-      )}
-      
-      <div className="flex flex-col gap-1 max-w-[70%]">
+    <div className={cn("mb-6 message-enter w-full", isUser && "flex justify-end")}>
+      <div className={cn("flex flex-col gap-1.5", isUser ? "items-end max-w-[70%]" : "items-start max-w-[85%]")}>
         {showStartedBy && (
-          <span className="text-xs text-muted-foreground px-2">
+          <span className="text-[10px] text-muted-foreground/70 px-1">
             {startedBy}
           </span>
         )}
         
-        <div className={cn("rounded-2xl px-4 py-2.5", isUser ? "bg-primary text-primary-foreground" : "bg-muted text-foreground")}>
-          {isTyping ? (
-            <div className="flex items-center gap-1 py-1">
-              <div className="w-2 h-2 rounded-full bg-current opacity-60 typing-dot" />
-              <div className="w-2 h-2 rounded-full bg-current opacity-60 typing-dot" />
-              <div className="w-2 h-2 rounded-full bg-current opacity-60 typing-dot" />
-            </div>
-          ) : (
-            <div className="text-sm leading-relaxed prose prose-sm max-w-none prose-invert">
-              <ReactMarkdown 
-                remarkPlugins={[remarkGfm]}
-                components={{ a: LinkRenderer }}
-              >
-                {content}
-              </ReactMarkdown>
-              {isStreaming && <span className="inline-block w-2 h-4 bg-current ml-1 animate-pulse">▊</span>}
-            </div>
-          )}
-        </div>
-        
-        {/* Timestamp */}
-        {timestamp && !isTyping && (
-          <span className={cn("text-xs text-muted-foreground px-2", isUser ? "text-right" : "text-left")}>
-            {new Date(timestamp).toLocaleTimeString('en-US', { 
-              hour: '2-digit', 
-              minute: '2-digit',
-              hour12: true 
-            })}
-          </span>
+        {isUser ? (
+          <div className="bg-zinc-700 text-white rounded-2xl px-4 py-2.5 inline-block">
+            <p className="text-[14px] whitespace-pre-wrap">{content}</p>
+          </div>
+        ) : (
+          <div>
+            {isTyping ? (
+              <div className="flex items-center gap-1.5 py-2">
+                <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground opacity-40 typing-dot" />
+                <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground opacity-40 typing-dot" />
+                <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground opacity-40 typing-dot" />
+              </div>
+            ) : (
+              <div className="text-[14px] leading-relaxed text-foreground prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-headings:my-3 prose-strong:text-foreground prose-code:text-foreground prose-code:bg-muted/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded">
+                <ReactMarkdown 
+                  remarkPlugins={[remarkGfm]}
+                  components={{ a: LinkRenderer }}
+                >
+                  {content}
+                </ReactMarkdown>
+                {isStreaming && <span className="inline-block w-1.5 h-4 bg-current ml-0.5 animate-pulse">▊</span>}
+              </div>
+            )}
+          </div>
         )}
         
+        {/* Actions row - only for bot */}
         {!isUser && !isTyping && (
-          <div className="flex items-center gap-2 justify-end">
+          <div className="flex items-center gap-3 mt-1">
             <button
               onClick={handleSpeak}
               disabled={isLoading}
               data-tts-play
-              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+              className="text-muted-foreground/50 hover:text-foreground transition-colors disabled:opacity-50"
               title={isLoading ? "Loading..." : isPlaying ? "Stop" : "Play audio"}
             >
               {isLoading ? (
-                <>
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  <span>Loading...</span>
-                </>
+                <Loader2 className="w-4 h-4 animate-spin" />
               ) : isPlaying ? (
-                <>
-                  <Square className="w-3 h-3" />
-                  <span>Stop</span>
-                </>
+                <Square className="w-4 h-4" />
               ) : (
-                <>
-                  <Volume2 className="w-3 h-3" />
-                  <span>Play</span>
-                </>
+                <Volume2 className="w-4 h-4" />
               )}
             </button>
             
@@ -275,12 +255,6 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, userName, st
           </div>
         )}
       </div>
-
-      {isUser && (
-        <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center flex-shrink-0">
-          <span className="text-primary-foreground font-semibold text-sm">{userInitial}</span>
-        </div>
-      )}
     </div>
   );
 };
