@@ -1,4 +1,4 @@
-import { Plus, FolderOpen, LogOut, Trash2, Users, Building2, FileCode, Settings, Key, Layers, FileText, Download, UserCog, Bot, Search, X } from "lucide-react";
+import { Plus, FolderOpen, LogOut, Trash2, Users, Building2, FileCode, Settings, Key, Layers, FileText, Download, UserCog, Bot, Search, X, HardDrive } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
@@ -18,8 +18,8 @@ interface ChatSidebarProps {
   onNewChat: () => void;
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
-  currentPage: "chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded" | "user-settings" | "robot-settings";
-  onNavigate: (page: "chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded" | "user-settings" | "robot-settings") => void;
+  currentPage: "chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded" | "user-settings" | "robot-settings" | "ollama-models";
+  onNavigate: (page: "chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded" | "user-settings" | "robot-settings" | "ollama-models") => void;
   onLogout: () => void;
   userEmail: string;
   userRole: string;
@@ -72,6 +72,7 @@ export const ChatSidebar = ({
     ...(isDeveloper ? [{ id: "settings" as const, label: "Settings", icon: Settings }] : []),
     ...(isDeveloper ? [{ id: "api" as const, label: "API", icon: Key }] : []),
     ...(isDeveloper ? [{ id: "robot-settings" as const, label: "Robot Settings", icon: Bot }] : []),
+    ...(isDeveloper ? [{ id: "ollama-models" as const, label: "Ollama Models", icon: HardDrive }] : []),
     ...(isDeveloper ? [{ id: "groups" as const, label: "Groups", icon: Layers }] : []),
     ...(isDeveloper || isAdmin ? [{ id: "users" as const, label: "Users", icon: Users }] : []),
     ...(isDeveloper || isAdmin ? [{ id: "organizations" as const, label: "Organizations", icon: Building2 }] : []),

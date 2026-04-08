@@ -6,6 +6,7 @@ import { FilesPage } from "@/components/chat/FilesPage";
 import { SettingsPage } from "@/components/chat/SettingsPage";
 import { ApiManagementPage } from "@/components/chat/ApiManagementPage";
 import { RobotSettingsPage } from "@/components/chat/RobotSettingsPage";
+import { OllamaModelsPage } from "@/components/chat/OllamaModelsPage";
 import { GroupsPage } from "@/components/chat/GroupsPage";
 import { FormsPage } from "@/components/chat/FormsPage";
 import { DownloadTrackingPage } from "@/components/chat/DownloadTrackingPage";
@@ -23,6 +24,9 @@ interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
+  startedBy?: string;
+  sources?: { file_name: string; page_number: number }[];
+  responseTimeMs?: number;
 }
 
 interface ChatSession {
@@ -37,7 +41,7 @@ interface ChatSession {
 const Index = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded" | "user-settings" | "robot-settings">("chat");
+  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded" | "user-settings" | "robot-settings" | "ollama-models">("chat");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
@@ -352,6 +356,8 @@ const Index = () => {
         id: (Date.now() + 1).toString(),
         role: "assistant",
         content: response.response,
+        sources: response.sources || [],
+        responseTimeMs: response.responseTimeMs,
       };
 
       setMessages(prev => [...prev, botMessage]);
@@ -799,6 +805,7 @@ const Index = () => {
             {currentPage === "settings" && <SettingsPage />}
             {currentPage === "api" && <ApiManagementPage />}
             {currentPage === "robot-settings" && <RobotSettingsPage />}
+            {currentPage === "ollama-models" && <OllamaModelsPage />}
             {currentPage === "groups" && <GroupsPage />}
             {currentPage === "forms" && <FormsPage />}
             {currentPage === "download-tracking" && <DownloadTrackingPage />}

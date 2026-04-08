@@ -16,6 +16,8 @@ export function UserSettingsPage() {
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [fullName, setFullName] = useState('');
   const [isEditing, setIsEditing] = useState(false);
+  const [showSources, setShowSources] = useState(true);
+  const [verboseMode, setVerboseMode] = useState(false);
 
   useEffect(() => { loadSettings(); }, []);
 
@@ -39,6 +41,9 @@ export function UserSettingsPage() {
         chatUsage
       });
       setFullName(userInfo.fullName || userInfo.email.split('@')[0]);
+      const prefs = await api.getUserPreferences();
+      setShowSources(prefs.showSources !== false);
+      setVerboseMode(prefs.verboseMode || false);
     } catch (error) { console.error('Failed to load settings:', error); }
   };
 
@@ -179,6 +184,35 @@ export function UserSettingsPage() {
             </div>
           </div>
         )}
+
+        {/* Chat Preferences */}
+        <div className="border rounded-lg overflow-hidden mb-5">
+          <div className="px-4 py-2.5 border-b">
+            <p className="text-xs font-medium flex items-center gap-1.5"><MessageSquare className="w-3.5 h-3.5" /> Chat Preferences</p>
+          </div>
+          <div className="divide-y">
+            <div className="flex items-center justify-between px-4 py-2.5">
+              <div>
+                <p className="text-[11px] text-muted-foreground">Show Source Citations</p>
+                <p className="text-[10px] text-muted-foreground/60">Display document sources referenced in AI responses</p>
+              </div>
+              <button onClick={async () => { const v = !showSources; setShowSources(v); await api.updateUserPreferences({ showSources: v }); }}
+                className={`w-10 h-5 rounded-full transition-colors ${showSources ? 'bg-foreground' : 'bg-muted'}`}>
+                <div className={`w-4 h-4 rounded-full bg-background transition-transform mx-0.5 ${showSources ? 'translate-x-5' : 'translate-x-0'}`} />
+              </button>
+            </div>
+            <div className="flex items-center justify-between px-4 py-2.5">
+              <div>
+                <p className="text-[11px] text-muted-foreground">Verbose Mode</p>
+                <p className="text-[10px] text-muted-foreground/60">Show response time for each AI reply</p>
+              </div>
+              <button onClick={async () => { const v = !verboseMode; setVerboseMode(v); await api.updateUserPreferences({ verboseMode: v }); }}
+                className={`w-10 h-5 rounded-full transition-colors ${verboseMode ? 'bg-foreground' : 'bg-muted'}`}>
+                <div className={`w-4 h-4 rounded-full bg-background transition-transform mx-0.5 ${verboseMode ? 'translate-x-5' : 'translate-x-0'}`} />
+              </button>
+            </div>
+          </div>
+        </div>
 
         {/* Chat Usage Details */}
         {settings.chatUsage?.hasQuota && !settings.chatUsage.unlimited && (

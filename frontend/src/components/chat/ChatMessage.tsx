@@ -15,10 +15,12 @@ interface ChatMessageProps {
   userName?: string;
   startedBy?: string;
   timestamp?: Date | string;
+  sources?: { file_name: string; page_number: number }[];
+  responseTimeMs?: number;
   onWebViewOpen?: (url: string) => void;
 }
 
-export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, onWebViewOpen }: ChatMessageProps) => {
+export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, sources, responseTimeMs, onWebViewOpen }: ChatMessageProps) => {
   const isUser = role === "user";
   const userRole = localStorage.getItem('userRole') || 'user';
   const showStartedBy = (userRole.toLowerCase() === 'developer' || userRole === 'admin' || userRole === 'manager') && startedBy;
@@ -204,6 +206,13 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, o
           </span>
         )}
         
+        {/* Verbose: response time */}
+        {!isUser && !isTyping && responseTimeMs !== undefined && (
+          <span className="text-[10px] text-muted-foreground/50 mb-0.5">
+            ⚡ {responseTimeMs >= 1000 ? `${(responseTimeMs / 1000).toFixed(1)}s` : `${responseTimeMs}ms`}
+          </span>
+        )}
+
         {isUser ? (
           <div className="bg-zinc-700 text-white rounded-2xl px-4 py-2.5 inline-block">
             <p className="text-[14px] whitespace-pre-wrap">{content}</p>
@@ -252,6 +261,17 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, o
             {downloadableMatches.length > 0 && (
               <DownloadButton matches={downloadableMatches} />
             )}
+          </div>
+        )}
+
+        {/* Source citations */}
+        {!isUser && !isTyping && sources && sources.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {sources.map((s, i) => (
+              <span key={i} className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                📎 {s.file_name}{s.page_number > 0 ? ` — p.${s.page_number}` : ''}
+              </span>
+            ))}
           </div>
         )}
       </div>

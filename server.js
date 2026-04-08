@@ -12,6 +12,8 @@ import crypto from 'crypto';
 import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
 import { GoogleGenAI } from '@google/genai';
 import { GoogleAuth } from 'google-auth-library';
+import { processUploadedFile, deleteFileVectors } from './uploadPipeline.js';
+import { processBrowserChat } from './chatPipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -60,7 +62,40 @@ if (!settingsExists) {
     s3Bucket: '',
     s3Region: '',
     s3AccessKey: '',
-    s3SecretKey: ''
+    s3SecretKey: '',
+    // Upload file processing defaults
+    uploadProcessingMode: 'offline',
+    ocrProvider: 'zai',
+    ocrApiKey: '',
+    embeddingProvider: 'ollama',
+    embeddingApiKey: '',
+    embeddingModel: 'nomic-embed-text-v2-moe',
+    vectorDbProvider: 'qdrant',
+    pineconeApiKey: '',
+    pineconeIndexName: '',
+    pineconeEnvironment: '',
+    qdrantHost: 'qdrant',
+    qdrantPort: 6333,
+    offlineOcrUrl: 'http://glmocr-service:5002',
+    offlineOllamaUrl: 'http://ollama:11434',
+    offlineEmbeddingModel: 'nomic-embed-text-v2-moe',
+    offlineQdrantHost: 'qdrant',
+    offlineQdrantPort: 6333,
+    fileStoragePath: '/app/uploads',
+    chunkSize: 1000,
+    chunkOverlap: 200,
+    // Chat settings
+    chatSystemPrompt: 'You are a helpful AI assistant with access to a knowledge base from uploaded documents.\n\nAlways respond in the SAME language as the user\'s question.\nUse proper markdown formatting.\nIf you reference information from the provided context, mention the source.',
+    chatLlmProvider: 'gemini',
+    chatLlmApiKey: '',
+    chatLlmModel: 'gemini-2.0-flash',
+    chatLlmOllamaUrl: 'http://ollama:11434',
+    chatEmbeddingProvider: 'ollama',
+    chatEmbeddingApiKey: '',
+    chatEmbeddingModel: 'nomic-embed-text-v2-moe',
+    chatEmbeddingOllamaUrl: 'http://ollama:11434',
+    chatMaxChunks: 5,
+    chatShowSourcesDefault: true
   });
   console.log('Default settings initialized');
 }
@@ -344,6 +379,110 @@ app.get('/api/user/me', auth, async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: 'Failed to get user info' });
   }
+});
+
+// User preferences
+app.get('/api/user/preferences', auth, async (req, res) => {
+  const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+  res.json({ showSources: user?.showSources !== undefined ? user.showSources : true, verboseMode: user?.verboseMode || false });
+});
+
+app.put('/api/user/preferences', auth, async (req, res) => {
+  const { showSources, verboseMode } = req.body;
+  const update = {};
+  if (showSources !== undefined) update.showSources = showSources;
+  if (verboseMode !== undefined) update.verboseMode = verboseMode;
+  await db.collection('users').updateOne({ _id: new ObjectId(req.user.id) }, { $set: update });
+  res.json({ success: true });
+});
+
+// Fetch available models from LLM providers
+app.get('/api/provider-models/:provider', auth, async (req, res) => {
+  const settings = await db.collection('settings').findOne({ _id: 'config' });
+  const provider = req.params.provider;
+  const apiKey = req.query.apiKey || settings?.chatLlmApiKey || '';
+  try {
+    if (provider === 'gemini') {
+      const r = await axios.get(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`, { timeout: 10000 });
+      const models = (r.data.models || []).filter(m => m.supportedGenerationMethods?.includes('generateContent')).map(m => ({ id: m.name.replace('models/', ''), name: m.displayName }));
+      return res.json(models);
+    }
+    if (provider === 'openai') {
+      const r = await axios.get('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 10000 });
+      const models = (r.data.data || []).filter(m => m.id.includes('gpt')).map(m => ({ id: m.id, name: m.id })).sort((a, b) => a.id.localeCompare(b.id));
+      return res.json(models);
+    }
+    if (provider === 'groq') {
+      const r = await axios.get('https://api.groq.com/openai/v1/models', { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 10000 });
+      const models = (r.data.data || []).map(m => ({ id: m.id, name: m.id })).sort((a, b) => a.id.localeCompare(b.id));
+      return res.json(models);
+    }
+    if (provider === 'zai') {
+      // Z.ai doesn't have a list endpoint, return known models
+      return res.json([{ id: 'glm-5', name: 'GLM-5' }, { id: 'glm-5-turbo', name: 'GLM-5 Turbo' }, { id: 'glm-5.1', name: 'GLM-5.1' }, { id: 'glm-4.7', name: 'GLM-4.7' }]);
+    }
+    res.json([]);
+  } catch (e) { res.json([]); }
+});
+
+// Ollama local models list
+app.get('/api/ollama-models', auth, async (req, res) => {
+  try {
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const url = settings?.chatLlmOllamaUrl || settings?.offlineOllamaUrl || 'http://ollama:11434';
+    const r = await axios.get(`${url}/api/tags`, { timeout: 5000 });
+    res.json(r.data.models || []);
+  } catch { res.json([]); }
+});
+
+// Ollama cloud models list
+app.get('/api/ollama-cloud-models', auth, async (req, res) => {
+  try {
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const apiKey = settings?.chatLlmApiKey || '';
+    const r = await axios.get('https://ollama.com/api/tags', {
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+      timeout: 10000,
+    });
+    res.json(r.data.models || []);
+  } catch { res.json([]); }
+});
+
+// Ollama pull model (streaming progress via SSE)
+app.post('/api/ollama-pull', auth, hasPermission(), async (req, res) => {
+  const { model } = req.body;
+  if (!model) return res.status(400).json({ error: 'Model name required' });
+  const settings = await db.collection('settings').findOne({ _id: 'config' });
+  const url = settings?.offlineOllamaUrl || 'http://ollama:11434';
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  try {
+    const response = await axios.post(`${url}/api/pull`, { name: model }, { responseType: 'stream', timeout: 600000 });
+    response.data.on('data', (chunk) => {
+      const lines = chunk.toString().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const data = JSON.parse(line);
+          res.write(`data: ${JSON.stringify(data)}\n\n`);
+        } catch {}
+      }
+    });
+    response.data.on('end', () => { res.write('data: {"status":"done"}\n\n'); res.end(); });
+    response.data.on('error', (e) => { res.write(`data: {"error":"${e.message}"}\n\n`); res.end(); });
+  } catch (e) { res.write(`data: {"error":"${e.message}"}\n\n`); res.end(); }
+});
+
+// Ollama delete model
+app.delete('/api/ollama-models/:name', auth, hasPermission(), async (req, res) => {
+  try {
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const url = settings?.offlineOllamaUrl || 'http://ollama:11434';
+    await axios.delete(`${url}/api/delete`, { data: { name: req.params.name } });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ===== PHASE 2: Multi-Org Hierarchy APIs =====
@@ -823,25 +962,19 @@ app.post('/api/chat', auth, async (req, res) => {
       createdAt: new Date()
     });
 
-    // Get webhook URL from settings
-    const webhooks = await getWebhookUrls();
+    // Built-in browser chat pipeline
+    const chatStartTime = Date.now();
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const result = await processBrowserChat(db, req.user.id, message, chatSessionId, settings, fileId || null);
+    const responseTimeMs = Date.now() - chatStartTime;
 
-    // Send to n8n with sessionId, fileId, currentOrganizationId, chatType, and chatName
-    const { data } = await axios.post(webhooks.chat, { 
-      message, 
-      userId: req.user.id,
-      currentOrganizationId: currentOrganizationId || null,
-      sessionId: chatSessionId,
-      fileId: fileId || null,
-      chatType: 'browser',
-      chatName: 'normal'
-    }, {
-      timeout: 60000 // 1 minute timeout
-    });
-
-    // Save bot response (handle both string and object format)
-    const botContent = typeof data.response === 'object' ? data.response.text : data.response;
+    const botContent = result.response || '';
     
+    // Check user preferences
+    const userPrefs = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const showSources = userPrefs?.showSources !== undefined ? userPrefs.showSources : (settings.chatShowSourcesDefault !== false);
+    const verboseMode = userPrefs?.verboseMode || false;
+
     await db.collection('messages').insertOne({
       userId: req.user.id,
       sessionId: chatSessionId,
@@ -849,7 +982,9 @@ app.post('/api/chat', auth, async (req, res) => {
       startedBy: startedByName,
       startedByEmail: startedByEmail,
       role: 'bot',
-      content: botContent || '',
+      content: botContent,
+      sources: showSources ? result.sources : [],
+      responseTimeMs: verboseMode ? responseTimeMs : undefined,
       chatType: 'browser',
       chatName: 'normal',
       createdAt: new Date()
@@ -869,12 +1004,11 @@ app.post('/api/chat', auth, async (req, res) => {
       );
     }
 
-    res.json({ response: botContent || '', sessionId: chatSessionId });
+    res.json({ response: botContent, sources: showSources ? result.sources : [], responseTimeMs: verboseMode ? responseTimeMs : undefined, sessionId: chatSessionId });
   } catch (error) {
     console.error('Chat error:', error);
     res.status(500).json({ 
-      error: 'Failed to get response. Please check n8n webhook configuration.',
-      details: error.message 
+      error: 'Failed to get response: ' + error.message,
     });
   }
 });
@@ -1049,7 +1183,10 @@ app.get('/api/messages', auth, async (req, res) => {
   res.json(messages.map(m => ({ 
     role: m.role, 
     content: m.content,
-    createdAt: m.createdAt 
+    createdAt: m.createdAt,
+    startedBy: m.startedBy,
+    sources: m.sources || [],
+    responseTimeMs: m.responseTimeMs
   })));
 });
 
@@ -1293,8 +1430,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         
         fileUrl = `https://${settings.s3Bucket}.s3.${settings.s3Region}.amazonaws.com/${s3Key}`;
         
-        // Delete local file after S3 upload
-        fs.unlinkSync(req.file.path);
+        // Note: local file kept until after pipeline processing
       } catch (s3Error) {
         console.error('S3 upload failed, using local storage:', s3Error.message);
         // Fallback to local storage if S3 fails
@@ -1323,38 +1459,53 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     
     const result = await db.collection('files').insertOne(file);
     
-    // Only send to n8n if type is 'document'
+    // Only process documents (not forms)
     if (fileType === 'document') {
-      // Send to n8n and WAIT for response (max 5 minutes)
-      const webhooks = await getWebhookUrls();
-      
       try {
-        const response = await axios.post(webhooks.upload, {
-          fileId: result.insertedId.toString(),
-          userId: req.user.id,
-          sharedWith: sharedWith,
-          fileName: req.file.originalname,
-          fileSize: req.file.size, // Send file size to n8n
-          fileUrl: fileUrl
-        }, {
-          timeout: 300000 // 5 minutes
-        });
-        
+        const pipelineResult = await processUploadedFile(
+          req.file.path,
+          req.file.originalname,
+          result.insertedId.toString(),
+          {
+            user_id: req.user.id,
+            uploaded_by: uploaderName,
+            uploaded_by_email: uploaderEmail,
+            shared_with: sharedWith,
+            uploaded_at: new Date().toISOString(),
+          },
+          settings
+        );
+
+        // Update file record with processing info
+        await db.collection('files').updateOne(
+          { _id: result.insertedId },
+          { $set: { vectorized: true, chunks: pipelineResult.chunks, pages: pipelineResult.pages } }
+        );
+
+        // Clean up local file if stored in S3
+        if (fileUrl.startsWith('https://') && fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
+
         res.json({ 
           success: true, 
           fileId: result.insertedId,
-          message: response.data.message || 'File uploaded and embedded successfully',
-          chunks: response.data.chunks || 0
+          message: pipelineResult.message,
+          chunks: pipelineResult.chunks
         });
-      } catch (webhookError) {
-        console.error('n8n webhook error:', webhookError.message);
+      } catch (pipelineError) {
+        console.error('Upload pipeline error:', pipelineError.message);
+        // Clean up local file on S3 error path too
+        if (fileUrl.startsWith('https://') && fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
         res.status(500).json({ 
           success: false, 
-          error: 'File uploaded but embedding failed. Please try again.' 
+          error: 'File uploaded but processing failed: ' + pipelineError.message
         });
       }
     } else {
-      // For forms, just return success without n8n processing
+      // For forms, just return success without processing
       res.json({ 
         success: true, 
         fileId: result.insertedId,
@@ -1901,14 +2052,19 @@ app.delete('/api/files/:id', auth, async (req, res) => {
     // Delete from MongoDB files collection
     await db.collection('files').deleteOne({ _id: new ObjectId(req.params.id) });
     
-    // Delete from embedding_files collection
-    console.log(`Deleting embeddings for fileId: ${req.params.id}`);
+    // Delete vectors from vector DB
+    try {
+      const settings = await db.collection('settings').findOne({ _id: 'config' });
+      await deleteFileVectors(req.params.id, settings);
+      console.log(`Deleted vectors for fileId: ${req.params.id}`);
+    } catch (vecErr) { console.error('Vector delete error:', vecErr.message); }
     
+    // Delete from legacy embedding_files collection
     const deleteResult = await db.collection('embedding_files').deleteMany({ 
       fileId: req.params.id
     });
     
-    console.log(`Deleted ${deleteResult.deletedCount} embeddings`);
+    console.log(`Deleted ${deleteResult.deletedCount} legacy embeddings`);
     
     res.json({ success: true });
   } catch (error) {
@@ -2321,7 +2477,46 @@ app.get('/api/settings', auth, hasPermission(), async (req, res) => {
     s3Bucket: settings.s3Bucket || '',
     s3Region: settings.s3Region || '',
     s3AccessKey: settings.s3AccessKey || '',
-    s3SecretKey: settings.s3SecretKey || ''
+    s3SecretKey: settings.s3SecretKey || '',
+    // Upload file processing settings
+    uploadProcessingMode: settings.uploadProcessingMode || 'offline',
+    // Online OCR
+    ocrProvider: settings.ocrProvider || 'zai',
+    ocrApiKey: settings.ocrApiKey || '',
+    // Online Embedding
+    embeddingProvider: settings.embeddingProvider || 'ollama',
+    embeddingApiKey: settings.embeddingApiKey || '',
+    embeddingModel: settings.embeddingModel || 'nomic-embed-text-v2-moe',
+    // Online Vector DB
+    vectorDbProvider: settings.vectorDbProvider || 'qdrant',
+    pineconeApiKey: settings.pineconeApiKey || '',
+    pineconeIndexName: settings.pineconeIndexName || '',
+    pineconeEnvironment: settings.pineconeEnvironment || '',
+    qdrantHost: settings.qdrantHost || 'qdrant',
+    qdrantPort: settings.qdrantPort || 6333,
+    // Offline settings
+    offlineOcrUrl: settings.offlineOcrUrl || 'http://glmocr-service:5002',
+    offlineOllamaUrl: settings.offlineOllamaUrl || 'http://ollama:11434',
+    offlineEmbeddingModel: settings.offlineEmbeddingModel || 'nomic-embed-text-v2-moe',
+    offlineQdrantHost: settings.offlineQdrantHost || 'qdrant',
+    offlineQdrantPort: settings.offlineQdrantPort || 6333,
+    // Common
+    fileStoragePath: settings.fileStoragePath || '/app/uploads',
+    chunkSize: settings.chunkSize || 1000,
+    chunkOverlap: settings.chunkOverlap || 200,
+    // Chat settings
+    chatSystemPrompt: settings.chatSystemPrompt || '',
+    chatLlmProvider: settings.chatLlmProvider || 'gemini',
+    chatLlmApiKey: settings.chatLlmApiKey || '',
+    chatLlmModel: settings.chatLlmModel || 'gemini-2.0-flash',
+    chatLlmOllamaUrl: settings.chatLlmOllamaUrl || 'http://ollama:11434',
+    chatEmbeddingProvider: settings.chatEmbeddingProvider || 'ollama',
+    chatEmbeddingApiKey: settings.chatEmbeddingApiKey || '',
+    chatEmbeddingModel: settings.chatEmbeddingModel || 'nomic-embed-text-v2-moe',
+    chatEmbeddingOllamaUrl: settings.chatEmbeddingOllamaUrl || 'http://ollama:11434',
+    chatMaxChunks: settings.chatMaxChunks || 5,
+    chatShowSourcesDefault: settings.chatShowSourcesDefault !== false,
+    chatApiFlows: settings.chatApiFlows || []
   });
 });
 

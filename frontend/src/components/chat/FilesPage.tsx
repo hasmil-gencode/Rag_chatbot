@@ -306,7 +306,7 @@ export const FilesPage = () => {
               </div>
             )}
 
-            <input type="file" id="file-upload-modal" className="hidden" onChange={handleFileSelect} disabled={isUploading} accept=".pdf,.txt,.csv,.json,.docx,.html,.md,.xlsx,.xls" />
+            <input type="file" id="file-upload-modal" className="hidden" onChange={handleFileSelect} disabled={isUploading} accept=".pdf,.txt,.csv,.json,.docx,.html,.md,.xlsx,.xls,.png,.jpg,.jpeg" />
             <div className="relative group">
               <Button disabled={isUploading || selectedOrgs.length === 0} onClick={() => document.getElementById('file-upload-modal')?.click()} className="w-full text-xs h-9 rounded-lg">
                 {isUploading ? "Uploading..." : "Choose File & Upload"}
@@ -318,7 +318,7 @@ export const FilesPage = () => {
                 </div>
               )}
             </div>
-            <p className="text-[10px] text-muted-foreground/60 text-center mt-2">Supported: PDF, TXT, CSV, JSON, DOCX, HTML, MD, XLSX, XLS</p>
+            <p className="text-[10px] text-muted-foreground/60 text-center mt-2">Supported: PDF, TXT, CSV, JSON, DOCX, HTML, MD, XLSX, XLS, PNG, JPG</p>
           </div>
         </div>
       )}

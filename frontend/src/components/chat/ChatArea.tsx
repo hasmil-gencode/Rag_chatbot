@@ -8,6 +8,8 @@ interface Message {
   content: string;
   startedBy?: string;
   createdAt?: Date | string;
+  sources?: { file_name: string; page_number: number }[];
+  responseTimeMs?: number;
 }
 
 interface ChatAreaProps {
@@ -111,6 +113,8 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, userFu
                   userName={getUserName()} 
                   startedBy={msg.startedBy}
                   timestamp={msg.createdAt}
+                  sources={msg.sources}
+                  responseTimeMs={msg.responseTimeMs}
                   onWebViewOpen={onWebViewOpen}
                 />
               ))}

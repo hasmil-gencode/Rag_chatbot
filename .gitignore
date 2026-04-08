@@ -34,6 +34,9 @@ mongo-data/
 # n8n data
 n8n-data/
 
+# Atlas migration dump
+atlas-dump/
+
 # Build output
 frontend/dist/
 frontend/.vite/

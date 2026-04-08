@@ -91,6 +91,7 @@ export interface Message {
   createdAt: string
   startedBy?: string
   startedByEmail?: string
+  sources?: { file_name: string; page_number: number }[]
 }
 
 interface Settings {
@@ -162,7 +163,7 @@ class API {
     return json
   }
 
-  async sendMessage(message: string, sessionId?: string, fileId?: string, currentOrganizationId?: string | null): Promise<{ response: string; sessionId: string }> {
+  async sendMessage(message: string, sessionId?: string, fileId?: string, currentOrganizationId?: string | null): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number }[]; responseTimeMs?: number }> {
     const res = await fetchWithAuth(`${API_BASE}/chat`, {
       method: 'POST',
       headers: this.getHeaders(),
@@ -721,6 +722,49 @@ class API {
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || json.message || 'Failed to delete robot setting')
     return json
+  }
+
+  // User preferences
+  async getUserPreferences() {
+    const res = await fetchWithAuth(`${API_BASE}/user/preferences`, { headers: this.getHeaders() })
+    if (!res.ok) throw new Error('Failed to get preferences')
+    return res.json()
+  }
+
+  async updateUserPreferences(prefs: { showSources?: boolean; verboseMode?: boolean }) {
+    const res = await fetchWithAuth(`${API_BASE}/user/preferences`, {
+      method: 'PUT', headers: this.getHeaders(), body: JSON.stringify(prefs),
+    })
+    if (!res.ok) throw new Error('Failed to update preferences')
+    return res.json()
+  }
+
+  // Ollama models
+  async getProviderModels(provider: string, apiKey?: string): Promise<{id: string; name: string}[]> {
+    const params = apiKey ? `?apiKey=${encodeURIComponent(apiKey)}` : ''
+    const res = await fetchWithAuth(`${API_BASE}/provider-models/${provider}${params}`, { headers: this.getHeaders() })
+    if (!res.ok) return []
+    return res.json()
+  }
+
+  async getOllamaModels(): Promise<any[]> {
+    const res = await fetchWithAuth(`${API_BASE}/ollama-models`, { headers: this.getHeaders() })
+    if (!res.ok) return []
+    return res.json()
+  }
+
+  async getOllamaCloudModels(): Promise<any[]> {
+    const res = await fetchWithAuth(`${API_BASE}/ollama-cloud-models`, { headers: this.getHeaders() })
+    if (!res.ok) return []
+    return res.json()
+  }
+
+  async deleteOllamaModel(name: string) {
+    const res = await fetchWithAuth(`${API_BASE}/ollama-models/${encodeURIComponent(name)}`, {
+      method: 'DELETE', headers: this.getHeaders(),
+    })
+    if (!res.ok) throw new Error('Failed to delete model')
+    return res.json()
   }
 }
 
