@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
+import { useConfirm } from "./ConfirmDialog";
 import { Upload, Trash2, FileText, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
@@ -10,6 +11,7 @@ export const FormsPage = () => {
   const [selectedOrgs, setSelectedOrgs] = useState<string[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
+  const confirm = useConfirm();
   const userRole = localStorage.getItem('userRole') || 'user';
   const userId = localStorage.getItem('userId') || '';
   const isDeveloper = userRole.toLowerCase() === 'developer';
@@ -34,7 +36,7 @@ export const FormsPage = () => {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Delete this form?")) return;
+    if (!await confirm("Delete this form?")) return;
     try { await api.deleteFile(id); await loadForms(); toast.success("Form deleted"); }
     catch (error: any) { toast.error(error.message); }
   };

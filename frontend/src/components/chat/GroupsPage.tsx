@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
+import { useConfirm } from './ConfirmDialog';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Trash2, Edit, Plus, RefreshCw, Gift, Calendar, X, Users } from 'lucide-react';
 
@@ -13,6 +15,7 @@ export function GroupsPage() {
   const [bonusAmount, setBonusAmount] = useState(5);
   const [newRenewDay, setNewRenewDay] = useState(1);
   const [formData, setFormData] = useState({ name: '', storageLimitGB: 5, chatQuota: 0, quotaType: 'individual', renewDay: 1, organizationIds: [] as string[] });
+  const confirm = useConfirm();
 
   useEffect(() => { loadGroups(); loadOrganizations(); }, []);
 
@@ -32,21 +35,21 @@ export function GroupsPage() {
     setShowModal(true);
   };
 
-  const handleDelete = async (id: string) => { if (confirm('Delete this group?')) { await api.deleteGroup(id); loadGroups(); } };
+  const handleDelete = async (id: string) => { if (await confirm('Delete this plan?')) { await api.deleteGroup(id); loadGroups(); } };
   const handleManageQuota = (group: any) => { setManagingGroup(group); setNewRenewDay(group.renewDay || 1); setShowQuotaModal(true); };
 
   const handleResetQuota = async () => {
-    if (confirm('Reset chat quota now?')) { try { await api.resetGroupQuota(managingGroup._id); alert('Quota reset!'); setShowQuotaModal(false); loadGroups(); } catch (e: any) { alert(e.message); } }
+    if (await confirm('Reset chat quota now?')) { try { await api.resetGroupQuota(managingGroup._id); toast.success('Quota reset!'); setShowQuotaModal(false); loadGroups(); } catch (e: any) { toast.error(e.message); } }
   };
 
   const handleAddBonus = async () => {
-    if (bonusAmount <= 0) { alert('Bonus must be > 0'); return; }
-    try { await api.addGroupBonus(managingGroup._id, bonusAmount); alert(`Added ${bonusAmount} bonus chats!`); setShowQuotaModal(false); loadGroups(); } catch (e: any) { alert(e.message); }
+    if (bonusAmount <= 0) { toast.error('Bonus must be > 0'); return; }
+    try { await api.addGroupBonus(managingGroup._id, bonusAmount); toast.success(`Added ${bonusAmount} bonus chats!`); setShowQuotaModal(false); loadGroups(); } catch (e: any) { toast.error(e.message); }
   };
 
   const handleUpdateRenewDay = async () => {
-    if (newRenewDay < 1 || newRenewDay > 31) { alert('Day must be 1-31'); return; }
-    try { await api.updateGroupRenewDay(managingGroup._id, newRenewDay); alert(`Renew day updated!`); setShowQuotaModal(false); loadGroups(); } catch (e: any) { alert(e.message); }
+    if (newRenewDay < 1 || newRenewDay > 31) { toast.error('Day must be 1-31'); return; }
+    try { await api.updateGroupRenewDay(managingGroup._id, newRenewDay); toast.success('Renew day updated!'); setShowQuotaModal(false); loadGroups(); } catch (e: any) { toast.error(e.message); }
   };
 
   const formatSize = (bytes: number) => (bytes / 1024 / 1024 / 1024).toFixed(2);
@@ -58,19 +61,19 @@ export function GroupsPage() {
         {/* Header */}
         <div className="flex items-start justify-between mb-5">
           <div>
-            <p className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">Access Control</p>
-            <h1 className="text-xl font-semibold">Groups</h1>
+            <p className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">Subscription</p>
+            <h1 className="text-xl font-semibold">Plans</h1>
             <p className="text-xs text-muted-foreground mt-0.5">Manage storage limits and chat quotas.</p>
           </div>
           <Button size="sm" onClick={() => { setShowModal(true); setEditingGroup(null); setFormData({ name: '', storageLimitGB: 5, chatQuota: 0, quotaType: 'individual', renewDay: 1, organizationIds: [] }); }} className="text-xs h-8 rounded-lg">
-            <Plus className="w-3.5 h-3.5 mr-1.5" /> Create Group
+            <Plus className="w-3.5 h-3.5 mr-1.5" /> Create Plan
           </Button>
         </div>
 
         {/* Stats */}
         <div className="grid grid-cols-3 gap-3 mb-5">
           <div className="border rounded-lg px-4 py-3">
-            <p className="text-[11px] text-muted-foreground">Total Groups</p>
+            <p className="text-[11px] text-muted-foreground">Total Plans</p>
             <p className="text-2xl font-semibold mt-0.5">{groups.length}</p>
           </div>
           <div className="border rounded-lg px-4 py-3">
@@ -86,7 +89,7 @@ export function GroupsPage() {
         {/* Groups Table */}
         <div className="border rounded-lg overflow-hidden">
           <div className="px-4 py-2.5 border-b">
-            <p className="text-xs font-medium flex items-center gap-1.5"><Users className="w-3.5 h-3.5" /> All Groups</p>
+            <p className="text-xs font-medium flex items-center gap-1.5"><Users className="w-3.5 h-3.5" /> All Plans</p>
           </div>
           <table className="w-full text-[13px]">
             <thead>
@@ -100,7 +103,7 @@ export function GroupsPage() {
             </thead>
             <tbody>
               {groups.length === 0 ? (
-                <tr><td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">No groups yet</td></tr>
+                <tr><td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">No plans yet</td></tr>
               ) : groups.map((group) => (
                 <tr key={group._id} className="border-t hover:bg-muted/30 transition-colors">
                   <td className="px-4 py-2.5 font-medium">{group.name}</td>
@@ -136,12 +139,12 @@ export function GroupsPage() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowModal(false)}>
           <div className="bg-background rounded-xl p-5 w-full max-w-md mx-4 border max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold">{editingGroup ? 'Edit Group' : 'Create Group'}</h2>
+              <h2 className="text-sm font-semibold">{editingGroup ? 'Edit Plan' : 'Create Plan'}</h2>
               <button onClick={() => setShowModal(false)} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
             </div>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="text-[11px] text-muted-foreground">Group Name</label>
+                <label className="text-[11px] text-muted-foreground">Plan Name</label>
                 <input value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} required placeholder="e.g., Basic Plan"
                   className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
               </div>
@@ -161,7 +164,7 @@ export function GroupsPage() {
                   {['individual', 'total'].map(type => (
                     <label key={type} className="flex items-center gap-2 text-xs cursor-pointer">
                       <input type="radio" name="quotaType" value={type} checked={formData.quotaType === type} onChange={(e) => setFormData({ ...formData, quotaType: e.target.value })} className="w-3.5 h-3.5" />
-                      {type === 'individual' ? 'Individual (per user)' : 'Total (entire group)'}
+                      {type === 'individual' ? 'Individual (per user)' : 'Total (entire plan)'}
                     </label>
                   ))}
                 </div>

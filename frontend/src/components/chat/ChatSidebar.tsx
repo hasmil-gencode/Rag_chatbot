@@ -1,4 +1,4 @@
-import { Plus, FolderOpen, LogOut, Trash2, Users, Building2, FileCode, Settings, Key, Layers, FileText, Download, UserCog, Bot, Search, X, HardDrive } from "lucide-react";
+import { Plus, FolderOpen, LogOut, Trash2, Users, Building2, FileCode, Settings, Key, FileText, Download, UserCog, UserPlus, CreditCard, Search, X, ChevronDown, Code } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
@@ -18,8 +18,8 @@ interface ChatSidebarProps {
   onNewChat: () => void;
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
-  currentPage: "chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded" | "user-settings" | "robot-settings" | "ollama-models";
-  onNavigate: (page: "chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded" | "user-settings" | "robot-settings" | "ollama-models") => void;
+  currentPage: "chat" | "files" | "settings" | "api" | "plans" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded" | "user-settings" | "new-client" | "provider-keys" | "audit-trail" | "embed-widgets";
+  onNavigate: (page: "chat" | "files" | "settings" | "api" | "plans" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded" | "user-settings" | "new-client" | "provider-keys" | "audit-trail" | "embed-widgets") => void;
   onLogout: () => void;
   userEmail: string;
   userRole: string;
@@ -46,6 +46,7 @@ export const ChatSidebar = ({
 }: ChatSidebarProps) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     return (localStorage.getItem('theme') as 'light' | 'dark') || 'dark';
   });
@@ -63,22 +64,47 @@ export const ChatSidebar = ({
   const isDeveloper = userRole.toLowerCase() === 'developer';
   const isAdmin = userRole.toLowerCase() === 'admin';
   
-  // Role-based navigation access - Chat removed, replaced by New Chat action
+  // Role-based navigation access
   const navItems = [
     ...(canUploadFiles || isDeveloper || isAdmin ? [{ id: "files" as const, label: "Files", icon: FolderOpen }] : []),
     { id: "user-settings" as const, label: "My Account", icon: UserCog },
-    ...(isDeveloper ? [{ id: "forms" as const, label: "Forms", icon: FileText }] : []),
-    ...(isDeveloper ? [{ id: "download-tracking" as const, label: "Download Tracking", icon: Download }] : []),
-    ...(isDeveloper ? [{ id: "settings" as const, label: "Settings", icon: Settings }] : []),
-    ...(isDeveloper ? [{ id: "api" as const, label: "API", icon: Key }] : []),
-    ...(isDeveloper ? [{ id: "robot-settings" as const, label: "Robot Settings", icon: Bot }] : []),
-    ...(isDeveloper ? [{ id: "ollama-models" as const, label: "Ollama Models", icon: HardDrive }] : []),
-    ...(isDeveloper ? [{ id: "groups" as const, label: "Groups", icon: Layers }] : []),
-    ...(isDeveloper || isAdmin ? [{ id: "users" as const, label: "Users", icon: Users }] : []),
-    ...(isDeveloper || isAdmin ? [{ id: "organizations" as const, label: "Organizations", icon: Building2 }] : []),
-    ...(isDeveloper ? [{ id: "text-embedded" as const, label: "Text Embedded", icon: FileCode }] : []),
-    ...(isDeveloper ? [{ id: "deleted-chats" as const, label: "Deleted Chats", icon: Trash2 }] : []),
   ];
+
+  const navGroups = [
+    ...(isDeveloper ? [{
+      label: "Developer",
+      icon: Key,
+      items: [
+        { id: "new-client" as const, label: "Create New Client", icon: UserPlus },
+        { id: "provider-keys" as const, label: "Provider Keys", icon: Key },
+        { id: "forms" as const, label: "Forms", icon: FileText },
+        { id: "settings" as const, label: "Settings", icon: Settings },
+        { id: "api" as const, label: "API", icon: Key },
+        { id: "embed-widgets" as const, label: "Embed Widgets", icon: Code },
+      ],
+    }] : []),
+    ...(isDeveloper || isAdmin ? [{
+      label: "Management",
+      icon: Building2,
+      items: [
+        ...(isDeveloper ? [{ id: "plans" as const, label: "Plans", icon: CreditCard }] : []),
+        ...(isDeveloper || isAdmin ? [{ id: "users" as const, label: "Users", icon: Users }] : []),
+        ...(isDeveloper || isAdmin ? [{ id: "organizations" as const, label: "Organizations", icon: Building2 }] : []),
+        ...(isDeveloper || isAdmin ? [{ id: "audit-trail" as const, label: "Audit Trail", icon: FileText }] : []),
+      ],
+    }] : []),
+    ...(isDeveloper ? [{
+      label: "System",
+      icon: Settings,
+      items: [
+        { id: "download-tracking" as const, label: "Download Tracking", icon: Download },
+        { id: "text-embedded" as const, label: "Text Embedded", icon: FileCode },
+        { id: "deleted-chats" as const, label: "Deleted Chats", icon: Trash2 },
+      ],
+    }] : []),
+  ];
+
+  const toggleGroup = (label: string) => setExpandedGroups(prev => ({ ...prev, [label]: !prev[label] }));
 
   // Extract name from email and get first letter for avatar
   const userName = userEmail.split('@')[0];
@@ -187,13 +213,64 @@ export const ChatSidebar = ({
           >
             <item.icon className="w-4 h-4 flex-shrink-0" />
             {!isCollapsed && <span className="text-sm font-normal">{item.label}</span>}
-            {/* Tooltip on hover for collapsed state */}
             {isCollapsed && (
               <div className="absolute left-full ml-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 invisible group-hover/nav:opacity-100 group-hover/nav:visible transition-all whitespace-nowrap z-50 pointer-events-none">
                 {item.label}
               </div>
             )}
           </Button>
+        ))}
+
+        {/* Collapsible groups */}
+        {navGroups.map((group) => (
+          <div key={group.label}>
+            <Button
+              variant="ghost"
+              onClick={() => toggleGroup(group.label)}
+              className={cn(
+                "w-full h-10 transition-all duration-200 rounded-md relative group/nav",
+                isCollapsed ? "justify-center px-0" : "justify-start gap-2 px-2",
+                group.items.some(i => currentPage === i.id)
+                  ? "text-sidebar-foreground"
+                  : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+              )}
+            >
+              <group.icon className="w-4 h-4 flex-shrink-0" />
+              {!isCollapsed && (
+                <>
+                  <span className="text-sm font-normal flex-1 text-left">{group.label}</span>
+                  <ChevronDown className={cn("w-3 h-3 transition-transform", expandedGroups[group.label] && "rotate-180")} />
+                </>
+              )}
+              {isCollapsed && (
+                <div className="absolute left-full ml-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 invisible group-hover/nav:opacity-100 group-hover/nav:visible transition-all whitespace-nowrap z-50 pointer-events-none">
+                  {group.label}
+                </div>
+              )}
+            </Button>
+            {(expandedGroups[group.label] || isCollapsed) && group.items.map((item) => (
+              <Button
+                key={item.id}
+                variant="ghost"
+                onClick={() => onNavigate(item.id)}
+                className={cn(
+                  "w-full h-9 transition-all duration-200 rounded-md relative group/nav",
+                  isCollapsed ? "justify-center px-0" : "justify-start gap-2 px-2 pl-6",
+                  currentPage === item.id
+                    ? "bg-sidebar-accent text-sidebar-foreground"
+                    : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+                )}
+              >
+                <item.icon className="w-3.5 h-3.5 flex-shrink-0" />
+                {!isCollapsed && <span className="text-xs font-normal">{item.label}</span>}
+                {isCollapsed && (
+                  <div className="absolute left-full ml-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 invisible group-hover/nav:opacity-100 group-hover/nav:visible transition-all whitespace-nowrap z-50 pointer-events-none">
+                    {item.label}
+                  </div>
+                )}
+              </Button>
+            ))}
+          </div>
         ))}
       </div>
 
@@ -268,6 +345,9 @@ export const ChatSidebar = ({
                         {session.title.length > 50 ? session.title.substring(0, 50) + '...' : session.title}
                       </div>
                       <div className="text-[11px] text-muted-foreground/60 mt-0.5">
+                        {isDeveloper && session.startedBy && session.startedBy !== userName && (
+                          <span className="text-primary/60 mr-1">{session.startedBy} ·</span>
+                        )}
                         {session.date}
                       </div>
                     </button>
@@ -392,6 +472,30 @@ export const ChatSidebar = ({
               <item.icon className="w-4 h-4 flex-shrink-0" />
               <span className="text-sm font-normal">{item.label}</span>
             </Button>
+          ))}
+          {navGroups.map((group) => (
+            <div key={group.label}>
+              <Button
+                variant="ghost"
+                onClick={() => toggleGroup(group.label)}
+                className="w-full h-10 justify-start gap-3 px-2 text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-accent transition-all duration-200 rounded-md"
+              >
+                <group.icon className="w-4 h-4 flex-shrink-0" />
+                <span className="text-sm font-normal flex-1 text-left">{group.label}</span>
+                <ChevronDown className={cn("w-3 h-3 transition-transform", expandedGroups[group.label] && "rotate-180")} />
+              </Button>
+              {expandedGroups[group.label] && group.items.map((item) => (
+                <Button
+                  key={item.id}
+                  variant="ghost"
+                  onClick={() => onNavigate(item.id)}
+                  className="w-full h-9 justify-start gap-3 px-2 pl-8 text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-accent transition-all duration-200 rounded-md"
+                >
+                  <item.icon className="w-3.5 h-3.5 flex-shrink-0" />
+                  <span className="text-xs font-normal">{item.label}</span>
+                </Button>
+              ))}
+            </div>
           ))}
         </div>
 

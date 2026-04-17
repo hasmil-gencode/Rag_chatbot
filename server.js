@@ -13,7 +13,9 @@ import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadBucketCommand } fr
 import { GoogleGenAI } from '@google/genai';
 import { GoogleAuth } from 'google-auth-library';
 import { processUploadedFile, deleteFileVectors } from './uploadPipeline.js';
-import { processBrowserChat } from './chatPipeline.js';
+import { QdrantClient } from '@qdrant/js-client-rest';
+import OpenAI from 'openai';
+import { processBrowserChat, processPublicChat } from './chatPipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -65,7 +67,7 @@ if (!settingsExists) {
     s3SecretKey: '',
     // Upload file processing defaults
     uploadProcessingMode: 'offline',
-    ocrProvider: 'zai',
+    ocrProvider: 'mistral',
     ocrApiKey: '',
     embeddingProvider: 'ollama',
     embeddingApiKey: '',
@@ -76,7 +78,7 @@ if (!settingsExists) {
     pineconeEnvironment: '',
     qdrantHost: 'qdrant',
     qdrantPort: 6333,
-    offlineOcrUrl: 'http://glmocr-service:5002',
+    offlineOcrUrl: 'http://ocr-service:5002',
     offlineOllamaUrl: 'http://ollama:11434',
     offlineEmbeddingModel: 'nomic-embed-text-v2-moe',
     offlineQdrantHost: 'qdrant',
@@ -84,6 +86,9 @@ if (!settingsExists) {
     fileStoragePath: '/app/uploads',
     chunkSize: 1000,
     chunkOverlap: 200,
+    // OCR settings
+    ocrEnabled: true,
+    ocrMinTextThreshold: 50,
     // Chat settings
     chatSystemPrompt: 'You are a helpful AI assistant with access to a knowledge base from uploaded documents.\n\nAlways respond in the SAME language as the user\'s question.\nUse proper markdown formatting.\nIf you reference information from the provided context, mention the source.',
     chatLlmProvider: 'gemini',
@@ -131,41 +136,36 @@ app.use(express.static('public'));
 
 // Security Headers Middleware
 app.use((req, res, next) => {
-  // Remove X-Powered-By header
   res.removeHeader('X-Powered-By');
-  
-  // Strict-Transport-Security (HSTS)
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
-  
-  // Content-Security-Policy
-  res.setHeader('Content-Security-Policy', 
-    "default-src 'self'; " +
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
-    "style-src 'self' 'unsafe-inline'; " +
-    "img-src 'self' data: https:; " +
-    "font-src 'self' data:; " +
-    "connect-src 'self' https:; " +
-    "media-src 'self' blob:; " +
-    "frame-ancestors 'none';"
-  );
-  
-  // X-Content-Type-Options
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  
-  // X-Frame-Options
-  res.setHeader('X-Frame-Options', 'DENY');
-  
-  // Referrer-Policy
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  
-  // Permissions-Policy
-  res.setHeader('Permissions-Policy', 
-    'geolocation=(), microphone=(self), camera=()'
-  );
-  
-  // X-XSS-Protection (legacy but still useful)
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(self), camera=()');
   res.setHeader('X-XSS-Protection', '1; mode=block');
-  
+
+  // Embed routes: allow iframe embedding + CORS
+  const isEmbedRoute = req.path.startsWith('/embed') || req.path.startsWith('/api/embed');
+  if (isEmbedRoute) {
+    res.setHeader('Content-Security-Policy',
+      "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https:; media-src 'self' blob:; frame-ancestors *;"
+    );
+    res.removeHeader('X-Frame-Options');
+    // CORS for embed API
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+  } else {
+    res.setHeader('Content-Security-Policy',
+      "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https:; media-src 'self' blob:; frame-ancestors 'none';"
+    );
+    res.setHeader('X-Frame-Options', 'DENY');
+  }
+
   next();
 });
 
@@ -417,10 +417,6 @@ app.get('/api/provider-models/:provider', auth, async (req, res) => {
       const models = (r.data.data || []).map(m => ({ id: m.id, name: m.id })).sort((a, b) => a.id.localeCompare(b.id));
       return res.json(models);
     }
-    if (provider === 'zai') {
-      // Z.ai doesn't have a list endpoint, return known models
-      return res.json([{ id: 'glm-5', name: 'GLM-5' }, { id: 'glm-5-turbo', name: 'GLM-5 Turbo' }, { id: 'glm-5.1', name: 'GLM-5.1' }, { id: 'glm-4.7', name: 'GLM-4.7' }]);
-    }
     res.json([]);
   } catch (e) { res.json([]); }
 });
@@ -428,11 +424,95 @@ app.get('/api/provider-models/:provider', auth, async (req, res) => {
 // Ollama local models list
 app.get('/api/ollama-models', auth, async (req, res) => {
   try {
-    const settings = await db.collection('settings').findOne({ _id: 'config' });
-    const url = settings?.chatLlmOllamaUrl || settings?.offlineOllamaUrl || 'http://ollama:11434';
+    const source = req.query.source || 'docker'; // 'docker' or 'native'
+    let url;
+    if (source === 'native') {
+      const settings = await db.collection('settings').findOne({ _id: 'config' });
+      url = settings?.chatLlmOllamaUrl || 'http://host.docker.internal:11434';
+    } else {
+      url = 'http://ollama:11434'; // always Docker container
+    }
     const r = await axios.get(`${url}/api/tags`, { timeout: 5000 });
     res.json(r.data.models || []);
   } catch { res.json([]); }
+});
+
+// Ollama health check
+app.get('/api/ollama-health', auth, async (req, res) => {
+  const check = async (url) => { try { await axios.get(url, { timeout: 3000 }); return true; } catch { return false; } };
+  const settings = await db.collection('settings').findOne({ _id: 'config' });
+  const nativeUrl = settings?.chatLlmOllamaUrl || 'http://host.docker.internal:11434';
+  const [docker, native] = await Promise.all([check('http://ollama:11434'), check(nativeUrl)]);
+  res.json({ docker, native });
+});
+
+// ─── Qdrant dimension check ───────────────────────────────────
+app.get('/api/qdrant-info', auth, hasPermission(), async (req, res) => {
+  try {
+    const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+    const host = settings.qdrantHost || settings.offlineQdrantHost || 'qdrant';
+    const port = settings.qdrantPort || settings.offlineQdrantPort || 6333;
+    const qdrant = new QdrantClient({ host, port });
+    const info = await qdrant.getCollection('documents');
+    const dim = info.config?.params?.vectors?.size || 0;
+    const count = info.points_count || 0;
+    res.json({ dimension: dim, points: count, exists: true });
+  } catch {
+    res.json({ dimension: 0, points: 0, exists: false });
+  }
+});
+
+// ─── Re-embed all files (SSE progress) ───────────────────────
+app.post('/api/reembed', auth, hasPermission(), async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  const send = (data) => { try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch {} };
+
+  try {
+    const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+    const pk = await resolveProviderKeys(null); // reembed uses global keys
+    // Merge provider keys into settings
+    if (pk.gemini) { settings.geminiSttApiKey = pk.gemini; settings.geminiTtsApiKey = pk.gemini; settings['embeddingApiKey_gemini'] = pk.gemini; }
+    if (pk.openai) settings['embeddingApiKey_openai'] = pk.openai;
+    if (pk.mistral) { settings['embeddingApiKey_mistral'] = pk.mistral; settings['ocrApiKey_mistral'] = pk.mistral; }
+    if (pk.google_cloud) settings.gclasServiceAccount = pk.google_cloud;
+
+    // 1. Delete old collection
+    send({ step: 'deleting', detail: 'Deleting old vector collection...' });
+    const host = settings.qdrantHost || settings.offlineQdrantHost || 'qdrant';
+    const port = settings.qdrantPort || settings.offlineQdrantPort || 6333;
+    const qdrant = new QdrantClient({ host, port });
+    try { await qdrant.deleteCollection('documents'); } catch {}
+
+    // 2. Get all vectorized files
+    const files = await db.collection('files').find({ vectorized: true }).toArray();
+    const total = files.length;
+    if (total === 0) { send({ step: 'done', detail: 'No files to re-embed.', current: 0, total: 0 }); res.end(); return; }
+
+    send({ step: 'starting', detail: `Re-embedding ${total} file(s)...`, current: 0, total });
+
+    // 3. Re-process each file
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const filePath = file.path || `${settings.fileStoragePath || '/app/uploads'}/${file.storedName || file.originalName}`;
+      send({ step: 'processing', detail: `[${i + 1}/${total}] ${file.originalName}`, current: i + 1, total });
+      try {
+        await processUploadedFile(filePath, file.originalName, file._id.toString(), {
+          user_id: file.userId, uploaded_by: file.uploadedBy || '', uploaded_by_email: file.uploadedByEmail || '',
+          shared_with: file.sharedWith || [], uploaded_at: file.createdAt?.toISOString() || new Date().toISOString(),
+        }, settings, null);
+      } catch (e) {
+        send({ step: 'error', detail: `Failed: ${file.originalName} — ${e.message}`, current: i + 1, total });
+      }
+    }
+
+    send({ step: 'done', detail: `Re-embedded ${total} file(s) successfully.`, current: total, total });
+  } catch (e) {
+    send({ step: 'error', detail: e.message, current: 0, total: 0 });
+  }
+  res.end();
 });
 
 // Ollama cloud models list
@@ -450,10 +530,15 @@ app.get('/api/ollama-cloud-models', auth, async (req, res) => {
 
 // Ollama pull model (streaming progress via SSE)
 app.post('/api/ollama-pull', auth, hasPermission(), async (req, res) => {
-  const { model } = req.body;
+  const { model, source } = req.body;
   if (!model) return res.status(400).json({ error: 'Model name required' });
-  const settings = await db.collection('settings').findOne({ _id: 'config' });
-  const url = settings?.offlineOllamaUrl || 'http://ollama:11434';
+  let url;
+  if (source === 'native') {
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    url = settings?.chatLlmOllamaUrl || 'http://host.docker.internal:11434';
+  } else {
+    url = 'http://ollama:11434';
+  }
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -478,8 +563,14 @@ app.post('/api/ollama-pull', auth, hasPermission(), async (req, res) => {
 // Ollama delete model
 app.delete('/api/ollama-models/:name', auth, hasPermission(), async (req, res) => {
   try {
-    const settings = await db.collection('settings').findOne({ _id: 'config' });
-    const url = settings?.offlineOllamaUrl || 'http://ollama:11434';
+    const source = req.query.source || 'docker';
+    let url;
+    if (source === 'native') {
+      const settings = await db.collection('settings').findOne({ _id: 'config' });
+      url = settings?.chatLlmOllamaUrl || 'http://host.docker.internal:11434';
+    } else {
+      url = 'http://ollama:11434';
+    }
     await axios.delete(`${url}/api/delete`, { data: { name: req.params.name } });
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -527,14 +618,17 @@ app.post('/api/organizations', auth, hasPermission('org:manage'), async (req, re
       path = [...parent.path, name];
     }
     
-    const result = await db.collection('organizations').insertOne({
+    const orgDoc = {
       name,
       type,
       parentId: parentId ? new ObjectId(parentId) : null,
       path,
       createdBy: req.user.id,
       createdAt: new Date()
-    });
+    };
+    if (type === 'organization' && req.body.publicEnabled !== undefined) orgDoc.publicEnabled = req.body.publicEnabled === true;
+    
+    const result = await db.collection('organizations').insertOne(orgDoc);
     
     res.json({ success: true, organizationId: result.insertedId });
   } catch (error) {
@@ -543,6 +637,63 @@ app.post('/api/organizations', auth, hasPermission('org:manage'), async (req, re
 });
 
 // Assign user to organizations
+// ─── Create New Client (all-in-one) ─────────────────────────────
+app.post('/api/create-client', auth, hasPermission(), async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+    const { orgName, adminEmail, adminPassword, adminName, planId } = req.body;
+    if (!orgName || !adminEmail || !adminPassword || !adminName) return res.status(400).json({ error: 'All fields required' });
+
+    // Check email unique
+    if (await db.collection('users').findOne({ email: adminEmail })) return res.status(400).json({ error: 'Email already exists' });
+
+    // 1. Create organization
+    const orgResult = await db.collection('organizations').insertOne({
+      name: orgName, type: 'organization', parentId: null, path: [orgName],
+      publicEnabled: req.body.publicEnabled === true,
+      createdBy: req.user.id, createdAt: new Date()
+    });
+
+    // 2. Create admin user
+    const hashedPassword = await bcrypt.hash(adminPassword, 10);
+    const userResult = await db.collection('users').insertOne({
+      email: adminEmail, password: hashedPassword, fullName: adminName, role: 'admin', status: 'active',
+      canUploadFiles: true, mustChangePassword: true, createdBy: req.user.id, createdAt: new Date()
+    });
+
+    // 3. Assign user to org
+    await db.collection('user_organization_assignments').insertOne({
+      userId: userResult.insertedId, organizationId: orgResult.insertedId, assignedAt: new Date()
+    });
+
+    // 4. Assign org to plan if selected
+    if (planId) {
+      await db.collection('organizations').updateOne({ _id: orgResult.insertedId }, { $set: { groupId: new ObjectId(planId) } });
+    }
+
+    res.json({ success: true, organizationId: orgResult.insertedId, userId: userResult.insertedId });
+  } catch (error) {
+    console.error('Create client error:', error);
+    res.status(500).json({ error: 'Failed to create client' });
+  }
+});
+
+// ─── Audit Logs ───────────────────────────────────────────────
+app.get('/api/audit-logs', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin' && req.user.role !== 'developer') return res.status(403).json({ error: 'Admin or Developer only' });
+    let query = {};
+    if (req.user.role === 'admin') {
+      // Admin sees only their org's logs
+      const assignment = await db.collection('user_organization_assignments').findOne({ userId: new ObjectId(req.user.id) });
+      if (assignment) query.organizationId = assignment.organizationId;
+      else return res.json([]);
+    }
+    const logs = await db.collection('audit_logs').find(query).sort({ createdAt: -1 }).limit(200).toArray();
+    res.json(logs);
+  } catch (error) { res.status(500).json({ error: 'Failed to get audit logs' }); }
+});
+
 app.post('/api/user-assignments', auth, hasPermission('user:manage'), async (req, res) => {
   try {
     const { userId, organizationIds } = req.body; // organizationIds is array
@@ -700,9 +851,12 @@ app.put('/api/organizations/:id', auth, hasPermission(), async (req, res) => {
       path = [...parent.path, name];
     }
     
+    const updateFields = { name, path, updatedAt: new Date() };
+    if (req.body.publicEnabled !== undefined) updateFields.publicEnabled = req.body.publicEnabled === true;
+    
     await db.collection('organizations').updateOne(
       { _id: new ObjectId(req.params.id) },
-      { $set: { name, path, updatedAt: new Date() } }
+      { $set: updateFields }
     );
     
     res.json({ success: true });
@@ -972,7 +1126,7 @@ app.post('/api/chat', auth, async (req, res) => {
     
     // Check user preferences
     const userPrefs = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
-    const showSources = userPrefs?.showSources !== undefined ? userPrefs.showSources : (settings.chatShowSourcesDefault !== false);
+    const showSources = userPrefs?.showSources !== undefined ? userPrefs.showSources : true;
     const verboseMode = userPrefs?.verboseMode || false;
 
     await db.collection('messages').insertOne({
@@ -1111,24 +1265,83 @@ app.post('/api/v1/chat', authenticateApiKey, async (req, res) => {
       createdAt: new Date()
     });
 
-    // Get webhook URL
-    const webhooks = await getWebhookUrls();
+    const chatMode = req.apiKey.chatMode || 'webhook';
+    let botContent;
 
-    // Send to n8n with chatType and chatName
-    const { data } = await axios.post(webhooks.chat, { 
-      message, 
-      userId: req.user.id.toString(),
-      currentOrganizationId: currentOrganizationId,
-      sessionId: chatSessionId,
-      fileId: null,
-      chatType: 'API',
-      chatName: req.apiKey.name
-    }, {
-      timeout: 60000
-    });
+    if (chatMode === 'native') {
+      // ─── Native mode: search Qdrant → build context → call LLM ───
+      const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+      const pk = await resolveProviderKeys(currentOrganizationId?.toString());
 
-    // Save bot response
-    const botContent = typeof data.response === 'object' ? data.response.text : data.response;
+      // 1. Embed the query
+      const embProvider = settings.embeddingProvider || 'ollama';
+      const embModel = settings.embeddingModel || 'nomic-embed-text-v2-moe';
+      const embKey = settings.embeddingApiKey || pk[embProvider] || '';
+      let queryVector;
+
+      if (embProvider === 'ollama') {
+        const ollamaUrl = settings.offlineOllamaUrl || 'http://ollama:11434';
+        const r = await axios.post(`${ollamaUrl}/api/embed`, { model: embModel, input: message });
+        queryVector = r.data.embeddings[0];
+      } else if (embProvider === 'gemini') {
+        const r = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${embModel}:embedContent?key=${embKey}`, { content: { parts: [{ text: message }] }, taskType: 'RETRIEVAL_QUERY' });
+        queryVector = r.data.embedding.values;
+      } else if (embProvider === 'openai') {
+        const oai = new OpenAI({ apiKey: embKey });
+        const r = await oai.embeddings.create({ model: embModel, input: [message] });
+        queryVector = r.data[0].embedding;
+      } else if (embProvider === 'mistral') {
+        const r = await axios.post('https://api.mistral.ai/v1/embeddings', { model: embModel, input: [message] }, { headers: { 'Authorization': `Bearer ${embKey}` } });
+        queryVector = r.data.data[0].embedding;
+      }
+
+      // 2. Search Qdrant
+      const qdrantHost = settings.qdrantHost || settings.offlineQdrantHost || 'qdrant';
+      const qdrantPort = settings.qdrantPort || settings.offlineQdrantPort || 6333;
+      const qdrant = new QdrantClient({ host: qdrantHost, port: qdrantPort });
+      const maxChunks = settings.chatMaxChunks || 5;
+      let context = '';
+      try {
+        const results = await qdrant.search('documents', { vector: queryVector, limit: maxChunks, with_payload: true });
+        context = results.map(r => r.payload?.content || '').filter(Boolean).join('\n\n---\n\n');
+      } catch (e) { console.error('Qdrant search error:', e.message); }
+
+      // 3. Build prompt and call LLM
+      const systemPrompt = req.apiKey.systemPrompt || settings.chatSystemPrompt || 'You are a helpful AI assistant.';
+      const llmProvider = settings.chatLlmProvider || 'gemini';
+      const llmModel = settings.chatLlmModel || 'gemini-2.0-flash';
+      const llmKey = settings.chatLlmApiKey || pk[llmProvider] || '';
+      const fullPrompt = context ? `${systemPrompt}\n\nContext from documents:\n${context}\n\nUser question: ${message}` : `${systemPrompt}\n\nUser question: ${message}`;
+
+      if (llmProvider === 'gemini') {
+        const r = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${llmModel}:generateContent?key=${llmKey}`, {
+          contents: [{ role: 'user', parts: [{ text: fullPrompt }] }]
+        });
+        botContent = r.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      } else if (llmProvider === 'openai' || llmProvider === 'groq') {
+        const baseURL = llmProvider === 'groq' ? 'https://api.groq.com/openai/v1' : undefined;
+        const oai = new OpenAI({ apiKey: llmKey, ...(baseURL && { baseURL }) });
+        const r = await oai.chat.completions.create({ model: llmModel, messages: [{ role: 'system', content: systemPrompt }, ...(context ? [{ role: 'user', content: `Context:\n${context}` }] : []), { role: 'user', content: message }] });
+        botContent = r.choices[0]?.message?.content || '';
+      } else if (llmProvider === 'mistral') {
+        const r = await axios.post('https://api.mistral.ai/v1/chat/completions', { model: llmModel, messages: [{ role: 'system', content: systemPrompt }, ...(context ? [{ role: 'user', content: `Context:\n${context}` }] : []), { role: 'user', content: message }] }, { headers: { 'Authorization': `Bearer ${llmKey}` } });
+        botContent = r.data.choices?.[0]?.message?.content || '';
+      } else if (llmProvider === 'ollama') {
+        const ollamaUrl = settings.chatLlmOllamaUrl || 'http://ollama:11434';
+        const r = await axios.post(`${ollamaUrl}/api/chat`, { model: llmModel, messages: [{ role: 'system', content: systemPrompt }, ...(context ? [{ role: 'user', content: `Context:\n${context}` }] : []), { role: 'user', content: message }], stream: false });
+        botContent = r.data.message?.content || '';
+      }
+    } else {
+      // ─── Webhook mode: forward to n8n ───
+      const webhookUrl = req.apiKey.webhookUrl;
+      if (!webhookUrl) {
+        return res.status(400).json({ error: 'No webhook URL configured for this API key' });
+      }
+      const { data } = await axios.post(webhookUrl, {
+        message, userId: req.user.id.toString(), currentOrganizationId, sessionId: chatSessionId, fileId: null, chatType: 'API', chatName: req.apiKey.name
+      }, { timeout: 60000 });
+      botContent = typeof data.response === 'object' ? data.response.text : data.response;
+    }
     
     await db.collection('messages').insertOne({
       userId: req.user.id,
@@ -1146,7 +1359,10 @@ app.post('/api/v1/chat', authenticateApiKey, async (req, res) => {
     });
 
     res.json({ 
-      response: data.response,
+      response: {
+        text: (botContent.match(/\[TEXT\]([\s\S]*?)\[\/TEXT\]/)?.[1] || botContent).trim(),
+        speak: (botContent.match(/\[SPEAK\]([\s\S]*?)\[\/SPEAK\]/)?.[1] || botContent).trim(),
+      },
       sessionId: chatSessionId 
     });
 
@@ -1375,6 +1591,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     // Get sharedWith from request (array of org IDs)
     const sharedWith = req.body.sharedWith ? JSON.parse(req.body.sharedWith) : [];
     const fileType = req.body.type || 'document'; // 'document' or 'form'
+    const isPublic = req.body.isPublic === 'true' || req.body.isPublic === true;
     
     // Check storage limit for user's group and get groupId
     let userGroupId = null;
@@ -1447,6 +1664,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       groupId: userGroupId, // Group ID for storage tracking
       sharedWith: sharedWith.map(id => new ObjectId(id)), // Array of org IDs
       type: fileType,
+      isPublic: isPublic,
       isDownloadable: fileType === 'form',
       isVectorized: fileType === 'document',
       uploadedBy: uploaderName,
@@ -1458,9 +1676,27 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     };
     
     const result = await db.collection('files').insertOne(file);
+
+    // Audit log
+    await db.collection('audit_logs').insertOne({
+      action: 'file_upload', userId: new ObjectId(req.user.id), userEmail: uploaderEmail,
+      organizationId: userAssignments[0]?.organizationId || null,
+      details: { fileName: req.file.originalname, fileId: result.insertedId.toString(), fileSize: req.file.size },
+      createdAt: new Date()
+    });
     
     // Only process documents (not forms)
     if (fileType === 'document') {
+      // SSE for progress
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      const sendProgress = (step, detail) => {
+        try { res.write(`data: ${JSON.stringify({ step, detail })}\n\n`); } catch {}
+      };
+      sendProgress('upload', 'File saved, starting processing...');
+
       try {
         const pipelineResult = await processUploadedFile(
           req.file.path,
@@ -1471,38 +1707,33 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
             uploaded_by: uploaderName,
             uploaded_by_email: uploaderEmail,
             shared_with: sharedWith,
+            is_public: isPublic,
             uploaded_at: new Date().toISOString(),
           },
-          settings
+          settings,
+          sendProgress
         );
 
-        // Update file record with processing info
         await db.collection('files').updateOne(
           { _id: result.insertedId },
           { $set: { vectorized: true, chunks: pipelineResult.chunks, pages: pipelineResult.pages } }
         );
 
-        // Clean up local file if stored in S3
         if (fileUrl.startsWith('https://') && fs.existsSync(req.file.path)) {
           fs.unlinkSync(req.file.path);
         }
 
-        res.json({ 
-          success: true, 
-          fileId: result.insertedId,
-          message: pipelineResult.message,
-          chunks: pipelineResult.chunks
-        });
+        sendProgress('done', pipelineResult.message);
+        res.write(`data: ${JSON.stringify({ success: true, fileId: result.insertedId, message: pipelineResult.message, chunks: pipelineResult.chunks })}\n\n`);
+        res.end();
       } catch (pipelineError) {
         console.error('Upload pipeline error:', pipelineError.message);
-        // Clean up local file on S3 error path too
         if (fileUrl.startsWith('https://') && fs.existsSync(req.file.path)) {
           fs.unlinkSync(req.file.path);
         }
-        res.status(500).json({ 
-          success: false, 
-          error: 'File uploaded but processing failed: ' + pipelineError.message
-        });
+        sendProgress('error', pipelineError.message);
+        res.write(`data: ${JSON.stringify({ success: false, error: pipelineError.message })}\n\n`);
+        res.end();
       }
     } else {
       // For forms, just return success without processing
@@ -1904,7 +2135,16 @@ app.get('/api/files/:id/download', auth, async (req, res) => {
       }
     }
     
-    // Fallback: direct URL
+    // Fallback: serve local file directly
+    if (file.url?.startsWith('file://')) {
+      let localPath = file.url.replace('file://', '');
+      // Handle relative paths (e.g. "uploads/...") 
+      if (!localPath.startsWith('/')) localPath = join(__dirname, localPath);
+      if (fs.existsSync(localPath)) {
+        res.setHeader('Content-Disposition', `attachment; filename="${file.name}"`);
+        return res.sendFile(localPath, { root: '/' });
+      }
+    }
     res.json({ downloadUrl: file.url, fileName: file.name });
   } catch (error) {
     console.error('Download error:', error);
@@ -2051,6 +2291,16 @@ app.delete('/api/files/:id', auth, async (req, res) => {
     
     // Delete from MongoDB files collection
     await db.collection('files').deleteOne({ _id: new ObjectId(req.params.id) });
+
+    // Audit log
+    const deleter = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const deleterOrg = await db.collection('user_organization_assignments').findOne({ userId: new ObjectId(req.user.id) });
+    await db.collection('audit_logs').insertOne({
+      action: 'file_delete', userId: new ObjectId(req.user.id), userEmail: deleter?.email || 'Unknown',
+      organizationId: deleterOrg?.organizationId || null,
+      details: { fileName: file.originalName || file.storedName, fileId: req.params.id },
+      createdAt: new Date()
+    });
     
     // Delete vectors from vector DB
     try {
@@ -2452,6 +2702,7 @@ app.get('/api/public-settings', async (req, res) => {
 // Settings
 app.get('/api/settings', auth, hasPermission(), async (req, res) => {
   const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+  const pk = await resolveProviderKeys(await getUserOrgId(req.user.id));
   res.json({
     companyName: settings.companyName || 'GenBotChat',
     logo: settings.logo || null,
@@ -2459,11 +2710,11 @@ app.get('/api/settings', auth, hasPermission(), async (req, res) => {
     voiceLanguage: settings.voiceLanguage || 'auto',
     googleSttApiKey: settings.googleSttApiKey || '',
     googleTtsApiKey: settings.googleTtsApiKey || '',
-    geminiSttApiKey: settings.geminiSttApiKey || '',
-    geminiTtsApiKey: settings.geminiTtsApiKey || '',
-    elevenlabsApiKey: settings.elevenlabsApiKey || '',
+    geminiSttApiKey: settings.geminiSttApiKey || pk.gemini || '',
+    geminiTtsApiKey: settings.geminiTtsApiKey || pk.gemini || '',
+    elevenlabsApiKey: settings.elevenlabsApiKey || pk.elevenlabs || '',
     elevenlabsVoice: settings.elevenlabsVoice || 'onwK4e9ZLuTAKqWW03F9',
-    gclasServiceAccount: settings.gclasServiceAccount || '',
+    gclasServiceAccount: settings.gclasServiceAccount || pk.google_cloud || '',
     gclasLanguage: settings.gclasLanguage || 'auto',
     gclasVoice: settings.gclasVoice || 'en-US-Neural2-C',
     geminiVoice: settings.geminiVoice || 'Aoede',
@@ -2481,11 +2732,14 @@ app.get('/api/settings', auth, hasPermission(), async (req, res) => {
     // Upload file processing settings
     uploadProcessingMode: settings.uploadProcessingMode || 'offline',
     // Online OCR
-    ocrProvider: settings.ocrProvider || 'zai',
-    ocrApiKey: settings.ocrApiKey || '',
+    ocrProvider: settings.ocrProvider || 'mistral',
+    ocrApiKey: settings.ocrApiKey || pk[settings.ocrProvider] || '',
+    gcdaiProjectId: settings.gcdaiProjectId || '',
+    gcdaiLocation: settings.gcdaiLocation || 'us',
+    gcdaiProcessorId: settings.gcdaiProcessorId || '',
     // Online Embedding
     embeddingProvider: settings.embeddingProvider || 'ollama',
-    embeddingApiKey: settings.embeddingApiKey || '',
+    embeddingApiKey: settings.embeddingApiKey || pk[settings.embeddingProvider] || '',
     embeddingModel: settings.embeddingModel || 'nomic-embed-text-v2-moe',
     // Online Vector DB
     vectorDbProvider: settings.vectorDbProvider || 'qdrant',
@@ -2495,7 +2749,7 @@ app.get('/api/settings', auth, hasPermission(), async (req, res) => {
     qdrantHost: settings.qdrantHost || 'qdrant',
     qdrantPort: settings.qdrantPort || 6333,
     // Offline settings
-    offlineOcrUrl: settings.offlineOcrUrl || 'http://glmocr-service:5002',
+    offlineOcrUrl: settings.offlineOcrUrl || 'http://ocr-service:5002',
     offlineOllamaUrl: settings.offlineOllamaUrl || 'http://ollama:11434',
     offlineEmbeddingModel: settings.offlineEmbeddingModel || 'nomic-embed-text-v2-moe',
     offlineQdrantHost: settings.offlineQdrantHost || 'qdrant',
@@ -2504,16 +2758,18 @@ app.get('/api/settings', auth, hasPermission(), async (req, res) => {
     fileStoragePath: settings.fileStoragePath || '/app/uploads',
     chunkSize: settings.chunkSize || 1000,
     chunkOverlap: settings.chunkOverlap || 200,
+    ocrEnabled: settings.ocrEnabled !== false,
+    ocrMinTextThreshold: settings.ocrMinTextThreshold || 50,
     // Chat settings
     chatSystemPrompt: settings.chatSystemPrompt || '',
-    chatLlmProvider: settings.chatLlmProvider || 'gemini',
-    chatLlmApiKey: settings.chatLlmApiKey || '',
-    chatLlmModel: settings.chatLlmModel || 'gemini-2.0-flash',
-    chatLlmOllamaUrl: settings.chatLlmOllamaUrl || 'http://ollama:11434',
-    chatEmbeddingProvider: settings.chatEmbeddingProvider || 'ollama',
-    chatEmbeddingApiKey: settings.chatEmbeddingApiKey || '',
-    chatEmbeddingModel: settings.chatEmbeddingModel || 'nomic-embed-text-v2-moe',
-    chatEmbeddingOllamaUrl: settings.chatEmbeddingOllamaUrl || 'http://ollama:11434',
+    chatLlmProvider: settings.chatLlmProvider || '',
+    chatLlmApiKey: settings.chatLlmApiKey || pk[settings.chatLlmProvider] || '',
+    chatLlmModel: settings.chatLlmModel || '',
+    chatLlmOllamaUrl: settings.chatLlmOllamaUrl || '',
+    chatEmbeddingProvider: settings.chatEmbeddingProvider || '',
+    chatEmbeddingApiKey: settings.chatEmbeddingApiKey || pk[settings.chatEmbeddingProvider] || '',
+    chatEmbeddingModel: settings.chatEmbeddingModel || '',
+    chatEmbeddingOllamaUrl: settings.chatEmbeddingOllamaUrl || '',
     chatMaxChunks: settings.chatMaxChunks || 5,
     chatShowSourcesDefault: settings.chatShowSourcesDefault !== false,
     chatApiFlows: settings.chatApiFlows || []
@@ -2530,11 +2786,70 @@ app.post('/api/settings', auth, hasPermission(), async (req, res) => {
 });
 
 app.put('/api/settings', auth, hasPermission(), async (req, res) => {
+  const data = { ...req.body };
   await db.collection('settings').updateOne(
     { _id: 'config' },
-    { $set: req.body },
+    { $set: data },
     { upsert: true }
   );
+  res.json({ success: true });
+});
+
+// ─── Provider Keys (centralized API keys) ─────────────────────
+// Helper: resolve provider keys for an org (org-specific → global fallback)
+async function resolveProviderKeys(orgId) {
+  const global = await db.collection('provider_keys').findOne({ _id: 'keys' }) || {};
+  delete global._id;
+  if (!orgId) return global;
+  const orgDoc = await db.collection('provider_keys').findOne({ _id: `keys_${orgId}` }) || {};
+  delete orgDoc._id;
+  const merged = { ...global };
+  for (const [k, v] of Object.entries(orgDoc)) { if (v) merged[k] = v; }
+  return merged;
+}
+
+async function getUserOrgId(userId) {
+  const assignment = await db.collection('user_organization_assignments').findOne({ userId: new ObjectId(userId) });
+  return assignment?.organizationId?.toString() || null;
+}
+
+app.get('/api/provider-keys', auth, hasPermission(), async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  const orgId = req.query.orgId;
+  const docId = orgId ? `keys_${orgId}` : 'keys';
+  const doc = await db.collection('provider_keys').findOne({ _id: docId });
+  if (doc) {
+    const { _id, ...keys } = doc;
+    return res.json(keys);
+  }
+  if (orgId) return res.json({}); // No org-specific keys yet
+  // First time global: seed from existing settings
+  const s = await db.collection('settings').findOne({ _id: 'config' }) || {};
+  const seeded = {};
+  if (s.geminiSttApiKey || s.geminiTtsApiKey) seeded.gemini = s.geminiSttApiKey || s.geminiTtsApiKey;
+  if (s['embeddingApiKey_openai']) seeded.openai = s['embeddingApiKey_openai'];
+  if (s['ocrApiKey_mistral'] || s['embeddingApiKey_mistral']) seeded.mistral = s['ocrApiKey_mistral'] || s['embeddingApiKey_mistral'];
+  if (s.gclasServiceAccount) seeded.google_cloud = s.gclasServiceAccount;
+  if (s.groqApiKey) seeded.groq = s.groqApiKey;
+  res.json(seeded);
+});
+
+app.put('/api/provider-keys', auth, hasPermission(), async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  const orgId = req.query.orgId;
+  const docId = orgId ? `keys_${orgId}` : 'keys';
+  const keys = req.body;
+  await db.collection('provider_keys').updateOne({ _id: docId }, { $set: keys }, { upsert: true });
+  // Auto-sync to settings only for global keys
+  if (!orgId) {
+    const sync = {};
+    if (keys.gemini) { sync.geminiSttApiKey = keys.gemini; sync.geminiTtsApiKey = keys.gemini; }
+    if (keys.openai) { sync['embeddingApiKey_openai'] = keys.openai; }
+    if (keys.mistral) { sync['ocrApiKey_mistral'] = keys.mistral; sync['embeddingApiKey_mistral'] = keys.mistral; }
+    if (keys.google_cloud) { sync.gclasServiceAccount = keys.google_cloud; }
+    if (keys.groq) { sync.groqApiKey = keys.groq; }
+    if (Object.keys(sync).length) await db.collection('settings').updateOne({ _id: 'config' }, { $set: sync }, { upsert: true });
+  }
   res.json({ success: true });
 });
 
@@ -2543,18 +2858,12 @@ app.get('/api/keys', auth, hasPermission(), async (req, res) => {
   try {
     const keys = await db.collection('api_keys').find().sort({ createdAt: -1 }).toArray();
     
-    // Include user email and robot name for each key
+    // Include user email for each key
     const keysWithUser = await Promise.all(keys.map(async (key) => {
       const user = await db.collection('users').findOne({ _id: key.userId });
-      let robotName = null;
-      if (key.robotSettingId) {
-        const robot = await db.collection('robot_settings').findOne({ _id: key.robotSettingId });
-        robotName = robot?.name || 'Unknown Robot';
-      }
       return {
         ...key,
         userEmail: user?.email || 'Unknown',
-        robotName
       };
     }));
     
@@ -2566,7 +2875,7 @@ app.get('/api/keys', auth, hasPermission(), async (req, res) => {
 
 app.post('/api/keys', auth, hasPermission(), async (req, res) => {
   try {
-    const { name, userId, generateShortKey, robotSettingId } = req.body;
+    const { name, userId, generateShortKey, description, webhookUrl, chatMode, systemPrompt } = req.body;
     
     // Generate API key
     const key = 'gk_' + crypto.randomBytes(32).toString('hex');
@@ -2582,8 +2891,11 @@ app.post('/api/keys', auth, hasPermission(), async (req, res) => {
       shortKey,
       hasShortKey: !!generateShortKey,
       name,
+      description: description || '',
+      chatMode: chatMode || 'native',
+      webhookUrl: webhookUrl || '',
+      systemPrompt: systemPrompt || '',
       userId: new ObjectId(userId),
-      robotSettingId: robotSettingId ? new ObjectId(robotSettingId) : null,
       isActive: true,
       createdAt: new Date(),
       lastUsedAt: null
@@ -2630,6 +2942,19 @@ app.patch('/api/keys/:id', auth, hasPermission(), async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to toggle API key' });
+  }
+});
+
+app.put('/api/keys/:id/details', auth, hasPermission(), async (req, res) => {
+  try {
+    const { name, description, chatMode, webhookUrl, systemPrompt } = req.body;
+    await db.collection('api_keys').updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: { name, description, chatMode, webhookUrl, systemPrompt, updatedAt: new Date() } }
+    );
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update API key' });
   }
 });
 
@@ -3040,7 +3365,9 @@ app.post('/api/test-s3', auth, hasPermission('system:manage_settings'), async (r
 // Transcribe audio
 app.post('/api/transcribe', auth, upload.single('audio'), async (req, res) => {
   try {
-    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+    const userOrgId = await getUserOrgId(req.user.id);
+    const pk = await resolveProviderKeys(userOrgId);
     const voiceMode = settings?.voiceMode || 'browser';
     const voiceLanguage = settings?.voiceLanguage || 'auto';
     
@@ -3066,7 +3393,7 @@ app.post('/api/transcribe', auth, upload.single('audio'), async (req, res) => {
       
     } else if (voiceMode === 'gemini') {
       // Use Gemini AI for transcription
-      const geminiSttApiKey = settings?.geminiSttApiKey;
+      const geminiSttApiKey = settings?.geminiSttApiKey || pk.gemini || '';
       
       if (!geminiSttApiKey) {
         fs.unlinkSync(req.file.path);
@@ -3117,9 +3444,29 @@ app.post('/api/transcribe', auth, upload.single('audio'), async (req, res) => {
         });
       }
       
+    } else if (voiceMode === 'mistral') {
+      // Use Mistral Voxtral for transcription
+      const mistralKey = pk.mistral || '';
+      if (!mistralKey) { fs.unlinkSync(req.file.path); return res.status(400).json({ error: 'Mistral API key not configured in Provider Keys.' }); }
+      try {
+        const formData = new FormData();
+        formData.append('file', fs.createReadStream(req.file.path), { filename: 'audio.webm', contentType: req.file.mimetype });
+        formData.append('model', 'voxtral-mini-latest');
+        if (voiceLanguage !== 'auto') formData.append('language', voiceLanguage);
+        const { data } = await axios.post('https://api.mistral.ai/v1/audio/transcriptions', formData, {
+          headers: { ...formData.getHeaders(), 'Authorization': `Bearer ${mistralKey}` }, timeout: 60000
+        });
+        fs.unlinkSync(req.file.path);
+        res.json({ text: data.text || '', language: voiceLanguage });
+      } catch (e) {
+        fs.unlinkSync(req.file.path);
+        console.error('Mistral STT error:', e.response?.data || e.message);
+        return res.status(500).json({ error: `Mistral STT error: ${e.response?.data?.message || e.message}` });
+      }
+
     } else if (voiceMode === 'elevenlabs') {
       // Use ElevenLabs for transcription
-      const elevenlabsApiKey = settings?.elevenlabsApiKey;
+      const elevenlabsApiKey = settings?.elevenlabsApiKey || pk.elevenlabs || '';
       
       if (!elevenlabsApiKey) {
         fs.unlinkSync(req.file.path);
@@ -3193,12 +3540,14 @@ app.post('/api/tts', auth, async (req, res) => {
       return res.status(400).json({ error: 'Text is required' });
     }
 
-    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+    const userOrgId = await getUserOrgId(req.user.id);
+    const pk = await resolveProviderKeys(userOrgId);
     const ttsMode = mode || settings?.ttsMode || 'browser';
     
     if (ttsMode === 'gemini') {
       // Use Gemini 2.5 Flash TTS with full chunking for speed
-      const geminiTtsApiKey = settings?.geminiTtsApiKey;
+      const geminiTtsApiKey = settings?.geminiTtsApiKey || pk.gemini || '';
       if (!geminiTtsApiKey) {
         return res.status(400).json({ error: 'Gemini TTS API Key not configured. Please set it in Settings.' });
       }
@@ -3296,9 +3645,35 @@ app.post('/api/tts', auth, async (req, res) => {
         console.error('Gemini TTS error:', geminiError.response?.data || geminiError.message);
         return res.status(500).json({ error: 'Gemini TTS failed: ' + (geminiError.response?.data?.error?.message || geminiError.message) });
       }
+    } else if (ttsMode === 'mistral') {
+      // Use Mistral Voxtral TTS
+      const mistralKey = pk.mistral || '';
+      if (!mistralKey) return res.status(400).json({ error: 'Mistral API key not configured in Provider Keys.' });
+      try {
+        let voiceId = settings?.mistralVoiceId || null;
+        // If no voice configured, fetch first available preset voice
+        if (!voiceId) {
+          try {
+            const vr = await axios.get('https://api.mistral.ai/v1/audio/voices', { headers: { 'Authorization': `Bearer ${mistralKey}` }, timeout: 10000 });
+            const voices = vr.data?.data || vr.data || [];
+            if (voices.length > 0) voiceId = voices[0].id;
+          } catch (e) { console.error('Failed to list Mistral voices:', e.message); }
+        }
+        if (!voiceId) return res.status(400).json({ error: 'No Mistral voice available. Create a voice in Mistral console or set mistralVoiceId in settings.' });
+        const body = { model: 'voxtral-mini-tts-2603', input: text, voice_id: voiceId, response_format: 'mp3' };
+        const { data } = await axios.post('https://api.mistral.ai/v1/audio/speech', body, {
+          headers: { 'Authorization': `Bearer ${mistralKey}`, 'Content-Type': 'application/json' }, timeout: 30000
+        });
+        const audioBuffer = Buffer.from(data.audio_data, 'base64');
+        res.set('Content-Type', 'audio/mpeg');
+        res.send(audioBuffer);
+      } catch (e) {
+        console.error('Mistral TTS error:', e.response?.data || e.message);
+        return res.status(500).json({ error: 'Mistral TTS failed: ' + (e.response?.data?.message || e.message) });
+      }
     } else if (ttsMode === 'elevenlabs') {
       // Use ElevenLabs TTS (fast, high quality)
-      const elevenlabsApiKey = settings?.elevenlabsApiKey;
+      const elevenlabsApiKey = settings?.elevenlabsApiKey || pk.elevenlabs || '';
       if (!elevenlabsApiKey) {
         return res.status(400).json({ error: 'ElevenLabs API Key not configured. Please set it in Settings.' });
       }
@@ -3844,6 +4219,339 @@ app.post('/api/robot-navigation', authenticateApiKey, async (req, res) => {
     res.json({ updated: true, message: `Navigation updated with ${navigation.length} entries` });
   } catch (error) {
     res.status(500).json({ error: 'Failed to update navigation' });
+  }
+});
+
+// ============================================
+// EMBED WIDGET ENDPOINTS
+// ============================================
+
+// Serve embed static files (before React catch-all)
+app.use('/embed', express.static(join(__dirname, 'public/embed')));
+
+// Get widget config (public — no auth, just widget ID)
+app.get('/api/embed/config/:widgetId', async (req, res) => {
+  try {
+    const widget = await db.collection('embed_widgets').findOne({ _id: new ObjectId(req.params.widgetId), isActive: true });
+    if (!widget) return res.status(404).json({ error: 'Widget not found' });
+
+    // Check allowed domains
+    const origin = req.headers.origin || req.headers.referer || '';
+    if (widget.allowedDomains?.length > 0) {
+      const allowed = widget.allowedDomains.some(d => origin.includes(d));
+      if (!allowed && !origin.includes('localhost')) {
+        return res.status(403).json({ error: 'Domain not allowed' });
+      }
+    }
+
+    res.json({
+      name: widget.name,
+      shape: widget.shape || 'circle',
+      color: widget.color || '#3B82F6',
+      position: widget.position || 'bottom-right',
+      logoUrl: widget.logoUrl || null,
+      welcomeMessage: widget.welcomeMessage || 'Hi! How can I help you?',
+      headerTitle: widget.headerTitle || 'Chat with us',
+      theme: widget.theme || 'light',
+      headerGradient: widget.headerGradient || '',
+      headerSubtitle: widget.headerSubtitle || '',
+      bubbleStyle: widget.bubbleStyle || 'modern',
+      fontSize: widget.fontSize || 'md',
+      windowRadius: widget.windowRadius || 16,
+      buttonIconUrl: widget.buttonIconUrl || null,
+      inputPlaceholder: widget.inputPlaceholder || 'Type a message...',
+      showPoweredBy: widget.showPoweredBy !== false,
+      accessMode: widget.accessMode || 'private',
+      publicChatLimit: widget.publicChatLimit || 5,
+      fallbackMessage: widget.fallbackMessage || '',
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get widget config' });
+  }
+});
+
+// Embed login (public — returns JWT for embed user)
+app.post('/api/embed/login', async (req, res) => {
+  try {
+    const { email, password, widgetId } = req.body;
+    if (!email || !password || !widgetId) return res.status(400).json({ error: 'Missing fields' });
+
+    const widget = await db.collection('embed_widgets').findOne({ _id: new ObjectId(widgetId), isActive: true });
+    if (!widget) return res.status(404).json({ error: 'Widget not found' });
+
+    // Check allowed domains
+    const origin = req.headers.origin || '';
+    if (widget.allowedDomains?.length > 0) {
+      const allowed = widget.allowedDomains.some(d => origin.includes(d));
+      if (!allowed && !origin.includes('localhost')) {
+        return res.status(403).json({ error: 'Domain not allowed' });
+      }
+    }
+
+    const user = await db.collection('users').findOne({ email, status: 'active' });
+    if (!user || !await bcrypt.compare(password, user.password)) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const token = jwt.sign({ id: user._id, email: user.email, role: user.role }, JWT_SECRET);
+
+    // Store active session token (single session enforcement)
+    await db.collection('users').updateOne(
+      { _id: user._id },
+      { $set: { activeSessionToken: token, lastLoginAt: new Date(), lastLoginIP: req.ip } }
+    );
+
+    res.json({
+      token,
+      user: { id: user._id.toString(), email: user.email, fullName: user.fullName }
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// ─── Public Embed Chat (no auth, rate limited) ─────────────────
+const publicChatRateLimit = new Map(); // key: ip:widgetId → { count, resetAt }
+
+app.post('/api/embed/public/chat', async (req, res) => {
+  try {
+    const { message, sessionId, widgetId } = req.body;
+    if (!message || !widgetId) return res.status(400).json({ error: 'Missing fields' });
+
+    const widget = await db.collection('embed_widgets').findOne({ _id: new ObjectId(widgetId), isActive: true });
+    if (!widget || widget.accessMode !== 'public') return res.status(404).json({ error: 'Widget not found' });
+
+    // IP rate limit: 30 requests/hour per IP per widget
+    const ipKey = `${req.ip}:${widgetId}`;
+    const now = Date.now();
+    const ipEntry = publicChatRateLimit.get(ipKey) || { count: 0, resetAt: now + 3600000 };
+    if (now > ipEntry.resetAt) { ipEntry.count = 0; ipEntry.resetAt = now + 3600000; }
+    ipEntry.count++;
+    publicChatRateLimit.set(ipKey, ipEntry);
+    if (ipEntry.count > 30) return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+
+    const chatSessionId = sessionId || new ObjectId().toString();
+    const limit = widget.publicChatLimit || 5;
+
+    // Count existing user messages in this session
+    const msgCount = await db.collection('messages').countDocuments({ sessionId: chatSessionId, role: 'user', chatType: 'embed-public' });
+    if (msgCount >= limit) {
+      const fallback = widget.fallbackMessage || 'You have reached the question limit. Please contact our team for further assistance.';
+      return res.json({ response: fallback, sessionId: chatSessionId, sources: [], limitReached: true });
+    }
+
+    // Save user message
+    await db.collection('messages').insertOne({
+      sessionId: chatSessionId, role: 'user', content: message,
+      chatType: 'embed-public', chatName: widget.name,
+      visitorIp: req.ip, createdAt: new Date()
+    });
+
+    // Get org scope: widget's org + all children
+    const orgIds = [];
+    if (widget.organizationId) {
+      orgIds.push(widget.organizationId.toString());
+      const children = await db.collection('organizations').find({ parentId: new ObjectId(widget.organizationId) }).toArray();
+      for (const c of children) {
+        orgIds.push(c._id.toString());
+        const grandchildren = await db.collection('organizations').find({ parentId: c._id }).toArray();
+        grandchildren.forEach(gc => orgIds.push(gc._id.toString()));
+      }
+    }
+
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const overrideSettings = widget.systemPrompt ? { ...settings, chatSystemPrompt: widget.systemPrompt } : settings;
+
+    const result = await processPublicChat(db, message, chatSessionId, overrideSettings, orgIds);
+
+    await db.collection('messages').insertOne({
+      sessionId: chatSessionId, role: 'bot', content: result.response || '',
+      sources: result.sources || [], chatType: 'embed-public', chatName: widget.name,
+      createdAt: new Date()
+    });
+
+    const remaining = limit - msgCount - 1;
+    res.json({ response: result.response, sessionId: chatSessionId, sources: result.sources || [], remaining });
+  } catch (error) {
+    console.error('Public embed chat error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Public embed message history (no auth, by sessionId)
+app.get('/api/embed/public/messages', async (req, res) => {
+  try {
+    const { sessionId, widgetId } = req.query;
+    if (!sessionId || !widgetId) return res.json([]);
+    const messages = await db.collection('messages')
+      .find({ sessionId, chatType: 'embed-public' })
+      .sort({ createdAt: 1 }).toArray();
+    res.json(messages.map(m => ({ role: m.role, content: m.content, createdAt: m.createdAt })));
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load messages' });
+  }
+});
+
+// Embed chat (auth via JWT in header)
+app.post('/api/embed/chat', auth, async (req, res) => {
+  try {
+    const { message, sessionId, widgetId } = req.body;
+    if (!message || !widgetId) return res.status(400).json({ error: 'Missing fields' });
+
+    const widget = await db.collection('embed_widgets').findOne({ _id: new ObjectId(widgetId) });
+    if (!widget) return res.status(404).json({ error: 'Widget not found' });
+
+    const chatSessionId = sessionId || new ObjectId().toString();
+    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const startedByEmail = user?.email || 'Embed User';
+    const startedByName = startedByEmail.split('@')[0];
+
+    // Save user message
+    await db.collection('messages').insertOne({
+      userId: req.user.id, sessionId: chatSessionId,
+      startedBy: startedByName, startedByEmail,
+      role: 'user', content: message,
+      chatType: 'embed', chatName: widget.name,
+      createdAt: new Date()
+    });
+
+    // Use widget system prompt or fallback to global
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const overrideSettings = widget.systemPrompt
+      ? { ...settings, chatSystemPrompt: widget.systemPrompt }
+      : settings;
+
+    const chatStartTime = Date.now();
+    const result = await processBrowserChat(db, req.user.id, message, chatSessionId, overrideSettings, null);
+    const responseTimeMs = Date.now() - chatStartTime;
+
+    await db.collection('messages').insertOne({
+      userId: req.user.id, sessionId: chatSessionId,
+      startedBy: startedByName, startedByEmail,
+      role: 'bot', content: result.response || '',
+      sources: result.sources || [],
+      responseTimeMs,
+      chatType: 'embed', chatName: widget.name,
+      createdAt: new Date()
+    });
+
+    res.json({ response: result.response, sessionId: chatSessionId, sources: result.sources || [] });
+  } catch (error) {
+    console.error('Embed chat error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Embed chat history
+app.get('/api/embed/messages', auth, async (req, res) => {
+  try {
+    const { sessionId } = req.query;
+    if (!sessionId) return res.json([]);
+    const messages = await db.collection('messages')
+      .find({ sessionId, userId: req.user.id, chatType: 'embed' })
+      .sort({ createdAt: 1 }).toArray();
+    res.json(messages.map(m => ({ role: m.role, content: m.content, createdAt: m.createdAt })));
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load messages' });
+  }
+});
+
+// Embed sessions list
+app.get('/api/embed/sessions', auth, async (req, res) => {
+  try {
+    const sessions = await db.collection('messages').aggregate([
+      { $match: { userId: req.user.id, chatType: 'embed' } },
+      { $sort: { createdAt: 1 } },
+      { $group: { _id: '$sessionId', firstMessage: { $first: '$content' }, lastMessageAt: { $last: '$createdAt' }, messageCount: { $sum: 1 } } },
+      { $sort: { lastMessageAt: -1 } },
+      { $limit: 20 }
+    ]).toArray();
+    res.json(sessions.map(s => ({ id: s._id, title: (s.firstMessage || 'Chat').substring(0, 50), lastMessageAt: s.lastMessageAt })));
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load sessions' });
+  }
+});
+
+// ─── Embed Widget CRUD (Developer only) ───────────────────────
+app.get('/api/embed-widgets', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+    const widgets = await db.collection('embed_widgets').find().sort({ createdAt: -1 }).toArray();
+    res.json(widgets);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get widgets' });
+  }
+});
+
+app.post('/api/embed-widgets', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+    const b = req.body;
+    const result = await db.collection('embed_widgets').insertOne({
+      name: b.name || 'Chat Widget',
+      shape: b.shape || 'circle', color: b.color || '#3B82F6',
+      position: b.position || 'bottom-right',
+      logoUrl: b.logoUrl || '', allowedDomains: b.allowedDomains || [],
+      welcomeMessage: b.welcomeMessage || 'Hi! How can I help you?',
+      headerTitle: b.headerTitle || 'Chat with us',
+      headerSubtitle: b.headerSubtitle || '',
+      headerGradient: b.headerGradient || '',
+      theme: b.theme || 'light',
+      bubbleStyle: b.bubbleStyle || 'modern',
+      fontSize: b.fontSize || 'md',
+      windowRadius: b.windowRadius || 16,
+      buttonIconUrl: b.buttonIconUrl || '',
+      inputPlaceholder: b.inputPlaceholder || 'Type a message...',
+      showPoweredBy: b.showPoweredBy !== false,
+      systemPrompt: b.systemPrompt || '',
+      accessMode: b.accessMode || 'private',
+      publicChatLimit: parseInt(b.publicChatLimit) || 5,
+      fallbackMessage: b.fallbackMessage || '',
+      organizationId: b.organizationId || null,
+      isActive: true, createdAt: new Date()
+    });
+    res.json({ success: true, widgetId: result.insertedId });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to create widget' });
+  }
+});
+
+app.put('/api/embed-widgets/:id', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+    const b = req.body;
+    await db.collection('embed_widgets').updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: { name: b.name, shape: b.shape, color: b.color, position: b.position, logoUrl: b.logoUrl, buttonIconUrl: b.buttonIconUrl, allowedDomains: b.allowedDomains, welcomeMessage: b.welcomeMessage, headerTitle: b.headerTitle, headerSubtitle: b.headerSubtitle, headerGradient: b.headerGradient, theme: b.theme, bubbleStyle: b.bubbleStyle, fontSize: b.fontSize, windowRadius: b.windowRadius, inputPlaceholder: b.inputPlaceholder, showPoweredBy: b.showPoweredBy, systemPrompt: b.systemPrompt, accessMode: b.accessMode || 'private', publicChatLimit: parseInt(b.publicChatLimit) || 5, fallbackMessage: b.fallbackMessage || '', organizationId: b.organizationId || null, isActive: b.isActive, updatedAt: new Date() } }
+    );
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update widget' });
+  }
+});
+
+app.delete('/api/embed-widgets/:id', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+    await db.collection('embed_widgets').deleteOne({ _id: new ObjectId(req.params.id) });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete widget' });
+  }
+});
+
+// Upload widget logo
+app.post('/api/embed-widgets/upload-logo', auth, hasPermission(), upload.single('logo'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const logoDir = join(__dirname, 'public', 'embed', 'logos');
+    if (!fs.existsSync(logoDir)) fs.mkdirSync(logoDir, { recursive: true });
+    const logoFileName = `widget-${Date.now()}.${req.file.originalname.split('.').pop()}`;
+    fs.copyFileSync(req.file.path, join(logoDir, logoFileName));
+    fs.unlinkSync(req.file.path);
+    res.json({ success: true, logoUrl: `/embed/logos/${logoFileName}` });
+  } catch (error) {
+    res.status(500).json({ error: 'Upload failed' });
   }
 });
 

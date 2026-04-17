@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { useConfirm } from "./ConfirmDialog";
 import { Loader2, Send, Trash2, FileText } from "lucide-react";
 
 export const TextEmbeddedPage = () => {
@@ -9,6 +10,7 @@ export const TextEmbeddedPage = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [embeddings, setEmbeddings] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const confirm = useConfirm();
 
   useEffect(() => { loadEmbeddings(); }, []);
 
@@ -39,7 +41,7 @@ export const TextEmbeddedPage = () => {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Delete this embedding?")) return;
+    if (!await confirm("Delete this embedding?")) return;
     try {
       const res = await fetch(`/api/text-embeddings/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
       if (res.ok) { toast.success("Deleted"); loadEmbeddings(); } else toast.error("Failed");

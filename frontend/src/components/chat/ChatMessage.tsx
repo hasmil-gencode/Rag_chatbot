@@ -88,9 +88,7 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, s
 
   const handleSpeak = async () => {
     if (isPlaying) {
-      if (ttsMode === 'browser') {
-        window.speechSynthesis.cancel();
-      } else if (audio) {
+      if (audio) {
         audio.pause();
         audio.currentTime = 0;
       }
@@ -117,34 +115,9 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, s
       .replace(/[-*]\s/g, '')           // - list -> list
       .replace(/\n+/g, '. ');           // newlines -> periods
 
-    if (ttsMode === 'browser') {
-      // Browser Web Speech API
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-      utterance.lang = ttsLanguage;
-      utterance.onstart = () => {
-        setIsLoading(false);
-        setIsPlaying(true);
-      };
-      utterance.onend = () => {
-        setIsPlaying(false);
-        localStorage.removeItem('ttsPlaying');
-        if (localStorage.getItem('continuousMode') === 'true') {
-          localStorage.setItem('continuousModeMessage', 'Listening...');
-        }
-        window.dispatchEvent(new CustomEvent('ttsEnded'));
-      };
-      utterance.onerror = () => {
-        setIsPlaying(false);
-        setIsLoading(false);
-        localStorage.removeItem('ttsPlaying');
-        if (localStorage.getItem('continuousMode') === 'true') {
-          localStorage.setItem('continuousModeMessage', 'Listening...');
-        }
-        window.dispatchEvent(new CustomEvent('ttsEnded'));
-      };
-      window.speechSynthesis.speak(utterance);
-    } else {
-      // Google TTS or Gemini TTS
+    const effectiveMode = (ttsMode === 'browser') ? 'gemini' : ttsMode;
+    {
+      // API-based TTS (Gemini / Google Cloud)
       try {
         const token = localStorage.getItem('token');
         const response = await fetch('/api/tts', {
@@ -153,7 +126,7 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, s
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ text: cleanText, language: ttsLanguage, mode: ttsMode })
+          body: JSON.stringify({ text: cleanText, language: ttsLanguage, mode: effectiveMode })
         });
 
         if (!response.ok) throw new Error('TTS failed');
@@ -226,7 +199,7 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, s
                 <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground opacity-40 typing-dot" />
               </div>
             ) : (
-              <div className="text-[14px] leading-relaxed text-foreground prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-headings:my-3 prose-strong:text-foreground prose-code:text-foreground prose-code:bg-muted/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded">
+              <div className="text-[14px] leading-relaxed text-foreground prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-headings:my-3 prose-headings:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-code:bg-muted/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded">
                 <ReactMarkdown 
                   remarkPlugins={[remarkGfm]}
                   components={{ a: LinkRenderer }}
@@ -269,7 +242,7 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, s
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {sources.map((s, i) => (
               <span key={i} className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
-                📎 {s.file_name}{s.page_number > 0 ? ` — p.${s.page_number}` : ''}
+                {s.file_name}{s.page_number > 0 ? ` — p.${s.page_number}` : ''}
               </span>
             ))}
           </div>

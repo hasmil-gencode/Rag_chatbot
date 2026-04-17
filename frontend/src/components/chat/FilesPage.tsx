@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
-import { Download, FileText, Trash2, Search, X } from "lucide-react";
+import { useConfirm } from "./ConfirmDialog";
+import { Download, FileText, Trash2, Search, X, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { downloadFile } from "@/lib/fileHelper";
@@ -9,12 +10,19 @@ export const FilesPage = () => {
   const [files, setFiles] = useState<any[]>([]);
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [selectedOrgs, setSelectedOrgs] = useState<string[]>([]);
+  const [isPublicUpload, setIsPublicUpload] = useState(false);
+  const [orgPublicEnabled, setOrgPublicEnabled] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadStep, setUploadStep] = useState("");
+  const [uploadPreviews, setUploadPreviews] = useState<string[]>([]);
+  const [waitingForConfirm, setWaitingForConfirm] = useState(false);
+  const confirmResolveRef = useRef<(() => void) | null>(null);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [storageInfo, setStorageInfo] = useState<{ used: number; limit: number } | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<string>('date');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const confirm = useConfirm();
   const userRole = localStorage.getItem('userRole') || 'user';
   const userId = localStorage.getItem('userId') || '';
   const isDeveloper = userRole.toLowerCase() === 'developer';
@@ -22,26 +30,44 @@ export const FilesPage = () => {
   useEffect(() => { loadFiles(); loadOrganizations(); loadStorageInfo(); }, []);
 
   const loadFiles = async () => { try { setFiles(await api.getFiles(null)); } catch (e) { console.error(e); } };
-  const loadOrganizations = async () => { try { const d = isDeveloper ? await api.getAllOrganizations() : await api.getMyOrganizationsHierarchy(); setOrganizations(d.organizations || []); } catch (e) { console.error(e); } };
+  const loadOrganizations = async () => { try { const d = isDeveloper ? await api.getAllOrganizations() : await api.getMyOrganizationsHierarchy(); const orgList = d.organizations || []; setOrganizations(orgList); setOrgPublicEnabled(orgList.some((o: any) => o.type === 'organization' && o.publicEnabled)); } catch (e) { console.error(e); } };
   const loadStorageInfo = async () => { try { setStorageInfo(await api.getStorageInfo()); } catch (e) { console.error(e); } };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setIsUploading(true);
+    setUploadStep("Uploading file...");
+    setUploadPreviews([]);
     try {
-      await api.uploadFile(file, selectedOrgs);
+      await api.uploadFile(file, selectedOrgs, (_step, detail) => {
+        if (_step === 'preview') {
+          setUploadPreviews(prev => [...prev, detail]);
+        } else {
+          setUploadStep(detail);
+        }
+      }, isPublicUpload);
       await loadFiles();
       await loadStorageInfo();
       setSelectedOrgs([]);
+      setIsPublicUpload(false);
+      if (uploadPreviews.length > 0 || true) {
+        // Show preview for all users
+        setUploadStep("Done — review extracted text below");
+        setWaitingForConfirm(true);
+        await new Promise<void>(resolve => { confirmResolveRef.current = resolve; });
+        setWaitingForConfirm(false);
+      }
       setShowUploadModal(false);
+      setUploadStep("");
+      setUploadPreviews([]);
       toast.success("File uploaded successfully");
-    } catch (error: any) { toast.error(error.message); }
+    } catch (error: any) { toast.error(error.message); setUploadStep(""); setUploadPreviews([]); }
     finally { setIsUploading(false); if (e.target) e.target.value = ''; }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Delete this file?")) return;
+    if (!await confirm("Delete this file?")) return;
     try { await api.deleteFile(id); await loadFiles(); await loadStorageInfo(); toast.success("File deleted"); }
     catch (error: any) { toast.error(error.message); }
   };
@@ -242,6 +268,12 @@ export const FilesPage = () => {
 
             <p className="text-xs font-medium mb-2">Share with</p>
             <div className="border rounded-lg p-3 mb-4 space-y-1">
+              {rootOrgs.length === 0 && isDeveloper && (
+                <p className="text-[11px] text-muted-foreground py-2 text-center">No organizations. File will be private (developer only).</p>
+              )}
+              {rootOrgs.length === 0 && !isDeveloper && (
+                <p className="text-[11px] text-muted-foreground py-2 text-center">No organizations available.</p>
+              )}
               {rootOrgs.map(root => {
                 const children = getChildren(root._id);
                 const isSelected = selectedOrgs.includes(root._id);
@@ -306,12 +338,35 @@ export const FilesPage = () => {
               </div>
             )}
 
+            {orgPublicEnabled && (
+              <label className="flex items-center gap-2 py-2 cursor-pointer">
+                <input type="checkbox" checked={isPublicUpload} onChange={e => setIsPublicUpload(e.target.checked)} className="rounded" />
+                <span className="text-xs flex items-center gap-1.5"><Globe className="w-3.5 h-3.5" />Make available for public widget</span>
+              </label>
+            )}
+
             <input type="file" id="file-upload-modal" className="hidden" onChange={handleFileSelect} disabled={isUploading} accept=".pdf,.txt,.csv,.json,.docx,.html,.md,.xlsx,.xls,.png,.jpg,.jpeg" />
             <div className="relative group">
-              <Button disabled={isUploading || selectedOrgs.length === 0} onClick={() => document.getElementById('file-upload-modal')?.click()} className="w-full text-xs h-9 rounded-lg">
-                {isUploading ? "Uploading..." : "Choose File & Upload"}
+              <Button disabled={isUploading || (!isDeveloper && selectedOrgs.length === 0)} onClick={() => document.getElementById('file-upload-modal')?.click()} className="w-full text-xs h-9 rounded-lg">
+                {isUploading ? "Processing..." : "Choose File & Upload"}
               </Button>
-              {selectedOrgs.length === 0 && !isUploading && (
+              {isUploading && uploadStep && (
+                <p className={`text-[11px] text-muted-foreground text-center mt-2 ${!waitingForConfirm ? 'animate-pulse' : ''}`}>{uploadStep}</p>
+              )}
+              {uploadPreviews.length > 0 && (
+                <div className="mt-2 border rounded-lg max-h-72 overflow-y-auto p-2 bg-muted/30">
+                  <p className="text-[10px] font-medium text-muted-foreground mb-1">Extracted Text Preview:</p>
+                  {uploadPreviews.map((text, i) => (
+                    <pre key={i} className="text-[10px] text-muted-foreground whitespace-pre-wrap break-all font-mono mb-2">{text}</pre>
+                  ))}
+                </div>
+              )}
+              {waitingForConfirm && (
+                <Button size="sm" onClick={() => { if (confirmResolveRef.current) confirmResolveRef.current(); }} className="w-full text-xs h-9 rounded-lg mt-2">
+                  Done
+                </Button>
+              )}
+              {!isDeveloper && selectedOrgs.length === 0 && !isUploading && (
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-foreground text-background text-[11px] rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
                   Please choose share with first
                   <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-foreground" />

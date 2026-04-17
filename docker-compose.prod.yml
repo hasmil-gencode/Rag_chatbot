@@ -14,13 +14,14 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
+    networks:
+      - ragnet
     restart: unless-stopped
 
   # ── MongoDB Local ─────────────────────────────
   mongodb:
     image: mongo:7
-    ports:
-      - "27017:27017"
+    # No ports exposed — internal only
     volumes:
       - mongodb_data:/data/db
     healthcheck:
@@ -28,13 +29,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - ragnet
     restart: unless-stopped
 
   # ── n8n Local ─────────────────────────────────
   n8n:
     image: n8nio/n8n:latest
-    ports:
-      - "5678:5678"
+    # No ports exposed — access via SSH tunnel: ssh -L 5678:localhost:5678 user@server
     environment:
       - DB_TYPE=default
       - N8N_BASIC_AUTH_ACTIVE=true
@@ -43,37 +45,34 @@ services:
       - WEBHOOK_URL=http://n8n:5678/
     volumes:
       - n8n_data:/home/node/.n8n
+    networks:
+      - ragnet
     restart: unless-stopped
 
   # ── Qdrant Vector DB ──────────────────────────
   qdrant:
     image: qdrant/qdrant:latest
-    ports:
-      - "6333:6333"
-      - "6334:6334"
+    # No ports exposed — internal only
     volumes:
       - qdrant_data:/qdrant/storage
+    networks:
+      - ragnet
     restart: unless-stopped
 
-  # ── Ollama (GLM-OCR + Embedding models) ───────
+  # ── Ollama (Embedding models) ──────────────────
   ollama:
     image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
+    # No ports exposed — internal only
     volumes:
       - ollama_data:/root/.ollama
+    networks:
+      - ragnet
     restart: unless-stopped
 
-  # ── Offline OCR Service (Ollama GLM-OCR) ──────
-  ocr-service:
-    build: ./glmocr-service
-    ports:
-      - "5002:5002"
-    environment:
-      - OLLAMA_HOST=http://ollama:11434
-    depends_on:
-      - ollama
-    restart: unless-stopped
+networks:
+  ragnet:
+    name: ragnet
+    driver: bridge
 
 volumes:
   mongodb_data:

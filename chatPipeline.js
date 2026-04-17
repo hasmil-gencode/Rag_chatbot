@@ -33,22 +33,29 @@ export async function getUserAccessibleOrgIds(db, userId) {
 
 // ─── Embed Query ───────────────────────────────────────────────
 async function embedQuery(text, settings) {
-  const provider = settings.chatEmbeddingProvider || 'ollama';
-  const model = settings.chatEmbeddingModel || 'nomic-embed-text-v2-moe';
+  const provider = settings.chatEmbeddingProvider;
+  const model = settings.chatEmbeddingModel;
+  if (!provider) throw new Error('Chat Embedding Provider not configured. Go to Settings → Chat → Embedding.');
+  if (!model) throw new Error('Chat Embedding Model not configured. Go to Settings → Chat → Embedding.');
 
   if (provider === 'ollama') {
-    const url = settings.chatEmbeddingOllamaUrl || settings.offlineOllamaUrl || 'http://ollama:11434';
+    const url = settings.chatEmbeddingOllamaUrl;
+    if (!url) throw new Error('Chat Embedding Ollama URL not configured.');
     const res = await axios.post(`${url}/api/embed`, { model, input: text });
     return res.data.embeddings[0];
   }
   if (provider === 'openai') {
-    const openai = new OpenAI({ apiKey: settings.chatEmbeddingApiKey });
+    const key = settings[`chatEmbeddingApiKey_openai`] || settings.chatEmbeddingApiKey;
+    if (!key) throw new Error('Chat Embedding API key not set for OpenAI. Check Settings or Provider Keys.');
+    const openai = new OpenAI({ apiKey: key });
     const res = await openai.embeddings.create({ model, input: [text] });
     return res.data[0].embedding;
   }
   if (provider === 'gemini') {
+    const key = settings[`chatEmbeddingApiKey_gemini`] || settings.chatEmbeddingApiKey;
+    if (!key) throw new Error('Chat Embedding API key not set for Gemini. Check Settings or Provider Keys.');
     const res = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${settings.chatEmbeddingApiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${key}`,
       { content: { parts: [{ text }] }, taskType: 'RETRIEVAL_QUERY' }
     );
     return res.data.embedding.values;
@@ -59,12 +66,15 @@ async function embedQuery(text, settings) {
 // ─── Vector Search ─────────────────────────────────────────────
 async function searchVectors(queryVector, orgIds, settings, fileId = null) {
   const maxChunks = settings.chatMaxChunks || 5;
-  const mode = settings.uploadProcessingMode || 'offline';
-  const vectorDb = mode === 'offline' ? 'qdrant' : (settings.vectorDbProvider || 'qdrant');
+  const mode = settings.uploadProcessingMode;
+  if (!mode) throw new Error('Upload Processing Mode not configured. Go to Settings → Upload Processing.');
+  const vectorDb = mode === 'offline' ? 'qdrant' : (settings.vectorDbProvider);
+  if (!vectorDb) throw new Error('Vector Database Provider not configured. Go to Settings → Upload Processing → Vector Database.');
 
   if (vectorDb === 'qdrant') {
-    const host = mode === 'offline' ? (settings.offlineQdrantHost || 'qdrant') : (settings.qdrantHost || 'qdrant');
-    const port = mode === 'offline' ? (settings.offlineQdrantPort || 6333) : (settings.qdrantPort || 6333);
+    const host = mode === 'offline' ? settings.offlineQdrantHost : settings.qdrantHost;
+    const port = mode === 'offline' ? settings.offlineQdrantPort : settings.qdrantPort;
+    if (!host || !port) throw new Error('Qdrant host/port not configured. Go to Settings → Upload Processing → Vector Database.');
     const client = new QdrantClient({ host, port });
 
     // Build filter
@@ -105,11 +115,51 @@ async function searchVectors(queryVector, orgIds, settings, fileId = null) {
   }));
 }
 
+// ─── Public Vector Search (is_public: true + org scope) ────────
+async function searchPublicVectors(queryVector, orgIds, settings) {
+  const maxChunks = settings.chatMaxChunks || 5;
+  const mode = settings.uploadProcessingMode;
+  const vectorDb = mode === 'offline' ? 'qdrant' : (settings.vectorDbProvider || 'qdrant');
+
+  if (vectorDb === 'qdrant') {
+    const host = mode === 'offline' ? settings.offlineQdrantHost : settings.qdrantHost;
+    const port = mode === 'offline' ? settings.offlineQdrantPort : settings.qdrantPort;
+    const client = new QdrantClient({ host, port });
+
+    const must = [{ key: 'is_public', match: { value: true } }];
+    const should = orgIds.length > 0 ? orgIds.map(id => ({ key: 'shared_with', match: { value: id } })) : undefined;
+    const filter = { must, should };
+
+    const results = await client.search(QDRANT_COLLECTION, {
+      vector: queryVector, limit: maxChunks, with_payload: true, filter,
+    }).catch(() => []);
+
+    return results.map(r => ({
+      content: r.payload?.content || '', file_name: r.payload?.file_name || '',
+      page_number: r.payload?.page_number || 0, score: r.score,
+    }));
+  }
+
+  // Pinecone
+  const pc = new Pinecone({ apiKey: settings.pineconeApiKey });
+  const index = pc.index(settings.pineconeIndexName);
+  const filter = { is_public: true };
+  if (orgIds.length > 0) filter.shared_with = { $in: orgIds };
+  const results = await index.query({ vector: queryVector, topK: maxChunks, includeMetadata: true, filter });
+  return (results.matches || []).map(m => ({
+    content: m.metadata?.content || '', file_name: m.metadata?.file_name || '',
+    page_number: m.metadata?.page_number || 0, score: m.score,
+  }));
+}
+
 // ─── Call LLM ──────────────────────────────────────────────────
 async function callLLM(messages, settings) {
-  const provider = settings.chatLlmProvider || 'gemini';
-  const model = settings.chatLlmModel || 'gemini-2.5-flash';
-  const apiKey = settings[`chatLlmApiKey_${provider}`] || settings.chatLlmApiKey || '';
+  const provider = settings.chatLlmProvider;
+  const model = settings.chatLlmModel;
+  const apiKey = settings[`chatLlmApiKey_${provider}`] || settings.chatLlmApiKey;
+  if (!provider) throw new Error('Chat LLM Provider not configured. Go to Settings → Chat → LLM.');
+  if (!model) throw new Error('Chat LLM Model not configured. Go to Settings → Chat → LLM.');
+  if (!apiKey && provider !== 'ollama_local') throw new Error(`Chat LLM API key not set for ${provider}. Check Settings or Provider Keys.`);
 
   if (provider === 'gemini') {
     // Gemini: system role goes in systemInstruction, not in contents
@@ -133,16 +183,6 @@ async function callLLM(messages, settings) {
     return res.choices[0]?.message?.content || '';
   }
 
-  if (provider === 'zai') {
-    const res = await axios.post('https://api.z.ai/api/paas/v4/chat/completions', {
-      model, messages,
-    }, {
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      timeout: 60000,
-    });
-    return res.data.choices?.[0]?.message?.content || '';
-  }
-
   if (provider === 'ollama_cloud') {
     const res = await axios.post('https://ollama.com/api/chat', {
       model, messages: messages.map(m => ({ role: m.role, content: m.content })), stream: false,
@@ -154,7 +194,8 @@ async function callLLM(messages, settings) {
   }
 
   if (provider === 'ollama_local') {
-    const url = settings.chatLlmOllamaUrl || 'http://ollama:11434';
+    const url = settings.chatLlmOllamaUrl;
+    if (!url) throw new Error('Chat LLM Ollama URL not configured. Go to Settings → Chat → LLM.');
     const res = await axios.post(`${url}/api/chat`, {
       model, messages: messages.map(m => ({ role: m.role, content: m.content })), stream: false,
     }, { timeout: 120000 });
@@ -215,4 +256,32 @@ export async function processBrowserChat(db, userId, message, sessionId, setting
   });
 
   return { response, sources: uniqueSources };
+}
+
+// ─── Public Embed Chat (no user, only public docs) ─────────────
+export async function processPublicChat(db, message, sessionId, settings, orgIds) {
+  const queryVector = await embedQuery(message, settings);
+  const chunks = await searchPublicVectors(queryVector, orgIds, settings);
+
+  const systemPrompt = settings.chatSystemPrompt || 'You are a helpful AI assistant.';
+  let contextBlock = '';
+  if (chunks.length > 0) {
+    contextBlock = '\n\n## Context from documents:\n' +
+      chunks.map((c, i) => `[Source ${i + 1}: ${c.file_name}, Page ${c.page_number}]\n${c.content}`).join('\n\n');
+  }
+
+  const history = await db.collection('messages')
+    .find({ sessionId, role: { $in: ['user', 'bot'] } })
+    .sort({ createdAt: 1 }).limit(10).toArray();
+
+  const messages = [
+    { role: 'system', content: systemPrompt + contextBlock },
+    ...history.map(m => ({ role: m.role === 'bot' ? 'assistant' : 'user', content: m.content })),
+    { role: 'user', content: message },
+  ];
+
+  const response = await callLLM(messages, settings);
+  const seen = new Set();
+  const sources = chunks.filter(c => c.file_name).map(c => ({ file_name: c.file_name, page_number: c.page_number, score: c.score })).filter(s => { const k = `${s.file_name}:${s.page_number}`; if (seen.has(k)) return false; seen.add(k); return true; });
+  return { response, sources };
 }

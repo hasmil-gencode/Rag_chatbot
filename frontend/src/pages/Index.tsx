@@ -1,21 +1,24 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Toaster, toast } from "sonner";
+import { ConfirmDialogProvider, useConfirm } from "@/components/chat/ConfirmDialog";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { ChatArea } from "@/components/chat/ChatArea";
 import { FilesPage } from "@/components/chat/FilesPage";
 import { SettingsPage } from "@/components/chat/SettingsPage";
 import { ApiManagementPage } from "@/components/chat/ApiManagementPage";
-import { RobotSettingsPage } from "@/components/chat/RobotSettingsPage";
-import { OllamaModelsPage } from "@/components/chat/OllamaModelsPage";
 import { GroupsPage } from "@/components/chat/GroupsPage";
+import { NewClientPage } from "@/components/chat/NewClientPage";
+import { ProviderKeysPage } from "@/components/chat/ProviderKeysPage";
 import { FormsPage } from "@/components/chat/FormsPage";
 import { DownloadTrackingPage } from "@/components/chat/DownloadTrackingPage";
 import { UsersPage } from "@/components/chat/UsersPage";
 import { OrganizationsPage } from "@/components/chat/OrganizationsPage";
+import { AuditTrailPage } from "@/components/chat/AuditTrailPage";
 import { DeletedChatsPage } from "@/components/chat/DeletedChatsPage";
 import { TextEmbeddedPage } from "@/components/chat/TextEmbeddedPage";
 import { UserSettingsPage } from "@/components/chat/UserSettingsPage";
 import { WebViewPanel } from "@/components/chat/WebViewPanel";
+import { EmbedWidgetsPage } from "@/components/chat/EmbedWidgetsPage";
 import { api, setUnauthorizedHandler } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,8 +43,9 @@ interface ChatSession {
 
 const Index = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const confirm = useConfirm();
   const [isLoading, setIsLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "groups" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded" | "user-settings" | "robot-settings" | "ollama-models">("chat");
+  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "plans" | "forms" | "download-tracking" | "users" | "organizations" | "deleted-chats" | "text-embedded" | "user-settings" | "new-client" | "provider-keys" | "audit-trail" | "embed-widgets">("chat");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
@@ -391,7 +395,8 @@ const Index = () => {
   if (!isAuthenticated) {
     return (
       <>
-        <Toaster position="top-right" richColors />
+        <Toaster position="top-center" theme="dark" toastOptions={{ style: { background: 'hsl(var(--background))', border: '1px solid hsl(var(--border))', color: 'hsl(var(--foreground))' } }} />
+        <ConfirmDialogProvider />
         <div className="h-screen flex">
         {/* Left Side - Marketing */}
         <div className="hidden lg:flex lg:w-[60%] p-9 flex-col justify-between relative overflow-hidden">
@@ -627,7 +632,8 @@ const Index = () => {
 
   return (
     <>
-      <Toaster position="top-right" richColors />
+      <Toaster position="top-center" theme="dark" toastOptions={{ style: { background: 'hsl(var(--background))', border: '1px solid hsl(var(--border))', color: 'hsl(var(--foreground))' } }} />
+      <ConfirmDialogProvider />
       <div 
         className="flex h-screen bg-background overflow-hidden"
         onClick={() => {
@@ -698,8 +704,8 @@ const Index = () => {
                     
                     {(userRole === 'developer' || currentSessionId) && (
                       <button
-                        onClick={() => {
-                          if (currentSessionId && confirm('Delete this chat?')) {
+                        onClick={async () => {
+                          if (currentSessionId && await confirm('Delete this chat?')) {
                             handleDeleteChat(currentSessionId);
                             setShowMobileMenu(false);
                           }
@@ -804,16 +810,18 @@ const Index = () => {
             {currentPage === "files" && <FilesPage />}
             {currentPage === "settings" && <SettingsPage />}
             {currentPage === "api" && <ApiManagementPage />}
-            {currentPage === "robot-settings" && <RobotSettingsPage />}
-            {currentPage === "ollama-models" && <OllamaModelsPage />}
-            {currentPage === "groups" && <GroupsPage />}
+            {currentPage === "plans" && <GroupsPage />}
+            {currentPage === "new-client" && <NewClientPage onNavigate={setCurrentPage} />}
+            {currentPage === "provider-keys" && <ProviderKeysPage />}
             {currentPage === "forms" && <FormsPage />}
             {currentPage === "download-tracking" && <DownloadTrackingPage />}
             {currentPage === "deleted-chats" && <DeletedChatsPage />}
             {currentPage === "organizations" && <OrganizationsPage />}
+            {currentPage === "audit-trail" && <AuditTrailPage />}
             {currentPage === "users" && <UsersPage />}
             {currentPage === "text-embedded" && <TextEmbeddedPage />}
             {currentPage === "user-settings" && <UserSettingsPage />}
+            {currentPage === "embed-widgets" && <EmbedWidgetsPage />}
           </div>
           
           {/* Web view panel */}

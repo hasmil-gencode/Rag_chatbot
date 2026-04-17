@@ -1,32 +1,35 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "./ConfirmDialog";
+import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { Plus, Trash2, Edit, Building2, X } from "lucide-react";
+import { Plus, Trash2, Edit, Building2, X, Globe } from "lucide-react";
 
 export const OrganizationsPage = () => {
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editingOrg, setEditingOrg] = useState<any>(null);
-  const [formData, setFormData] = useState({ name: "", type: "department" as "organization" | "entity" | "department", parentId: null as string | null });
+  const [formData, setFormData] = useState({ name: "", type: "department" as "organization" | "entity" | "department", parentId: null as string | null, publicEnabled: false });
   const userRole = localStorage.getItem('userRole') || 'user';
   const isDeveloper = userRole === 'developer';
+  const confirm = useConfirm();
 
   useEffect(() => { loadData(); }, []);
 
   const loadData = async () => { try { const data = await api.getAllOrganizations(); setOrganizations(data.organizations || []); } catch (e) { console.error(e); } };
 
-  const handleEdit = (org: any) => { setEditingOrg(org); setFormData({ name: org.name, type: org.type, parentId: org.parentId }); setShowForm(true); };
+  const handleEdit = (org: any) => { setEditingOrg(org); setFormData({ name: org.name, type: org.type, parentId: org.parentId, publicEnabled: org.publicEnabled || false }); setShowForm(true); };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      if (editingOrg) await api.updateOrganization(editingOrg._id, formData.name, formData.type, formData.parentId);
-      else await api.createOrganization(formData.name, formData.type, formData.parentId);
-      setShowForm(false); setEditingOrg(null); setFormData({ name: "", type: "organization", parentId: null }); loadData();
-    } catch (e: any) { alert(e.message); }
+      if (editingOrg) await api.updateOrganization(editingOrg._id, formData.name, formData.type, formData.parentId, formData.publicEnabled);
+      else await api.createOrganization(formData.name, formData.type, formData.parentId, formData.publicEnabled);
+      setShowForm(false); setEditingOrg(null); setFormData({ name: "", type: "organization", parentId: null, publicEnabled: false }); loadData();
+    } catch (e: any) { toast.error(e.message); }
   };
 
-  const handleDelete = async (orgId: string) => { if (confirm("Delete this organization?")) { try { await api.deleteOrganization(orgId); loadData(); } catch (e: any) { alert(e.message); } } };
+  const handleDelete = async (orgId: string) => { if (await confirm("Delete this organization?")) { try { await api.deleteOrganization(orgId); loadData(); } catch (e: any) { toast.error(e.message); } } };
 
   const orgsByType = {
     organization: organizations.filter(o => o.type === 'organization'),
@@ -52,7 +55,7 @@ export const OrganizationsPage = () => {
             <tr><td colSpan={isDeveloper ? 3 : 2} className="px-4 py-8 text-center text-sm text-muted-foreground">No {typeLabel.toLowerCase()}s</td></tr>
           ) : orgs.map((org) => (
             <tr key={org._id} className="border-t hover:bg-muted/30 transition-colors">
-              <td className="px-4 py-2.5 font-medium">{org.name}</td>
+              <td className="px-4 py-2.5 font-medium">{org.name}{org.publicEnabled && <span className="ml-2 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300"><Globe className="w-3 h-3" />Public</span>}</td>
               <td className="px-4 py-2.5 text-muted-foreground text-[12px]">{org.path?.join(' > ')}</td>
               {isDeveloper && (
                 <td className="px-4 py-2.5 text-right">
@@ -82,7 +85,7 @@ export const OrganizationsPage = () => {
             <h1 className="text-xl font-semibold">{isDeveloper ? 'Organizations' : 'Departments'}</h1>
             <p className="text-xs text-muted-foreground mt-0.5">{isDeveloper ? 'Manage organizational hierarchy.' : 'Manage departments under your organization.'}</p>
           </div>
-          <Button size="sm" onClick={() => { setShowForm(true); setEditingOrg(null); setFormData({ name: "", type: isDeveloper ? "organization" : "department", parentId: null }); }} className="text-xs h-8 rounded-lg">
+          <Button size="sm" onClick={() => { setShowForm(true); setEditingOrg(null); setFormData({ name: "", type: isDeveloper ? "organization" : "department", parentId: null, publicEnabled: false }); }} className="text-xs h-8 rounded-lg">
             <Plus className="w-3.5 h-3.5 mr-1.5" /> {isDeveloper ? 'Create' : 'Add Department'}
           </Button>
         </div>
@@ -148,6 +151,12 @@ export const OrganizationsPage = () => {
                     {formData.type === 'department' && [...orgsByType.organization, ...orgsByType.entity].map((org) => <option key={org._id} value={org._id}>{org.name} ({org.type})</option>)}
                   </select>
                 </div>
+              )}
+              {isDeveloper && formData.type === 'organization' && (
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={formData.publicEnabled} onChange={e => setFormData({ ...formData, publicEnabled: e.target.checked })} className="rounded" />
+                  <span className="text-xs flex items-center gap-1.5"><Globe className="w-3.5 h-3.5" />Enable public access (embed widget for external visitors)</span>
+                </label>
               )}
               <div className="flex gap-2 pt-2">
                 <Button type="submit" size="sm" className="text-xs h-8 flex-1">{editingOrg ? 'Update' : 'Create'}</Button>

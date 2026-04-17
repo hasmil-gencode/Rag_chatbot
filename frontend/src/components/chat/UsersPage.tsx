@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "./ConfirmDialog";
+import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { Plus, Trash2, Edit, KeyRound, X } from "lucide-react";
 
@@ -15,6 +17,7 @@ export const UsersPage = () => {
   const [formData, setFormData] = useState({ email: "", password: "", fullName: "", organizationIds: [] as string[], canUploadFiles: true, isAdmin: false });
   const userRole = localStorage.getItem('userRole') || 'user';
   const isDeveloper = userRole === 'developer';
+  const confirm = useConfirm();
 
   useEffect(() => { loadData(); }, []);
 
@@ -53,16 +56,16 @@ export const UsersPage = () => {
         if (formData.organizationIds.length > 0) await api.assignUserToOrganizations(userData.userId, formData.organizationIds);
       }
       setShowForm(false); setEditingUser(null); setFormData({ email: "", password: "", fullName: "", organizationIds: [], canUploadFiles: true, isAdmin: false }); loadData();
-    } catch (e: any) { alert(e.message); }
+    } catch (e: any) { toast.error(e.message); }
   };
 
-  const handleDelete = async (userId: string) => { if (confirm("Delete this user?")) { try { await api.deleteUser(userId); loadData(); } catch (e: any) { alert(e.message); } } };
+  const handleDelete = async (userId: string) => { if (await confirm("Delete this user?")) { try { await api.deleteUser(userId); loadData(); } catch (e: any) { toast.error(e.message); } } };
   const handleResetPassword = (userId: string, email: string) => { setResetUserId(userId); setResetUserEmail(email); setDefaultPassword(""); setShowResetPasswordModal(true); };
 
   const handleConfirmResetPassword = async () => {
-    if (!defaultPassword || defaultPassword.length < 8) { alert("Password must be at least 8 characters"); return; }
-    try { await api.resetUserPassword(resetUserId, defaultPassword); alert(`Password reset!\nUser: ${resetUserEmail}\nDefault: ${defaultPassword}`); setShowResetPasswordModal(false); }
-    catch (e: any) { alert(e.message); }
+    if (!defaultPassword || defaultPassword.length < 8) { toast.error("Password must be at least 8 characters"); return; }
+    try { await api.resetUserPassword(resetUserId, defaultPassword); toast.success(`Password reset for ${resetUserEmail}`); setShowResetPasswordModal(false); }
+    catch (e: any) { toast.error(e.message); }
   };
 
   const activeUsers = users.filter(u => u.status === 'active').length;

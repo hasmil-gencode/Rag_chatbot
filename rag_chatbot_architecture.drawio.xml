@@ -1,0 +1,1088 @@
+<mxfile host="app.diagrams.net" modified="2026-04-16T09:07:00.000Z" agent="Codex" version="24.7.17" type="device" compressed="false">
+  <diagram id="high-level-overview" name="0. High-Level Overview">
+    <mxGraphModel dx="1644" dy="944" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="ht" value="&lt;font style=&quot;font-size:26px;color:#333333;&quot;&gt;&lt;b&gt;RAG Chatbot — High-Level Overview&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:13px;color:#555555;&quot;&gt;Multi-tenant AI chatbot platform with organization-based document sharing, voice I/O, embeddable widget, and quota management&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;fontColor=#333333;align=left;verticalAlign=top;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="1000" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- WHO USES IT -->
+        <mxCell id="hw" value="&lt;b&gt;Who Uses It&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#dae8fc;fontColor=#333333;strokeColor=#6c8ebf;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="20" y="90" width="340" height="500" as="geometry"/>
+        </mxCell>
+        <mxCell id="hw1" value="&lt;b&gt;👨‍💻 Developer (Superadmin)&lt;/b&gt;&lt;br&gt;• Full system access&lt;br&gt;• Create clients, manage settings&lt;br&gt;• Configure AI providers&lt;br&gt;• Manage embed widgets&lt;br&gt;• View all data across all orgs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="hw">
+          <mxGeometry x="20" y="40" width="300" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="hw2" value="&lt;b&gt;🏢 Admin (Org Manager)&lt;/b&gt;&lt;br&gt;• Manage users in their org&lt;br&gt;• Create departments&lt;br&gt;• Upload documents&lt;br&gt;• View org-scoped data" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="hw">
+          <mxGeometry x="20" y="170" width="300" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="hw3" value="&lt;b&gt;💬 User&lt;/b&gt;&lt;br&gt;• Chat with AI (text + voice)&lt;br&gt;• Upload files (if permitted)&lt;br&gt;• Download shared forms&lt;br&gt;• View own usage &amp; preferences" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="hw">
+          <mxGeometry x="20" y="280" width="300" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="hw4" value="&lt;b&gt;🤖 API Client / Robot&lt;/b&gt;&lt;br&gt;• External system via API key&lt;br&gt;&lt;b&gt;🌐 Embed Widget User&lt;/b&gt;&lt;br&gt;• Chat via embedded widget on 3rd-party site" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="hw">
+          <mxGeometry x="20" y="390" width="300" height="90" as="geometry"/>
+        </mxCell>
+
+        <!-- WHAT IT DOES -->
+        <mxCell id="hd" value="&lt;b&gt;What It Does&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="400" y="90" width="560" height="500" as="geometry"/>
+        </mxCell>
+        <mxCell id="hd1" value="&lt;b&gt;📄 Document Upload &amp; Vectorization&lt;/b&gt;&lt;br&gt;Upload PDF, DOCX, Excel, images, text files&lt;br&gt;Auto-OCR → chunk → embed → store in vector DB&lt;br&gt;Shared to selected organizations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="hd">
+          <mxGeometry x="20" y="40" width="250" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="hd2" value="&lt;b&gt;💬 AI Chat (RAG)&lt;/b&gt;&lt;br&gt;Ask questions → search relevant docs&lt;br&gt;→ AI generates answer with sources&lt;br&gt;Org-scoped: only sees shared documents&lt;br&gt;Chat history saved per session" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="hd">
+          <mxGeometry x="290" y="40" width="250" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="hd3" value="&lt;b&gt;🎤 Voice Input &amp; Output&lt;/b&gt;&lt;br&gt;Speak → transcribe → chat → TTS response&lt;br&gt;Continuous mode: hands-free conversation&lt;br&gt;Auto-detects silence, interrupts TTS on speech" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="hd">
+          <mxGeometry x="20" y="160" width="250" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="hd4" value="&lt;b&gt;🌐 Embeddable Widget&lt;/b&gt;&lt;br&gt;Paste one script tag on any website&lt;br&gt;Fully themed chat popup (colors, logo, shape)&lt;br&gt;Users login and chat with same AI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="hd">
+          <mxGeometry x="290" y="160" width="250" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="hd5" value="&lt;b&gt;📊 Quota &amp; Plan Management&lt;/b&gt;&lt;br&gt;Storage limits per plan&lt;br&gt;Chat quotas (individual or shared pool)&lt;br&gt;Monthly auto-renewal" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="hd">
+          <mxGeometry x="20" y="280" width="250" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="hd6" value="&lt;b&gt;📋 Forms &amp; Downloads&lt;/b&gt;&lt;br&gt;Upload downloadable forms&lt;br&gt;AI can suggest form downloads in chat&lt;br&gt;Download tracking with stats" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="hd">
+          <mxGeometry x="290" y="280" width="250" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="hd7" value="&lt;b&gt;🔑 API Access&lt;/b&gt;&lt;br&gt;External systems chat via API key&lt;br&gt;Native mode (uses internal RAG) or Webhook mode (forwards to n8n)&lt;br&gt;Robot integration endpoints" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="hd">
+          <mxGeometry x="20" y="390" width="520" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- ORG HIERARCHY -->
+        <mxCell id="ho" value="&lt;b&gt;Organization Hierarchy&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="90" width="660" height="280" as="geometry"/>
+        </mxCell>
+        <mxCell id="ho1" value="&lt;b&gt;🏛️ Organization&lt;/b&gt;&lt;br&gt;(Top-level client)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="ho">
+          <mxGeometry x="230" y="40" width="200" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="ho2" value="&lt;b&gt;🏢 Entity&lt;/b&gt;&lt;br&gt;(Subsidiary / branch)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="ho">
+          <mxGeometry x="80" y="120" width="200" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="ho3" value="&lt;b&gt;🏢 Entity&lt;/b&gt;&lt;br&gt;(Subsidiary / branch)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="ho">
+          <mxGeometry x="380" y="120" width="200" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="ho4" value="&lt;b&gt;📁 Dept&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="ho">
+          <mxGeometry x="20" y="210" width="100" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="ho5" value="&lt;b&gt;📁 Dept&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="ho">
+          <mxGeometry x="140" y="210" width="100" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="ho6" value="&lt;b&gt;📁 Dept&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="ho">
+          <mxGeometry x="340" y="210" width="100" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="ho7" value="&lt;b&gt;📁 Dept&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="ho">
+          <mxGeometry x="460" y="210" width="100" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="hoe1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="ho1" target="ho2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="hoe2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="ho1" target="ho3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="hoe3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="ho2" target="ho4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="hoe4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="ho2" target="ho5"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="hoe5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="ho3" target="ho6"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="hoe6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="ho3" target="ho7"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <!-- FILE ACCESS -->
+        <mxCell id="hf" value="&lt;b&gt;Document Sharing &amp; Access Rules&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#e1d5e7;fontColor=#333333;strokeColor=#9673a6;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="400" width="660" height="190" as="geometry"/>
+        </mxCell>
+        <mxCell id="hf1" value="&lt;b&gt;Upload&lt;/b&gt;&lt;br&gt;Uploader selects which&lt;br&gt;org nodes to share with" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="hf">
+          <mxGeometry x="20" y="40" width="180" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="hf2" value="&lt;b&gt;Query (Chat)&lt;/b&gt;&lt;br&gt;AI only searches docs&lt;br&gt;shared to user's org scope" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="hf">
+          <mxGeometry x="240" y="40" width="180" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="hf3" value="&lt;b&gt;Download&lt;/b&gt;&lt;br&gt;Forms downloadable if&lt;br&gt;shared to user's org scope" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="hf">
+          <mxGeometry x="460" y="40" width="180" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="hfNote" value="&lt;b&gt;Key rule:&lt;/b&gt; Developer sees everything. Admin sees their org tree. User sees only what's shared to their assigned org nodes." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;fontSize=12;" vertex="1" parent="hf">
+          <mxGeometry x="20" y="130" width="620" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="hfe1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#9673a6;" edge="1" parent="1" source="hf1" target="hf2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="hfe2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#9673a6;" edge="1" parent="1" source="hf2" target="hf3"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <!-- TECH STACK -->
+        <mxCell id="hs" value="&lt;b&gt;Tech Stack (High Level)&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="20" y="620" width="1640" height="200" as="geometry"/>
+        </mxCell>
+        <mxCell id="hs1" value="&lt;b&gt;Frontend&lt;/b&gt;&lt;br&gt;React + Tailwind CSS&lt;br&gt;16 pages, no router&lt;br&gt;Voice input/output" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="hs">
+          <mxGeometry x="20" y="40" width="180" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="hs2" value="&lt;b&gt;Backend&lt;/b&gt;&lt;br&gt;Express.js (Node)&lt;br&gt;JWT auth, RBAC&lt;br&gt;70+ API endpoints" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="hs">
+          <mxGeometry x="230" y="40" width="180" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="hs3" value="&lt;b&gt;Database&lt;/b&gt;&lt;br&gt;MongoDB Atlas&lt;br&gt;~20 collections&lt;br&gt;Users, files, messages, orgs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="hs">
+          <mxGeometry x="440" y="40" width="180" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="hs4" value="&lt;b&gt;Vector DB&lt;/b&gt;&lt;br&gt;Qdrant (self-hosted)&lt;br&gt;or Pinecone (cloud)&lt;br&gt;Document embeddings" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="hs">
+          <mxGeometry x="650" y="40" width="180" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="hs5" value="&lt;b&gt;AI Providers&lt;/b&gt;&lt;br&gt;Gemini, OpenAI, Groq,&lt;br&gt;Mistral, Ollama (local)&lt;br&gt;Chat + Embedding + OCR + Voice" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="hs">
+          <mxGeometry x="860" y="40" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="hs6" value="&lt;b&gt;Deployment&lt;/b&gt;&lt;br&gt;Docker Compose&lt;br&gt;5-6 containers&lt;br&gt;Internal network isolation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="hs">
+          <mxGeometry x="1090" y="40" width="180" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="hs7" value="&lt;b&gt;Storage&lt;/b&gt;&lt;br&gt;Local disk or AWS S3&lt;br&gt;Files + logos" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;" vertex="1" parent="hs">
+          <mxGeometry x="1300" y="40" width="160" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- FLOW ARROWS between main sections -->
+        <mxCell id="hme1" value="uses" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;fontSize=11;fontColor=#333333;" edge="1" parent="1" source="hw" target="hd"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="hme2" value="scoped by" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;fontSize=11;fontColor=#333333;" edge="1" parent="1" source="hd" target="ho"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <!-- PAGE INDEX -->
+        <mxCell id="hpages" value="&lt;b&gt;Diagram Pages Index&lt;/b&gt;&lt;br&gt;0. This overview&lt;br&gt;1. System Overview (technical)&lt;br&gt;2. RAG Pipelines (upload + chat flow)&lt;br&gt;3. Codebase &amp; Data Map&lt;br&gt;4. Org Hierarchy &amp; File Access&lt;br&gt;5. Role Matrix &amp; Visibility Rules&lt;br&gt;6. Voice &amp; Continuous Conversation&lt;br&gt;7. Embed Widget Architecture&lt;br&gt;8. Quota, Plans &amp; Client Onboarding&lt;br&gt;9. Robot, API Keys &amp; Extra Features" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#666666;fontSize=12;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="20" y="850" width="350" height="220" as="geometry"/>
+        </mxCell>
+
+        <!-- SUMMARY -->
+        <mxCell id="hsum" value="&lt;font style=&quot;font-size:14px;color:#333333;&quot;&gt;&lt;b&gt;In one sentence:&lt;/b&gt;&lt;br&gt;A self-hostable, multi-tenant AI chatbot platform where organizations upload documents, and users chat with an AI that answers from those documents — with voice support, embeddable widgets, quota management, and role-based access control.&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="400" y="850" width="1260" height="70" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="system-overview" name="1. System Overview">
+    <mxGraphModel dx="1644" dy="944" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title1" value="&lt;font style=&quot;font-size:24px;&quot;&gt;&lt;b&gt;RAG Chatbot Architecture&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px;&quot;&gt;Current implementation based on server.js, chatPipeline.js, uploadPipeline.js, frontend/, public/embed/, glmocr-service/&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;fontColor=#333333;align=left;verticalAlign=top;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="760" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="note1" value="&lt;b&gt;Reality note&lt;/b&gt;&lt;br&gt;Backend is a monolithic Express app in &lt;code&gt;server.js&lt;/code&gt;.&lt;br&gt;Duplicate/legacy route blocks exist. Daily cleanup job runs automatically.&lt;br&gt;See pages 6-9 for Voice, Embed Widget, Quota/Billing, Robot/API details." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="20" width="440" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="actors" value="&lt;b&gt;Clients / Entry Points&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#dae8fc;fontColor=#333333;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="110" width="250" height="590" as="geometry"/>
+        </mxCell>
+        <mxCell id="actor1" value="&lt;b&gt;Browser Users&lt;/b&gt;&lt;br&gt;Developer / Admin / User&lt;br&gt;Login, chat, file upload, settings, admin pages" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="actors">
+          <mxGeometry x="20" y="50" width="210" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="actor2" value="&lt;b&gt;Embedded Website Visitors&lt;/b&gt;&lt;br&gt;Load &lt;code&gt;/embed/widget.js&lt;/code&gt;&lt;br&gt;Use iframe chat window + embed login" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="actors">
+          <mxGeometry x="20" y="170" width="210" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="actor3" value="&lt;b&gt;API Clients / Robots&lt;/b&gt;&lt;br&gt;Call &lt;code&gt;/api/v1/chat&lt;/code&gt;&lt;br&gt;Optional robot endpoints via API key" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="actors">
+          <mxGeometry x="20" y="290" width="210" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="actor4" value="&lt;b&gt;Voice Clients&lt;/b&gt;&lt;br&gt;Chat UI sends audio to &lt;code&gt;/api/transcribe&lt;/code&gt;&lt;br&gt;Requests speech audio from &lt;code&gt;/api/tts&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="actors">
+          <mxGeometry x="20" y="410" width="210" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="actor5" value="&lt;b&gt;Frontend Code&lt;/b&gt;&lt;br&gt;&lt;code&gt;frontend/src/pages/Index.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;frontend/src/lib/api.ts&lt;/code&gt;&lt;br&gt;&lt;code&gt;components/chat/*&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="actors">
+          <mxGeometry x="20" y="530" width="210" height="90" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="appLayer" value="&lt;b&gt;Main Application Container&lt;/b&gt;&lt;br&gt;&lt;code&gt;Dockerfile&lt;/code&gt; builds React frontend and runs Node server on port 3000" style="swimlane;html=1;rounded=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="110" width="670" height="590" as="geometry"/>
+        </mxCell>
+        <mxCell id="frontend" value="&lt;b&gt;React SPA (16 pages)&lt;/b&gt;&lt;br&gt;Served from &lt;code&gt;frontend/dist&lt;/code&gt;&lt;br&gt;No React Router — state-based navigation&lt;br&gt;Chat, Files, Forms, Settings, API Keys, Plans, Users, Organizations, Audit Trail, Embed Widgets, Provider Keys, New Client, Download Tracking, Deleted Chats, Text Embedded, User Settings" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="appLayer">
+          <mxGeometry x="20" y="50" width="290" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="server" value="&lt;b&gt;Express Backend&lt;/b&gt;&lt;br&gt;&lt;code&gt;server.js&lt;/code&gt;&lt;br&gt;Auth, sessions, RBAC-ish checks, chat APIs, uploads, forms, settings, provider keys, quotas, embed, voice, API keys, admin CRUD" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="appLayer">
+          <mxGeometry x="340" y="50" width="300" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="chatpipe" value="&lt;b&gt;chatPipeline.js&lt;/b&gt;&lt;br&gt;Query embedding&lt;br&gt;Org-aware vector search&lt;br&gt;Context assembly + message history&lt;br&gt;LLM call + source list" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="appLayer">
+          <mxGeometry x="20" y="230" width="290" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="uploadpipe" value="&lt;b&gt;uploadPipeline.js&lt;/b&gt;&lt;br&gt;File type detect&lt;br&gt;OCR / text extraction&lt;br&gt;Chunking&lt;br&gt;Embeddings&lt;br&gt;Vector upsert / delete" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="appLayer">
+          <mxGeometry x="340" y="230" width="300" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="publicembed" value="&lt;b&gt;Public Embed Assets&lt;/b&gt;&lt;br&gt;&lt;code&gt;public/embed/widget.js&lt;/code&gt;&lt;br&gt;&lt;code&gt;public/embed/chat.html&lt;/code&gt;&lt;br&gt;Widget config + iframe UI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="appLayer">
+          <mxGeometry x="20" y="400" width="290" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="voice" value="&lt;b&gt;Voice / Media Layer&lt;/b&gt;&lt;br&gt;&lt;code&gt;/api/transcribe&lt;/code&gt; — Gemini, Mistral Voxtral, ElevenLabs, Webhook, Browser&lt;br&gt;&lt;code&gt;/api/tts&lt;/code&gt; — Gemini (parallel chunking), Google Cloud (auto lang detect EN/ZH/MS/TA), Mistral, ElevenLabs, Browser&lt;br&gt;See Page 6 for full voice flow" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="appLayer">
+          <mxGeometry x="340" y="390" width="300" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="adminmods" value="&lt;b&gt;Operational Modules inside server.js&lt;/b&gt;&lt;br&gt;Users, organizations, assignments, groups/plans, audit logs, files/forms, provider keys (global + per-org), API keys (native/webhook + short keys), embed widgets, robot settings, deleted chats, download tracking, text embeddings, daily cleanup job, test endpoints (webhook/S3), logo upload, client onboarding" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="appLayer">
+          <mxGeometry x="20" y="540" width="620" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="stores" value="&lt;b&gt;State / Storage&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#e1d5e7;fontColor=#333333;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="110" width="250" height="590" as="geometry"/>
+        </mxCell>
+        <mxCell id="mongo" value="&lt;b&gt;MongoDB&lt;/b&gt;&lt;br&gt;Primary system of record&lt;br&gt;Users, settings, messages, files, org hierarchy, quotas, widgets, logs, keys" style="shape=cylinder;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="stores">
+          <mxGeometry x="20" y="50" width="210" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="qdrant" value="&lt;b&gt;Qdrant&lt;/b&gt;&lt;br&gt;Default/offline vector DB&lt;br&gt;Collection: &lt;code&gt;documents&lt;/code&gt;" style="shape=cylinder;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="stores">
+          <mxGeometry x="20" y="170" width="210" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="storage" value="&lt;b&gt;File Storage&lt;/b&gt;&lt;br&gt;Local &lt;code&gt;uploads/&lt;/code&gt; by default&lt;br&gt;Optional S3 for uploaded files&lt;br&gt;Public logos under &lt;code&gt;public/logos&lt;/code&gt;" style="shape=cylinder;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="stores">
+          <mxGeometry x="20" y="290" width="210" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="legacy" value="&lt;b&gt;Legacy / Side Collections&lt;/b&gt;&lt;br&gt;&lt;code&gt;embedding_files&lt;/code&gt; direct text embeddings&lt;br&gt;&lt;code&gt;deleted_messages&lt;/code&gt;, &lt;code&gt;download_tracking&lt;/code&gt;, &lt;code&gt;api_usage&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="stores">
+          <mxGeometry x="20" y="430" width="210" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="services" value="&lt;b&gt;External / Optional Services&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1330" y="110" width="230" height="590" as="geometry"/>
+        </mxCell>
+        <mxCell id="ollama" value="&lt;b&gt;Ollama&lt;/b&gt;&lt;br&gt;Offline embeddings&lt;br&gt;Optional local LLM chat&lt;br&gt;Model pull management UI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#666666;" vertex="1" parent="services">
+          <mxGeometry x="15" y="50" width="200" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="ocrsvc" value="&lt;b&gt;GLM OCR Service&lt;/b&gt;&lt;br&gt;&lt;code&gt;glmocr-service/app.py&lt;/code&gt;&lt;br&gt;Flask + GLM OCR parser&lt;br&gt;PDF to images + OCR markdown/json" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#666666;" vertex="1" parent="services">
+          <mxGeometry x="15" y="165" width="200" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="cloudai" value="&lt;b&gt;Cloud AI Providers&lt;/b&gt;&lt;br&gt;Gemini, OpenAI, Groq, Mistral, ElevenLabs, Google Cloud&lt;br&gt;Used for chat, embeddings, STT/TTS, OCR" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#666666;" vertex="1" parent="services">
+          <mxGeometry x="15" y="290" width="200" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="n8n" value="&lt;b&gt;n8n&lt;/b&gt;&lt;br&gt;Still present in docker/deployment&lt;br&gt;Used for webhook-style chat/transcribe and legacy integrations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#666666;" vertex="1" parent="services">
+          <mxGeometry x="15" y="415" width="200" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="pinecone" value="&lt;b&gt;Pinecone / S3&lt;/b&gt;&lt;br&gt;Optional online vector DB and object storage paths" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#666666;" vertex="1" parent="services">
+          <mxGeometry x="15" y="530" width="200" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="actor1" target="frontend"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="actor2" target="publicembed"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="actor3" target="server"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="actor4" target="voice"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" value="HTTP /api/*" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;fontSize=11;" edge="1" parent="1" source="frontend" target="server"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e6" value="native chat" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;fontSize=11;" edge="1" parent="1" source="server" target="chatpipe"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e7" value="upload / delete vectors" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;fontSize=11;" edge="1" parent="1" source="server" target="uploadpipe"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e8" value="collections" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#9673a6;fontSize=11;" edge="1" parent="1" source="server" target="mongo"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e9" value="vector search / upsert" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#9673a6;fontSize=11;" edge="1" parent="1" source="chatpipe" target="qdrant"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e10" value="vector upsert / delete" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#9673a6;fontSize=11;" edge="1" parent="1" source="uploadpipe" target="qdrant"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e11" value="file metadata + audit" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#9673a6;fontSize=11;" edge="1" parent="1" source="uploadpipe" target="mongo"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e12" value="local/S3 files" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#9673a6;fontSize=11;" edge="1" parent="1" source="server" target="storage"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e13" value="embeddings / local chat" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#666666;fontSize=11;" edge="1" parent="1" source="chatpipe" target="ollama"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e14" value="offline OCR" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#666666;fontSize=11;" edge="1" parent="1" source="uploadpipe" target="ocrsvc"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e15" value="cloud OCR / embeddings / LLM / STT / TTS" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#666666;fontSize=11;" edge="1" parent="1" source="server" target="cloudai"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e16" value="webhook mode" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#666666;fontSize=11;" edge="1" parent="1" source="server" target="n8n"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e17" value="optional online vector/file storage" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#666666;fontSize=11;" edge="1" parent="1" source="uploadpipe" target="pinecone"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="rag-pipelines" name="2. RAG Pipelines">
+    <mxGraphModel dx="1644" dy="944" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title2" value="&lt;font style=&quot;font-size:22px;&quot;&gt;&lt;b&gt;Upload and Chat RAG Pipelines&lt;/b&gt;&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;fontColor=#333333;align=left;verticalAlign=top;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="500" height="30" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="uploadLane" value="&lt;b&gt;A. Upload / Vectorization Flow&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="80" width="1540" height="320" as="geometry"/>
+        </mxCell>
+        <mxCell id="u1" value="1. User uploads file&lt;br&gt;&lt;code&gt;/api/upload&lt;/code&gt;&lt;br&gt;multipart form-data&lt;br&gt;sharedWith[] + type=document/form" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="uploadLane">
+          <mxGeometry x="20" y="70" width="160" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="u2" value="2. server.js&lt;br&gt;Check storage quota&lt;br&gt;Save file to local uploads or S3&lt;br&gt;Insert Mongo &lt;code&gt;files&lt;/code&gt; metadata&lt;br&gt;Write audit log" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="uploadLane">
+          <mxGeometry x="220" y="60" width="190" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="u3" value="3. Only for documents:&lt;br&gt;Open SSE stream to frontend&lt;br&gt;Call &lt;code&gt;processUploadedFile(...)&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="uploadLane">
+          <mxGeometry x="450" y="70" width="180" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="u4" value="4. Detect file category&lt;br&gt;OCR, docx, excel, plain text" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="uploadLane">
+          <mxGeometry x="670" y="80" width="150" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="u5" value="5. Text extraction path&lt;br&gt;PDF: pdf-parse first&lt;br&gt;Image/PDF OCR if needed&lt;br&gt;DOCX: mammoth&lt;br&gt;Excel: xlsx to CSV&lt;br&gt;Text: fs read" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="uploadLane">
+          <mxGeometry x="850" y="55" width="180" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="u6" value="6. OCR providers&lt;br&gt;Offline: GLM OCR service&lt;br&gt;Online: Mistral OCR or Google Document AI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#666666;" vertex="1" parent="uploadLane">
+          <mxGeometry x="1070" y="70" width="170" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="u7" value="7. Chunk pages&lt;br&gt;&lt;code&gt;chunkText(text, chunkSize, overlap)&lt;/code&gt;&lt;br&gt;Payload includes file_id, file_name, page_number, chunk_index, shared_with, uploader metadata" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="uploadLane">
+          <mxGeometry x="1270" y="55" width="210" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="u8" value="8. Embed chunks&lt;br&gt;Offline default: Ollama&lt;br&gt;Online options: OpenAI, Gemini, Mistral" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="uploadLane">
+          <mxGeometry x="220" y="220" width="190" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="u9" value="9. Store vectors&lt;br&gt;Default/offline: Qdrant collection &lt;code&gt;documents&lt;/code&gt;&lt;br&gt;Optional online: Pinecone" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="uploadLane">
+          <mxGeometry x="470" y="220" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="u10" value="10. Update Mongo file doc&lt;br&gt;Set vectorized=true, chunks, pages&lt;br&gt;If S3 upload succeeded, remove local temp file" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="uploadLane">
+          <mxGeometry x="730" y="220" width="190" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="u11" value="11. Frontend receives SSE progress&lt;br&gt;upload → ocr → preview → chunking → embedding → storing → done" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="uploadLane">
+          <mxGeometry x="980" y="220" width="220" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="chatLane" value="&lt;b&gt;B. Chat / Retrieval Flow&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#dae8fc;fontColor=#333333;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="440" width="1540" height="430" as="geometry"/>
+        </mxCell>
+        <mxCell id="c1" value="1. Entry points&lt;br&gt;&lt;code&gt;/api/chat&lt;/code&gt; browser&lt;br&gt;&lt;code&gt;/api/embed/chat&lt;/code&gt; embed&lt;br&gt;&lt;code&gt;/api/v1/chat&lt;/code&gt; API key native mode" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="chatLane">
+          <mxGeometry x="20" y="70" width="180" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="c2" value="2. Save user message into Mongo &lt;code&gt;messages&lt;/code&gt;&lt;br&gt;sessionId, chatType, chatName, org context, startedBy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="chatLane">
+          <mxGeometry x="240" y="80" width="190" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="c3" value="3. Quota checks (browser chat)&lt;br&gt;Resolve user group from organization&lt;br&gt;Read &lt;code&gt;groups&lt;/code&gt;, &lt;code&gt;chat_counts&lt;/code&gt;, &lt;code&gt;chat_resets&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="chatLane">
+          <mxGeometry x="470" y="70" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="c4" value="4. processBrowserChat()&lt;br&gt;Resolve accessible organizations from &lt;code&gt;user_organization_assignments&lt;/code&gt; + org hierarchy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="chatLane">
+          <mxGeometry x="730" y="80" width="220" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="c5" value="5. Embed user query&lt;br&gt;Provider from chat settings:&lt;br&gt;Ollama / OpenAI / Gemini" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="chatLane">
+          <mxGeometry x="990" y="80" width="170" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="c6" value="6. Search vectors&lt;br&gt;Qdrant or Pinecone&lt;br&gt;Filter by org shared_with&lt;br&gt;Optional fileId filter&lt;br&gt;Limit = chatMaxChunks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="chatLane">
+          <mxGeometry x="1190" y="70" width="180" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="c7" value="7. Build final prompt&lt;br&gt;System prompt + document context block&lt;br&gt;+ last 20 messages from Mongo history&lt;br&gt;+ current user question" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="chatLane">
+          <mxGeometry x="1390" y="70" width="130" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="c8" value="8. Call chat LLM&lt;br&gt;Gemini / OpenAI / Groq / Ollama Cloud / Ollama Local" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#666666;" vertex="1" parent="chatLane">
+          <mxGeometry x="240" y="250" width="190" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="c9" value="9. Deduplicate sources&lt;br&gt;file_name + page_number" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="chatLane">
+          <mxGeometry x="470" y="250" width="180" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="c10" value="10. Save bot message&lt;br&gt;response text + sources + responseTimeMs&lt;br&gt;respect user preferences: showSources / verboseMode" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="chatLane">
+          <mxGeometry x="700" y="240" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="c11" value="11. Increment chat count&lt;br&gt;Only when user belongs to quota group" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="chatLane">
+          <mxGeometry x="960" y="250" width="180" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="c12" value="12. Return response to UI/client&lt;br&gt;Browser and embed return text + sources + sessionId&lt;br&gt;API key endpoint returns text/speak split" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="chatLane">
+          <mxGeometry x="1180" y="240" width="240" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="c13" value="Webhook alternative&lt;br&gt;&lt;code&gt;/api/v1/chat&lt;/code&gt; can bypass native RAG&lt;br&gt;Forward request to API-key-specific n8n webhook" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="chatLane">
+          <mxGeometry x="20" y="250" width="180" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="c14" value="Delete path&lt;br&gt;&lt;code&gt;DELETE /api/files/:id&lt;/code&gt;&lt;br&gt;remove Mongo file doc&lt;br&gt;delete from S3/local&lt;br&gt;&lt;code&gt;deleteFileVectors()&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;fontColor=#333333;strokeColor=#d79b00;" vertex="1" parent="chatLane">
+          <mxGeometry x="20" y="130" width="180" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ue1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="u1" target="u2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="u2" target="u3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="u3" target="u4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="u4" target="u5"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#666666;" edge="1" parent="1" source="u5" target="u6"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="u6" target="u7"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue7" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="u7" target="u8"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue8" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="u8" target="u9"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue9" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="u9" target="u10"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ue10" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="u10" target="u11"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="ce1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="c1" target="c2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="c2" target="c3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="c3" target="c4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="c4" target="c5"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="c5" target="c6"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="c6" target="c7"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce7" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#666666;" edge="1" parent="1" source="c7" target="c8"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce8" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="c8" target="c9"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce9" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="c9" target="c10"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce10" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="c10" target="c11"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ce11" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="c11" target="c12"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="codebase-map" name="3. Codebase and Data Map">
+    <mxGraphModel dx="1644" dy="944" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title3" value="&lt;font style=&quot;font-size:22px;&quot;&gt;&lt;b&gt;Codebase, Files, and Mongo Collections&lt;/b&gt;&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;fontColor=#333333;align=left;verticalAlign=top;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="600" height="30" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="repoLane" value="&lt;b&gt;Repository Structure&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#dae8fc;fontColor=#333333;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="70" width="900" height="930" as="geometry"/>
+        </mxCell>
+        <mxCell id="rootbox" value="&lt;b&gt;Project Root&lt;/b&gt;&lt;br&gt;&lt;code&gt;server.js&lt;/code&gt; monolithic backend&lt;br&gt;&lt;code&gt;chatPipeline.js&lt;/code&gt; native RAG retrieval&lt;br&gt;&lt;code&gt;uploadPipeline.js&lt;/code&gt; ingestion/vectorization&lt;br&gt;&lt;code&gt;seed.js&lt;/code&gt; developer bootstrap&lt;br&gt;&lt;code&gt;Dockerfile&lt;/code&gt;, compose files, scripts/" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="repoLane">
+          <mxGeometry x="20" y="60" width="260" height="150" as="geometry"/>
+        </mxCell>
+        <mxCell id="frontendbox" value="&lt;b&gt;frontend/&lt;/b&gt;&lt;br&gt;&lt;code&gt;src/pages/Index.tsx&lt;/code&gt; app shell + auth + page switching&lt;br&gt;&lt;code&gt;src/lib/api.ts&lt;/code&gt; frontend API client&lt;br&gt;&lt;code&gt;src/lib/fileHelper.ts&lt;/code&gt; download + filename parsing&lt;br&gt;&lt;code&gt;src/components/chat/*&lt;/code&gt; chat/admin/settings pages&lt;br&gt;&lt;code&gt;src/components/ui/*&lt;/code&gt; Tailwind UI primitives" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="repoLane">
+          <mxGeometry x="320" y="60" width="270" height="170" as="geometry"/>
+        </mxCell>
+        <mxCell id="publicbox" value="&lt;b&gt;public/&lt;/b&gt;&lt;br&gt;&lt;code&gt;embed/widget.js&lt;/code&gt; script injected into client site&lt;br&gt;&lt;code&gt;embed/chat.html&lt;/code&gt; iframe chat app&lt;br&gt;&lt;code&gt;logos/&lt;/code&gt; main app branding" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="repoLane">
+          <mxGeometry x="630" y="60" width="230" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="ocrbox" value="&lt;b&gt;glmocr-service/&lt;/b&gt;&lt;br&gt;&lt;code&gt;app.py&lt;/code&gt; Flask OCR API&lt;br&gt;&lt;code&gt;config.yaml&lt;/code&gt; model config&lt;br&gt;&lt;code&gt;requirements.txt&lt;/code&gt;, Dockerfile" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="repoLane">
+          <mxGeometry x="20" y="260" width="260" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="scriptsbox" value="&lt;b&gt;scripts/&lt;/b&gt;&lt;br&gt;&lt;code&gt;deploy.sh&lt;/code&gt; full container bootstrap&lt;br&gt;&lt;code&gt;pull-models.sh&lt;/code&gt; Ollama model pull&lt;br&gt;&lt;code&gt;migrate-atlas.sh&lt;/code&gt; migration helper" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="repoLane">
+          <mxGeometry x="320" y="270" width="270" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="deploymentbox" value="&lt;b&gt;Deployment Files&lt;/b&gt;&lt;br&gt;&lt;code&gt;docker-compose.yml&lt;/code&gt; dev stack&lt;br&gt;&lt;code&gt;docker-compose.prod.yml&lt;/code&gt; prod network isolation&lt;br&gt;&lt;code&gt;DEPLOYMENT.md&lt;/code&gt; AWS/server guide" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="repoLane">
+          <mxGeometry x="630" y="240" width="230" height="110" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pagemap" value="&lt;b&gt;Important React Pages / Components&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="repoLane">
+          <mxGeometry x="20" y="420" width="840" height="500" as="geometry"/>
+        </mxCell>
+        <mxCell id="page1" value="&lt;b&gt;Chat Core&lt;/b&gt;&lt;br&gt;&lt;code&gt;ChatArea.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;ChatInput.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;ChatMessage.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;ChatSidebar.tsx&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="pagemap">
+          <mxGeometry x="20" y="50" width="170" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="page2" value="&lt;b&gt;Knowledge / Files&lt;/b&gt;&lt;br&gt;&lt;code&gt;FilesPage.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;FormsPage.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;TextEmbeddedPage.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;FileSelector.tsx&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="pagemap">
+          <mxGeometry x="220" y="50" width="180" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="page3" value="&lt;b&gt;System Admin&lt;/b&gt;&lt;br&gt;&lt;code&gt;SettingsPage.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;ProviderKeysPage.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;ApiManagementPage.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;EmbedWidgetsPage.tsx&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="pagemap">
+          <mxGeometry x="430" y="50" width="190" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="page4" value="&lt;b&gt;Org / User Ops&lt;/b&gt;&lt;br&gt;&lt;code&gt;UsersPage.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;OrganizationsPage.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;GroupsPage.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;NewClientPage.tsx&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="pagemap">
+          <mxGeometry x="650" y="50" width="170" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="page5" value="&lt;b&gt;Monitoring / Personal&lt;/b&gt;&lt;br&gt;&lt;code&gt;UserSettingsPage.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;AuditTrailPage.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;DownloadTrackingPage.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;DeletedChatsPage.tsx&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="pagemap">
+          <mxGeometry x="20" y="210" width="190" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="page6" value="&lt;b&gt;Support Widgets&lt;/b&gt;&lt;br&gt;&lt;code&gt;ConfirmDialog.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;DownloadButton.tsx&lt;/code&gt;&lt;br&gt;&lt;code&gt;WebViewPanel.tsx&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="pagemap">
+          <mxGeometry x="240" y="220" width="180" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="page7" value="&lt;b&gt;Index.tsx behavior&lt;/b&gt;&lt;br&gt;Keeps auth token, current page, org context, session state, idle logout, unauthorized handler, split-screen webview state" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="pagemap">
+          <mxGeometry x="450" y="220" width="370" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="page8" value="&lt;b&gt;Observation&lt;/b&gt;&lt;br&gt;Frontend talks almost entirely through &lt;code&gt;frontend/src/lib/api.ts&lt;/code&gt; with plain fetch and Bearer JWT." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="pagemap">
+          <mxGeometry x="20" y="360" width="800" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="dbLane" value="&lt;b&gt;MongoDB Collections Used in Code&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#e1d5e7;fontColor=#333333;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="960" y="70" width="620" height="930" as="geometry"/>
+        </mxCell>
+        <mxCell id="col1" value="&lt;b&gt;Core Auth / Config&lt;/b&gt;&lt;br&gt;&lt;code&gt;users&lt;/code&gt;&lt;br&gt;&lt;code&gt;settings&lt;/code&gt;&lt;br&gt;&lt;code&gt;provider_keys&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="dbLane">
+          <mxGeometry x="20" y="50" width="170" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="col2" value="&lt;b&gt;Org Structure&lt;/b&gt;&lt;br&gt;&lt;code&gt;organizations&lt;/code&gt;&lt;br&gt;&lt;code&gt;user_organization_assignments&lt;/code&gt;&lt;br&gt;&lt;code&gt;departments&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="dbLane">
+          <mxGeometry x="220" y="50" width="180" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="col3" value="&lt;b&gt;RAG / Chat&lt;/b&gt;&lt;br&gt;&lt;code&gt;messages&lt;/code&gt;&lt;br&gt;&lt;code&gt;files&lt;/code&gt;&lt;br&gt;&lt;code&gt;deleted_messages&lt;/code&gt;&lt;br&gt;&lt;code&gt;embedding_files&lt;/code&gt; (legacy / direct text)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="dbLane">
+          <mxGeometry x="430" y="40" width="170" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="col4" value="&lt;b&gt;Quotas / Plans&lt;/b&gt;&lt;br&gt;&lt;code&gt;groups&lt;/code&gt;&lt;br&gt;&lt;code&gt;chat_counts&lt;/code&gt;&lt;br&gt;&lt;code&gt;chat_resets&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="dbLane">
+          <mxGeometry x="20" y="190" width="170" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="col5" value="&lt;b&gt;Audit / Tracking&lt;/b&gt;&lt;br&gt;&lt;code&gt;audit_logs&lt;/code&gt;&lt;br&gt;&lt;code&gt;download_tracking&lt;/code&gt;&lt;br&gt;&lt;code&gt;api_usage&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="dbLane">
+          <mxGeometry x="220" y="190" width="180" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="col6" value="&lt;b&gt;API / Embed / Robot&lt;/b&gt;&lt;br&gt;&lt;code&gt;api_keys&lt;/code&gt;&lt;br&gt;&lt;code&gt;embed_widgets&lt;/code&gt;&lt;br&gt;&lt;code&gt;robot_settings&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="dbLane">
+          <mxGeometry x="430" y="190" width="170" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="col7" value="&lt;b&gt;RBAC / Legacy Admin&lt;/b&gt;&lt;br&gt;&lt;code&gt;roles&lt;/code&gt;&lt;br&gt;&lt;code&gt;permissions&lt;/code&gt;&lt;br&gt;Some routes still use simple role checks instead of full role doc logic" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="dbLane">
+          <mxGeometry x="20" y="330" width="580" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="col8" value="&lt;b&gt;Important Stored Fields for RAG&lt;/b&gt;&lt;br&gt;In Qdrant/Pinecone payloads: &lt;code&gt;file_id&lt;/code&gt;, &lt;code&gt;file_name&lt;/code&gt;, &lt;code&gt;page_number&lt;/code&gt;, &lt;code&gt;chunk_index&lt;/code&gt;, &lt;code&gt;content&lt;/code&gt;, &lt;code&gt;shared_with&lt;/code&gt;, uploader metadata" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="dbLane">
+          <mxGeometry x="20" y="460" width="580" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="col9" value="&lt;b&gt;Docker Services in Compose&lt;/b&gt;&lt;br&gt;rag-chatbot, mongodb, n8n, qdrant, ollama, ocr-service (dev compose)&lt;br&gt;Prod compose hides internal ports behind Docker network" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="dbLane">
+          <mxGeometry x="20" y="590" width="580" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="col10" value="&lt;b&gt;Boss-level summary&lt;/b&gt;&lt;br&gt;This repo is a self-hostable multi-tenant RAG chat platform with org-scoped document sharing, offline/online AI processing options, optional embed widget, API key access, quotas, and admin operations." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;fontSize=13;" vertex="1" parent="dbLane">
+          <mxGeometry x="20" y="720" width="580" height="90" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="org-access-map" name="4. Org Hierarchy and File Access">
+    <mxGraphModel dx="1644" dy="944" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title4" value="&lt;font style=&quot;font-size:22px;&quot;&gt;&lt;b&gt;Organization Hierarchy and File Access&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px;&quot;&gt;Based on organizations, user_organization_assignments, files.sharedWith, chatPipeline.js, and file endpoints in server.js&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;fontColor=#333333;align=left;verticalAlign=top;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="900" height="45" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="hierLane" value="&lt;b&gt;A. Organization Data Model&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#dae8fc;fontColor=#333333;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="90" width="760" height="430" as="geometry"/>
+        </mxCell>
+        <mxCell id="orgroot" value="&lt;b&gt;organizations collection&lt;/b&gt;&lt;br&gt;Each node stores:&lt;br&gt;&lt;code&gt;name&lt;/code&gt;, &lt;code&gt;type&lt;/code&gt;, &lt;code&gt;parentId&lt;/code&gt;, &lt;code&gt;path&lt;/code&gt;, &lt;code&gt;groupId&lt;/code&gt;" style="shape=cylinder;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="hierLane">
+          <mxGeometry x="20" y="60" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="org1" value="&lt;b&gt;Organization&lt;/b&gt;&lt;br&gt;type = &lt;code&gt;organization&lt;/code&gt;&lt;br&gt;Top-level client/company node" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="hierLane">
+          <mxGeometry x="300" y="40" width="160" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="org2" value="&lt;b&gt;Entity&lt;/b&gt;&lt;br&gt;type = &lt;code&gt;entity&lt;/code&gt;&lt;br&gt;Child under organization" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="hierLane">
+          <mxGeometry x="300" y="160" width="160" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="org3" value="&lt;b&gt;Department&lt;/b&gt;&lt;br&gt;type = &lt;code&gt;department&lt;/code&gt;&lt;br&gt;Can sit under entity or organization" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="hierLane">
+          <mxGeometry x="300" y="280" width="160" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="pathbox" value="&lt;b&gt;Hierarchy fields&lt;/b&gt;&lt;br&gt;&lt;code&gt;parentId&lt;/code&gt; links node to parent&lt;br&gt;&lt;code&gt;path&lt;/code&gt; stores name chain array, e.g. [&quot;Org A&quot;, &quot;Entity X&quot;, &quot;Dept HR&quot;]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="hierLane">
+          <mxGeometry x="520" y="50" width="210" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="assignbox" value="&lt;b&gt;user_organization_assignments&lt;/b&gt;&lt;br&gt;Maps user to one or more org nodes&lt;br&gt;&lt;code&gt;userId&lt;/code&gt; + &lt;code&gt;organizationId&lt;/code&gt;&lt;br&gt;This is the real access anchor for users/admins" style="shape=cylinder;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="hierLane">
+          <mxGeometry x="520" y="190" width="210" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="rolebox" value="&lt;b&gt;Who can create what&lt;/b&gt;&lt;br&gt;Developer: organization + entity + department&lt;br&gt;Admin: only department, and only under assigned org hierarchy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="hierLane">
+          <mxGeometry x="520" y="320" width="210" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="he1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="orgroot" target="org1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="he2" value="parentId" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;fontSize=11;" edge="1" parent="1" source="org1" target="org2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="he3" value="parentId" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;fontSize=11;" edge="1" parent="1" source="org2" target="org3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="he4" value="assigned to node(s)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;fontSize=11;" edge="1" parent="1" source="assignbox" target="org2"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="accessLane" value="&lt;b&gt;B. File Sharing and Visibility&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="820" y="90" width="840" height="430" as="geometry"/>
+        </mxCell>
+        <mxCell id="filemeta" value="&lt;b&gt;files collection&lt;/b&gt;&lt;br&gt;Important fields:&lt;br&gt;&lt;code&gt;type&lt;/code&gt;, &lt;code&gt;userId&lt;/code&gt;, &lt;code&gt;groupId&lt;/code&gt;, &lt;code&gt;sharedWith&lt;/code&gt;[], &lt;code&gt;isDownloadable&lt;/code&gt;, &lt;code&gt;isVectorized&lt;/code&gt;, &lt;code&gt;url&lt;/code&gt;" style="shape=cylinder;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="accessLane">
+          <mxGeometry x="20" y="55" width="240" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="sharebox" value="&lt;b&gt;Upload sharing model&lt;/b&gt;&lt;br&gt;Uploader picks one or more organizations/departments&lt;br&gt;Backend stores selected org IDs into &lt;code&gt;files.sharedWith&lt;/code&gt;&lt;br&gt;Same list is also passed into vector payload as &lt;code&gt;shared_with&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="accessLane">
+          <mxGeometry x="300" y="55" width="250" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="listbox" value="&lt;b&gt;File list / download access (as implemented)&lt;/b&gt;&lt;br&gt;Non-developer user gets their assigned orgs&lt;br&gt;+ backend adds parent orgs from &lt;code&gt;path&lt;/code&gt;&lt;br&gt;User can see/download file if &lt;code&gt;sharedWith&lt;/code&gt; intersects that set" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="accessLane">
+          <mxGeometry x="590" y="45" width="220" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="chataccess" value="&lt;b&gt;Chat retrieval access (as implemented)&lt;/b&gt;&lt;br&gt;&lt;code&gt;getUserAccessibleOrgIds()&lt;/code&gt; takes direct assignments&lt;br&gt;+ tries to include child orgs via hierarchy lookup&lt;br&gt;Vector search filters on payload &lt;code&gt;shared_with&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="accessLane">
+          <mxGeometry x="20" y="220" width="250" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="formsaccess" value="&lt;b&gt;Forms access&lt;/b&gt;&lt;br&gt;Forms are stored in same &lt;code&gt;files&lt;/code&gt; collection with &lt;code&gt;type=form&lt;/code&gt;&lt;br&gt;Form endpoints use slightly different visibility logic from document listing" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="accessLane">
+          <mxGeometry x="310" y="235" width="240" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="devaccess" value="&lt;b&gt;Developer visibility&lt;/b&gt;&lt;br&gt;Developer bypasses most restrictions and can view all files, widgets, users, logs, etc." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="accessLane">
+          <mxGeometry x="590" y="240" width="220" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="ae1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;" edge="1" parent="1" source="filemeta" target="sharebox"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae2" value="used by /api/files + download" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;fontSize=11;" edge="1" parent="1" source="sharebox" target="listbox"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae3" value="used by chat vector payload" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;fontSize=11;" edge="1" parent="1" source="sharebox" target="chataccess"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="exampleLane" value="&lt;b&gt;C. Example Hierarchy&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="560" width="760" height="480" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex1" value="Organization&lt;br&gt;&lt;b&gt;ABC Holdings&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="exampleLane">
+          <mxGeometry x="280" y="40" width="180" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex2" value="Entity&lt;br&gt;&lt;b&gt;ABC Manufacturing&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="exampleLane">
+          <mxGeometry x="110" y="160" width="180" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex3" value="Entity&lt;br&gt;&lt;b&gt;ABC Services&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="exampleLane">
+          <mxGeometry x="450" y="160" width="180" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex4" value="Department&lt;br&gt;&lt;b&gt;HR&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="exampleLane">
+          <mxGeometry x="20" y="300" width="150" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex5" value="Department&lt;br&gt;&lt;b&gt;Finance&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="exampleLane">
+          <mxGeometry x="210" y="300" width="150" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex6" value="Department&lt;br&gt;&lt;b&gt;Operations&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="exampleLane">
+          <mxGeometry x="390" y="300" width="150" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex7" value="Department&lt;br&gt;&lt;b&gt;Sales&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="exampleLane">
+          <mxGeometry x="580" y="300" width="150" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="userex" value="Example user assignment&lt;br&gt;User assigned to &lt;b&gt;ABC Manufacturing / HR&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="exampleLane">
+          <mxGeometry x="20" y="405" width="220" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="fileex1" value="File A sharedWith = [ABC Holdings]&lt;br&gt;Visible to users whose file access includes parent org" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="exampleLane">
+          <mxGeometry x="280" y="405" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="fileex2" value="File B sharedWith = [HR]&lt;br&gt;Visible only if user has HR node in their effective access set" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="exampleLane">
+          <mxGeometry x="520" y="405" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="xee1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="ex1" target="ex2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="xee2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="ex1" target="ex3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="xee3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="ex2" target="ex4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="xee4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="ex2" target="ex5"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="xee5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="ex3" target="ex6"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="xee6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="ex3" target="ex7"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="warnLane" value="&lt;b&gt;D. Important Implementation Note&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="820" y="560" width="840" height="480" as="geometry"/>
+        </mxCell>
+        <mxCell id="warn1" value="&lt;b&gt;Access logic is not perfectly uniform across the app&lt;/b&gt;&lt;br&gt;Chat retrieval path and file listing/download path do not derive hierarchy exactly the same way." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="warnLane">
+          <mxGeometry x="20" y="60" width="380" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="warn2" value="&lt;b&gt;Chat pipeline&lt;/b&gt;&lt;br&gt;Uses direct org assignments + tries to include child orgs when searching vectors.&lt;br&gt;Source: &lt;code&gt;chatPipeline.js / getUserAccessibleOrgIds()&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="warnLane">
+          <mxGeometry x="20" y="180" width="380" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="warn3" value="&lt;b&gt;File list/download&lt;/b&gt;&lt;br&gt;Uses direct org assignments + parent org names from &lt;code&gt;path&lt;/code&gt; when checking visible sharedWith values.&lt;br&gt;Source: &lt;code&gt;/api/files&lt;/code&gt; and &lt;code&gt;/api/files/:id/download&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="warnLane">
+          <mxGeometry x="430" y="180" width="380" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="warn4" value="&lt;b&gt;Presentation-safe wording&lt;/b&gt;&lt;br&gt;You can explain to boss that the system supports hierarchical organization-based sharing, but implementation today still has some legacy inconsistencies between modules because backend is concentrated in one big file." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="warnLane">
+          <mxGeometry x="20" y="330" width="790" height="90" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="role-visibility-matrix" name="5. Role Matrix and Visibility Rules">
+    <mxGraphModel dx="1644" dy="944" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title5" value="&lt;font style=&quot;font-size:22px;&quot;&gt;&lt;b&gt;Role Matrix and Visibility Rules&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px;&quot;&gt;Complete boss-facing explanation of who can create, manage, and see which data in the current implementation&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;fontColor=#333333;align=left;verticalAlign=top;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="980" height="45" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="rolesLane" value="&lt;b&gt;A. Main Roles in Current System&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#dae8fc;fontColor=#333333;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="90" width="560" height="380" as="geometry"/>
+        </mxCell>
+        <mxCell id="r1" value="&lt;b&gt;Developer&lt;/b&gt;&lt;br&gt;Top-level superuser in practice&lt;br&gt;Can see all users, all files, all organizations, all API keys, settings, audit, deleted chats, embed widgets" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="rolesLane">
+          <mxGeometry x="20" y="60" width="160" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="r2" value="&lt;b&gt;Admin&lt;/b&gt;&lt;br&gt;Scoped manager under assigned organization hierarchy&lt;br&gt;Can manage users/orgs in limited ways&lt;br&gt;Sees assigned org and related child scope depending on endpoint" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="rolesLane">
+          <mxGeometry x="200" y="60" width="160" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="r3" value="&lt;b&gt;User&lt;/b&gt;&lt;br&gt;Normal authenticated user&lt;br&gt;Can chat, view own accessible files/forms, use own organization scope, update own account/preferences" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="rolesLane">
+          <mxGeometry x="380" y="60" width="160" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="r4" value="&lt;b&gt;API Key Client&lt;/b&gt;&lt;br&gt;External system using &lt;code&gt;x-api-key&lt;/code&gt;&lt;br&gt;Operates as mapped user context&lt;br&gt;Can use native mode or webhook mode" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="rolesLane">
+          <mxGeometry x="20" y="220" width="160" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="r5" value="&lt;b&gt;Embed User&lt;/b&gt;&lt;br&gt;Logs in through widget&lt;br&gt;Actually authenticates against same &lt;code&gt;users&lt;/code&gt; collection&lt;br&gt;Then chats through embed endpoints" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="rolesLane">
+          <mxGeometry x="200" y="220" width="160" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="r6" value="&lt;b&gt;Practical note&lt;/b&gt;&lt;br&gt;There are also legacy RBAC collections (&lt;code&gt;roles&lt;/code&gt;, &lt;code&gt;permissions&lt;/code&gt;), but much of real behavior is still controlled directly by &lt;code&gt;req.user.role&lt;/code&gt; checks." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d79b00;" vertex="1" parent="rolesLane">
+          <mxGeometry x="380" y="220" width="160" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="createLane" value="&lt;b&gt;B. Who Can Create / Manage What&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="620" y="90" width="1140" height="380" as="geometry"/>
+        </mxCell>
+        <mxCell id="cmHeader" value="&lt;b&gt;Legend:&lt;/b&gt; Green = yes, Yellow = limited, Red = no" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;" vertex="1" parent="createLane">
+          <mxGeometry x="20" y="30" width="260" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="cm1" value="&lt;b&gt;Capability&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;fontColor=#333333;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="createLane">
+          <mxGeometry x="20" y="90" width="320" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cm2" value="&lt;b&gt;Developer&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;fontColor=#333333;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="createLane">
+          <mxGeometry x="340" y="90" width="220" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cm3" value="&lt;b&gt;Admin&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;fontColor=#333333;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="createLane">
+          <mxGeometry x="560" y="90" width="220" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cm4" value="&lt;b&gt;User&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;fontColor=#333333;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="createLane">
+          <mxGeometry x="780" y="90" width="220" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="cap1a" value="Create organization / entity" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="createLane">
+          <mxGeometry x="20" y="130" width="320" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap1b" value="Yes" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="createLane">
+          <mxGeometry x="340" y="130" width="220" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap1c" value="No" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="createLane">
+          <mxGeometry x="560" y="130" width="220" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap1d" value="No" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="createLane">
+          <mxGeometry x="780" y="130" width="220" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="cap2a" value="Create department" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="createLane">
+          <mxGeometry x="20" y="170" width="320" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap2b" value="Yes" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="createLane">
+          <mxGeometry x="340" y="170" width="220" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap2c" value="Yes, but only under assigned org hierarchy" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="createLane">
+          <mxGeometry x="560" y="170" width="220" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap2d" value="No" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="createLane">
+          <mxGeometry x="780" y="170" width="220" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="cap3a" value="Create / edit users" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="createLane">
+          <mxGeometry x="20" y="210" width="320" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap3b" value="Yes" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="createLane">
+          <mxGeometry x="340" y="210" width="220" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap3c" value="Yes, limited to admin scope and non-developer users" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="createLane">
+          <mxGeometry x="560" y="210" width="220" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap3d" value="No" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="createLane">
+          <mxGeometry x="780" y="210" width="220" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="cap4a" value="Upload document / form" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="createLane">
+          <mxGeometry x="20" y="250" width="320" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap4b" value="Yes" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="createLane">
+          <mxGeometry x="340" y="250" width="220" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap4c" value="Yes, if user canUploadFiles not disabled" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="createLane">
+          <mxGeometry x="560" y="250" width="220" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap4d" value="Yes, if canUploadFiles true" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="createLane">
+          <mxGeometry x="780" y="250" width="220" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="cap5a" value="Manage provider keys / app settings / embed widgets / API keys" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="createLane">
+          <mxGeometry x="20" y="290" width="320" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap5b" value="Yes" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="createLane">
+          <mxGeometry x="340" y="290" width="220" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap5c" value="Mostly no" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="createLane">
+          <mxGeometry x="560" y="290" width="220" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap5d" value="No" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="createLane">
+          <mxGeometry x="780" y="290" width="220" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="cap6a" value="See audit logs / deleted chats / download tracking" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="createLane">
+          <mxGeometry x="20" y="330" width="320" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap6b" value="Yes" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="createLane">
+          <mxGeometry x="340" y="330" width="220" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap6c" value="Audit logs only; not deleted chats/download tracking pages" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="createLane">
+          <mxGeometry x="560" y="330" width="220" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="cap6d" value="No" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="createLane">
+          <mxGeometry x="780" y="330" width="220" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="visLane" value="&lt;b&gt;C. What Each Role Can See&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="520" width="860" height="610" as="geometry"/>
+        </mxCell>
+        <mxCell id="v1" value="&lt;b&gt;Developer sees&lt;/b&gt;&lt;br&gt;- all files and forms&lt;br&gt;- all organizations and users&lt;br&gt;- all sessions and API usage&lt;br&gt;- all embed widgets and settings&lt;br&gt;- all quotas/groups&lt;br&gt;- can delete any chat session" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="visLane">
+          <mxGeometry x="20" y="60" width="250" height="170" as="geometry"/>
+        </mxCell>
+        <mxCell id="v2" value="&lt;b&gt;Admin sees&lt;/b&gt;&lt;br&gt;- users in assigned org scope&lt;br&gt;- organizations in assigned tree&lt;br&gt;- files/forms shared into accessible scope&lt;br&gt;- audit logs for own org scope&lt;br&gt;- cannot see developer account&lt;br&gt;- cannot manage global technical settings" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="visLane">
+          <mxGeometry x="300" y="60" width="250" height="170" as="geometry"/>
+        </mxCell>
+        <mxCell id="v3" value="&lt;b&gt;User sees&lt;/b&gt;&lt;br&gt;- own chats and sessions&lt;br&gt;- own account, preferences, storage/quota view&lt;br&gt;- documents/forms allowed by org-sharing logic&lt;br&gt;- no admin pages" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="visLane">
+          <mxGeometry x="580" y="60" width="250" height="170" as="geometry"/>
+        </mxCell>
+        <mxCell id="v4" value="&lt;b&gt;File visibility rule&lt;/b&gt;&lt;br&gt;File visibility depends mainly on &lt;code&gt;files.sharedWith&lt;/code&gt; intersecting the user effective org set, except developer who sees all." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="visLane">
+          <mxGeometry x="20" y="270" width="390" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="v5" value="&lt;b&gt;Chat visibility rule&lt;/b&gt;&lt;br&gt;Chat retrieval depends on vector payload &lt;code&gt;shared_with&lt;/code&gt; and effective org IDs from assignment logic in &lt;code&gt;chatPipeline.js&lt;/code&gt;." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="visLane">
+          <mxGeometry x="440" y="270" width="390" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="v6" value="&lt;b&gt;Delete file rule&lt;/b&gt;&lt;br&gt;Uploader or developer can delete a file.&lt;br&gt;Delete operation also removes vector entries from Qdrant/Pinecone." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d79b00;" vertex="1" parent="visLane">
+          <mxGeometry x="20" y="390" width="390" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="v7" value="&lt;b&gt;Download rule&lt;/b&gt;&lt;br&gt;Forms must be marked downloadable.&lt;br&gt;Non-developer must pass org-based access check before direct/local or S3 download URL is returned." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d79b00;" vertex="1" parent="visLane">
+          <mxGeometry x="440" y="390" width="390" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="v8" value="&lt;b&gt;Caution for boss discussion&lt;/b&gt;&lt;br&gt;Best accurate phrase: '&lt;i&gt;access is organization-based and hierarchical, but current implementation has some endpoint-level variation because the backend evolved inside one large service file&lt;/i&gt;'." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="visLane">
+          <mxGeometry x="20" y="510" width="810" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="scenarioLane" value="&lt;b&gt;D. Practical Visibility Scenarios&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#e1d5e7;fontColor=#333333;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="920" y="520" width="840" height="610" as="geometry"/>
+        </mxCell>
+        <mxCell id="s1" value="&lt;b&gt;Scenario 1&lt;/b&gt;&lt;br&gt;User assigned to Department HR&lt;br&gt;File shared to HR&lt;br&gt;&lt;font color=&quot;#2E7D32&quot;&gt;&lt;b&gt;Result: visible&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="scenarioLane">
+          <mxGeometry x="20" y="60" width="240" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s2" value="&lt;b&gt;Scenario 2&lt;/b&gt;&lt;br&gt;User assigned to Department HR&lt;br&gt;File shared to parent Organization&lt;br&gt;&lt;font color=&quot;#2E7D32&quot;&gt;&lt;b&gt;Result: usually visible in file list/download path&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="scenarioLane">
+          <mxGeometry x="300" y="60" width="240" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s3" value="&lt;b&gt;Scenario 3&lt;/b&gt;&lt;br&gt;User assigned to Department HR&lt;br&gt;File shared only to sibling Department Finance&lt;br&gt;&lt;font color=&quot;#C62828&quot;&gt;&lt;b&gt;Result: not visible&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="scenarioLane">
+          <mxGeometry x="580" y="60" width="240" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s4" value="&lt;b&gt;Scenario 4&lt;/b&gt;&lt;br&gt;Developer opens Files page&lt;br&gt;Any file regardless of sharedWith&lt;br&gt;&lt;font color=&quot;#2E7D32&quot;&gt;&lt;b&gt;Result: visible&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="scenarioLane">
+          <mxGeometry x="20" y="200" width="240" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s5" value="&lt;b&gt;Scenario 5&lt;/b&gt;&lt;br&gt;Admin assigned to organization root&lt;br&gt;Child department file shared in same tree&lt;br&gt;&lt;font color=&quot;#2E7D32&quot;&gt;&lt;b&gt;Result: usually visible&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="scenarioLane">
+          <mxGeometry x="300" y="200" width="240" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s6" value="&lt;b&gt;Scenario 6&lt;/b&gt;&lt;br&gt;API client uses key tied to user context&lt;br&gt;Native mode chat with org-limited vectors&lt;br&gt;&lt;font color=&quot;#2E7D32&quot;&gt;&lt;b&gt;Result: access follows mapped user/org scope&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="scenarioLane">
+          <mxGeometry x="580" y="200" width="240" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s7" value="&lt;b&gt;Scenario 7&lt;/b&gt;&lt;br&gt;Embed widget user logs in using same platform account&lt;br&gt;Embed chat still uses same RAG scope logic&lt;br&gt;&lt;font color=&quot;#2E7D32&quot;&gt;&lt;b&gt;Result: not public, still user-scoped&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="scenarioLane">
+          <mxGeometry x="20" y="340" width="240" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s8" value="&lt;b&gt;Scenario 8&lt;/b&gt;&lt;br&gt;Form uploaded with downloadable=true&lt;br&gt;Endpoint logic for forms differs slightly from docs&lt;br&gt;&lt;font color=&quot;#EF6C00&quot;&gt;&lt;b&gt;Result: verify by endpoint, not by assumption&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="scenarioLane">
+          <mxGeometry x="300" y="340" width="240" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s9" value="&lt;b&gt;Best final explanation to boss&lt;/b&gt;&lt;br&gt;1. Files are shared to org nodes.&lt;br&gt;2. Users inherit visibility from assigned hierarchy logic.&lt;br&gt;3. Developer sees everything.&lt;br&gt;4. Admin sees managed scope.&lt;br&gt;5. Some older endpoints still need harmonization." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;fontSize=13;" vertex="1" parent="scenarioLane">
+          <mxGeometry x="580" y="340" width="240" height="120" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="voice-flow" name="6. Voice and Continuous Conversation">
+    <mxGraphModel dx="1644" dy="944" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="vt" value="&lt;font style=&quot;font-size:22px;&quot;&gt;&lt;b&gt;Voice Input, TTS Output, and Continuous Conversation Mode&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:12px;&quot;&gt;Based on ChatInput.tsx, ChatMessage.tsx, server.js /api/transcribe and /api/tts endpoints&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;fontColor=#333333;align=left;verticalAlign=top;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="900" height="45" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="sttLane" value="&lt;b&gt;A. Speech-to-Text (STT) Flow&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#dae8fc;fontColor=#333333;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="80" width="1640" height="280" as="geometry"/>
+        </mxCell>
+        <mxCell id="stt1" value="1. User clicks mic button&lt;br&gt;or continuous mode active&lt;br&gt;ChatInput.tsx starts recording" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="sttLane">
+          <mxGeometry x="20" y="50" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="stt2" value="2. Browser mode:&lt;br&gt;Web Speech API&lt;br&gt;&lt;code&gt;SpeechRecognition&lt;/code&gt;&lt;br&gt;No server call needed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="sttLane">
+          <mxGeometry x="260" y="40" width="180" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="stt3" value="3. API mode:&lt;br&gt;MediaRecorder captures audio&lt;br&gt;POST &lt;code&gt;/api/transcribe&lt;/code&gt;&lt;br&gt;multipart audio blob" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="sttLane">
+          <mxGeometry x="480" y="40" width="190" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="stt4" value="4. Server STT providers:&lt;br&gt;• Gemini (generateContent with audio)&lt;br&gt;• Mistral Voxtral&lt;br&gt;• ElevenLabs&lt;br&gt;• External webhook&lt;br&gt;• Local Whisper (Ollama)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="sttLane">
+          <mxGeometry x="710" y="30" width="220" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="stt5" value="5. Returns transcribed text&lt;br&gt;Inserted into chat input box&lt;br&gt;Language: auto/en/ms/zh/ta/multi" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="sttLane">
+          <mxGeometry x="970" y="50" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="sttNote" value="&lt;b&gt;Language mapping&lt;/b&gt;&lt;br&gt;Frontend maps language codes to provider-specific formats.&lt;br&gt;Settings configurable in SettingsPage Voice tab." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="sttLane">
+          <mxGeometry x="1210" y="40" width="220" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="se1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="stt1" target="stt2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="se2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="stt1" target="stt3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="se3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="stt3" target="stt4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="se4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="stt4" target="stt5"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="ttsLane" value="&lt;b&gt;B. Text-to-Speech (TTS) Flow&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="390" width="1640" height="260" as="geometry"/>
+        </mxCell>
+        <mxCell id="tts1" value="1. User clicks Play on bot message&lt;br&gt;or auto-TTS in continuous mode&lt;br&gt;ChatMessage.tsx strips markdown" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="ttsLane">
+          <mxGeometry x="20" y="50" width="210" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="tts2" value="2. POST &lt;code&gt;/api/tts&lt;/code&gt;&lt;br&gt;Body: { text, language }" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="ttsLane">
+          <mxGeometry x="270" y="50" width="180" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="tts3" value="3. Server TTS providers:&lt;br&gt;• Gemini (parallel chunk → PCM → WAV merge)&lt;br&gt;• Google Cloud Long Audio (auto lang: EN/ZH/MS/TA)&lt;br&gt;• Mistral Voxtral&lt;br&gt;• ElevenLabs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="ttsLane">
+          <mxGeometry x="490" y="30" width="250" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="tts4" value="4. Returns audio buffer&lt;br&gt;Frontend plays via AudioContext&lt;br&gt;Dispatches ttsStarted/ttsEnded events" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="ttsLane">
+          <mxGeometry x="780" y="50" width="210" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="ttsNote" value="&lt;b&gt;Gemini TTS detail&lt;/b&gt;&lt;br&gt;Long text split into chunks, each sent in parallel to Gemini.&lt;br&gt;Raw PCM responses merged and converted to WAV with proper headers." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="ttsLane">
+          <mxGeometry x="1030" y="40" width="250" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="te1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;" edge="1" parent="1" source="tts1" target="tts2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="te2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="tts2" target="tts3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="te3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;" edge="1" parent="1" source="tts3" target="tts4"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="contLane" value="&lt;b&gt;C. Continuous Conversation Mode (Radio Button)&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="680" width="1640" height="460" as="geometry"/>
+        </mxCell>
+        <mxCell id="cont1" value="1. User clicks Radio button&lt;br&gt;Continuous mode activates&lt;br&gt;Auto-starts listening" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="contLane">
+          <mxGeometry x="20" y="50" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="cont2" value="2. Silence detection&lt;br&gt;Browser mode: 2s silence timeout&lt;br&gt;Gemini mode: AudioContext analyser&lt;br&gt;monitors volume, 2s silence threshold" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="contLane">
+          <mxGeometry x="260" y="40" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="cont3" value="3. On silence detected:&lt;br&gt;Stop recording&lt;br&gt;Transcribe (browser or API)&lt;br&gt;Auto-send message to chat" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="contLane">
+          <mxGeometry x="520" y="50" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="cont4" value="4. Bot responds&lt;br&gt;Auto-TTS plays response&lt;br&gt;Listening paused during TTS&lt;br&gt;ttsStarted/ttsEnded events" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="contLane">
+          <mxGeometry x="760" y="50" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="cont5" value="5. TTS ends → auto-resume listening&lt;br&gt;Cycle repeats until user&lt;br&gt;clicks Radio button again to stop" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="contLane">
+          <mxGeometry x="1000" y="50" width="210" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="cont6" value="&lt;b&gt;Interrupt detection&lt;/b&gt;&lt;br&gt;If user speaks during TTS playback:&lt;br&gt;• TTS audio stops immediately&lt;br&gt;• Listening resumes&lt;br&gt;• New speech captured" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="contLane">
+          <mxGeometry x="1250" y="40" width="210" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="contState" value="&lt;b&gt;State sync via localStorage&lt;/b&gt;&lt;br&gt;&lt;code&gt;continuousMode&lt;/code&gt; — active flag&lt;br&gt;&lt;code&gt;continuousModeMessage&lt;/code&gt; — pending text&lt;br&gt;&lt;code&gt;ttsPlaying&lt;/code&gt; — TTS active flag&lt;br&gt;&lt;code&gt;ttsBlocking&lt;/code&gt; — block listening during TTS" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="contLane">
+          <mxGeometry x="20" y="190" width="250" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="contStatus" value="&lt;b&gt;UI Status indicators&lt;/b&gt;&lt;br&gt;• Listening... (green pulse)&lt;br&gt;• Speaking... (user talking)&lt;br&gt;• Transcribing... (API processing)&lt;br&gt;• Bot speaking... (TTS playing)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="contLane">
+          <mxGeometry x="310" y="190" width="220" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="contFlow" value="&lt;b&gt;Full cycle:&lt;/b&gt;&lt;br&gt;Listen → Silence → Transcribe → Send → Bot Reply → Auto-TTS → TTS End → Listen again&lt;br&gt;&lt;br&gt;Interrupt: User speaks during TTS → Stop TTS → Listen → new cycle" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;fontSize=13;" vertex="1" parent="contLane">
+          <mxGeometry x="20" y="340" width="1440" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="coe1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="cont1" target="cont2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="coe2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="cont2" target="cont3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="coe3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="cont3" target="cont4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="coe4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#b85450;" edge="1" parent="1" source="cont4" target="cont5"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="embed-widget" name="7. Embed Widget Architecture">
+    <mxGraphModel dx="1644" dy="944" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="ewt" value="&lt;font style=&quot;font-size:22px;&quot;&gt;&lt;b&gt;Embed Widget System&lt;/b&gt;&lt;/font&gt;&lt;br&gt;Embeddable chat widget for third-party websites. Managed via EmbedWidgetsPage.tsx, served from public/embed/" style="text;html=1;strokeColor=none;fillColor=none;fontColor=#333333;align=left;verticalAlign=top;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="800" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="ewDeploy" value="&lt;b&gt;A. Deployment Flow&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#dae8fc;fontColor=#333333;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="80" width="1640" height="220" as="geometry"/>
+        </mxCell>
+        <mxCell id="ew1" value="1. Developer creates widget&lt;br&gt;in EmbedWidgetsPage&lt;br&gt;Sets theme, colors, shape,&lt;br&gt;domains, system prompt" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="ewDeploy">
+          <mxGeometry x="20" y="50" width="200" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="ew2" value="2. Widget saved to&lt;br&gt;&lt;code&gt;embed_widgets&lt;/code&gt; collection&lt;br&gt;Gets unique widgetId" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="ewDeploy">
+          <mxGeometry x="260" y="50" width="200" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="ew3" value="3. Embed code generated:&lt;br&gt;&lt;code&gt;&amp;lt;script src=&quot;.../widget.js&quot;&lt;br&gt;data-widget-id=&quot;...&quot;&amp;gt;&lt;/code&gt;&lt;br&gt;Client pastes into their site" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="ewDeploy">
+          <mxGeometry x="500" y="50" width="220" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="ew4" value="4. widget.js creates iframe&lt;br&gt;pointing to chat.html?widgetId=...&lt;br&gt;Listens for postMessage resize" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="ewDeploy">
+          <mxGeometry x="760" y="50" width="210" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="ew5" value="5. chat.html loads config&lt;br&gt;GET &lt;code&gt;/api/embed/config/:widgetId&lt;/code&gt;&lt;br&gt;Applies theme, colors, logo" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="ewDeploy">
+          <mxGeometry x="1010" y="50" width="210" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="ewe1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="ew1" target="ew2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ewe2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="ew2" target="ew3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ewe3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="ew3" target="ew4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ewe4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;" edge="1" parent="1" source="ew4" target="ew5"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ewTheme" value="&lt;b&gt;B. Theming Options&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="330" width="800" height="300" as="geometry"/>
+        </mxCell>
+        <mxCell id="ewt1" value="&lt;b&gt;Appearance&lt;/b&gt;&lt;br&gt;Theme: light / dark / auto&lt;br&gt;Main color + gradient&lt;br&gt;Button shape: circle / rounded / square&lt;br&gt;Bubble style: modern / rounded / sharp / pill&lt;br&gt;Font size: sm / md / lg&lt;br&gt;Window roundness slider&lt;br&gt;Header logo + button icon upload&lt;br&gt;Powered-by toggle" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="ewTheme">
+          <mxGeometry x="20" y="50" width="230" height="200" as="geometry"/>
+        </mxCell>
+        <mxCell id="ewt2" value="&lt;b&gt;Content&lt;/b&gt;&lt;br&gt;Header title + subtitle&lt;br&gt;Welcome message&lt;br&gt;Input placeholder text" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="ewTheme">
+          <mxGeometry x="280" y="50" width="200" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="ewt3" value="&lt;b&gt;Settings&lt;/b&gt;&lt;br&gt;Allowed domains (comma-separated)&lt;br&gt;Custom system prompt&lt;br&gt;Active / inactive toggle" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="ewTheme">
+          <mxGeometry x="510" y="50" width="200" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="ewChat" value="&lt;b&gt;C. Embed Chat Flow&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="860" y="330" width="800" height="300" as="geometry"/>
+        </mxCell>
+        <mxCell id="ewc1" value="&lt;b&gt;Login&lt;/b&gt;&lt;br&gt;POST &lt;code&gt;/api/embed/login&lt;/code&gt;&lt;br&gt;Same users collection&lt;br&gt;JWT stored per widgetId in localStorage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="ewChat">
+          <mxGeometry x="20" y="50" width="220" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="ewc2" value="&lt;b&gt;Chat&lt;/b&gt;&lt;br&gt;POST &lt;code&gt;/api/embed/chat&lt;/code&gt;&lt;br&gt;Uses same RAG pipeline&lt;br&gt;Org-scoped vector search&lt;br&gt;Widget system prompt override" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="ewChat">
+          <mxGeometry x="280" y="50" width="220" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="ewc3" value="&lt;b&gt;Features&lt;/b&gt;&lt;br&gt;Session persistence per widget&lt;br&gt;Basic markdown rendering&lt;br&gt;Typing indicator&lt;br&gt;User avatar menu + logout&lt;br&gt;iframe resize via postMessage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="ewChat">
+          <mxGeometry x="540" y="40" width="220" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="ewce1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="ewc1" target="ewc2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ewApis" value="&lt;b&gt;D. Embed API Endpoints&lt;/b&gt;&lt;br&gt;&lt;code&gt;GET /api/embed/config/:widgetId&lt;/code&gt; — public, no auth&lt;br&gt;&lt;code&gt;POST /api/embed/login&lt;/code&gt; — public, returns JWT&lt;br&gt;&lt;code&gt;POST /api/embed/chat&lt;/code&gt; — auth required&lt;br&gt;&lt;code&gt;GET /api/embed/messages&lt;/code&gt; — auth required&lt;br&gt;&lt;code&gt;GET /api/embed/sessions&lt;/code&gt; — auth required&lt;br&gt;&lt;b&gt;Admin CRUD:&lt;/b&gt; GET/POST/PUT/DELETE &lt;code&gt;/api/embed-widgets&lt;/code&gt;&lt;br&gt;&lt;code&gt;POST /api/embed-widgets/upload-logo&lt;/code&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;fontColor=#333333;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="20" y="660" width="500" height="160" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="quota-billing" name="8. Quota, Plans and Client Onboarding">
+    <mxGraphModel dx="1644" dy="944" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="qbt" value="&lt;font style=&quot;font-size:22px;&quot;&gt;&lt;b&gt;Quota System, Plans, and Client Onboarding&lt;/b&gt;&lt;/font&gt;&lt;br&gt;Based on groups collection, chat_counts, chat_resets, GroupsPage.tsx, NewClientPage.tsx, /api/create-client" style="text;html=1;strokeColor=none;fillColor=none;fontColor=#333333;align=left;verticalAlign=top;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="900" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="planLane" value="&lt;b&gt;A. Plans / Groups System&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#dae8fc;fontColor=#333333;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="80" width="800" height="380" as="geometry"/>
+        </mxCell>
+        <mxCell id="pl1" value="&lt;b&gt;groups collection&lt;/b&gt;&lt;br&gt;&lt;code&gt;name&lt;/code&gt; — plan name&lt;br&gt;&lt;code&gt;storageLimitGB&lt;/code&gt; — max storage&lt;br&gt;&lt;code&gt;chatQuota&lt;/code&gt; — 0 = unlimited&lt;br&gt;&lt;code&gt;quotaType&lt;/code&gt; — individual or total&lt;br&gt;&lt;code&gt;renewDay&lt;/code&gt; — day of month (1-31)&lt;br&gt;&lt;code&gt;bonusQuota&lt;/code&gt; — extra allowance" style="shape=cylinder;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="planLane">
+          <mxGeometry x="20" y="50" width="220" height="150" as="geometry"/>
+        </mxCell>
+        <mxCell id="pl2" value="&lt;b&gt;Quota types&lt;/b&gt;&lt;br&gt;&lt;b&gt;Individual:&lt;/b&gt; each user in group gets own quota&lt;br&gt;&lt;b&gt;Total:&lt;/b&gt; entire group shares one pool" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="planLane">
+          <mxGeometry x="280" y="50" width="230" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="pl3" value="&lt;b&gt;Tracking collections&lt;/b&gt;&lt;br&gt;&lt;code&gt;chat_counts&lt;/code&gt; — groupId + userId + month + count&lt;br&gt;&lt;code&gt;chat_resets&lt;/code&gt; — groupId + month + resetAt&lt;br&gt;Auto-resets on renewDay each month" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="planLane">
+          <mxGeometry x="280" y="160" width="250" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="pl4" value="&lt;b&gt;Admin actions (GroupsPage)&lt;/b&gt;&lt;br&gt;Create/edit/delete plans&lt;br&gt;Assign orgs to plans&lt;br&gt;Reset quota manually&lt;br&gt;Add bonus quota&lt;br&gt;Change renew day" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="planLane">
+          <mxGeometry x="570" y="50" width="200" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="pl5" value="&lt;b&gt;Storage enforcement&lt;/b&gt;&lt;br&gt;Upload checks group storageLimitGB&lt;br&gt;Sums file sizes for group&lt;br&gt;Rejects if over limit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="planLane">
+          <mxGeometry x="570" y="200" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="clientLane" value="&lt;b&gt;B. Client Onboarding (NewClientPage)&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="860" y="80" width="800" height="380" as="geometry"/>
+        </mxCell>
+        <mxCell id="cl1" value="1. Developer fills form:&lt;br&gt;Organization name&lt;br&gt;Admin full name + email + password&lt;br&gt;Plan selection" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="clientLane">
+          <mxGeometry x="20" y="50" width="200" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="cl2" value="2. POST &lt;code&gt;/api/create-client&lt;/code&gt;&lt;br&gt;Creates all in one transaction:&lt;br&gt;• Organization node&lt;br&gt;• Admin user (role=admin, mustChangePassword)&lt;br&gt;• user_organization_assignment&lt;br&gt;• Links org to selected plan" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="clientLane">
+          <mxGeometry x="260" y="40" width="250" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="cl3" value="3. Admin logs in first time&lt;br&gt;Forced password change&lt;br&gt;Then can manage their org" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="clientLane">
+          <mxGeometry x="550" y="50" width="200" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="cle1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;" edge="1" parent="1" source="cl1" target="cl2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="cle2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;" edge="1" parent="1" source="cl2" target="cl3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="provLane" value="&lt;b&gt;C. Provider Keys (Global + Per-Org Override)&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="490" width="1640" height="220" as="geometry"/>
+        </mxCell>
+        <mxCell id="pv1" value="&lt;b&gt;provider_keys collection&lt;/b&gt;&lt;br&gt;Global: &lt;code&gt;_id: 'keys'&lt;/code&gt;&lt;br&gt;Per-org: &lt;code&gt;_id: 'keys_{orgId}'&lt;/code&gt;&lt;br&gt;Fields: geminiKey, openaiKey, mistralKey, groqKey, googleCloudKey" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="provLane">
+          <mxGeometry x="20" y="50" width="280" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="pv2" value="&lt;b&gt;Resolution logic&lt;/b&gt;&lt;br&gt;&lt;code&gt;resolveProviderKeys(orgId)&lt;/code&gt;&lt;br&gt;1. Load global keys&lt;br&gt;2. Load org-specific keys&lt;br&gt;3. Org keys override global (non-empty fields only)&lt;br&gt;4. Also syncs to settings collection" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="provLane">
+          <mxGeometry x="340" y="40" width="280" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="pv3" value="&lt;b&gt;ProviderKeysPage UI&lt;/b&gt;&lt;br&gt;Org selector: Global + per-client&lt;br&gt;Providers: Gemini, OpenAI, Mistral, Groq, Google Cloud&lt;br&gt;Each: key input + show/hide + status indicator&lt;br&gt;Google Cloud accepts service account JSON" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="provLane">
+          <mxGeometry x="660" y="40" width="280" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="pve1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d6b656;" edge="1" parent="1" source="pv1" target="pv2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="cleanLane" value="&lt;b&gt;D. Operational: Daily Cleanup + Testing&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="740" width="1640" height="180" as="geometry"/>
+        </mxCell>
+        <mxCell id="dn1" value="&lt;b&gt;cleanupOldData()&lt;/b&gt;&lt;br&gt;Runs daily on server start&lt;br&gt;Deletes old deleted_messages, audit_logs,&lt;br&gt;download_tracking, api_usage&lt;br&gt;Based on settings retention days" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="cleanLane">
+          <mxGeometry x="20" y="50" width="280" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="dn2" value="&lt;b&gt;Test endpoints&lt;/b&gt;&lt;br&gt;POST &lt;code&gt;/api/test-webhook&lt;/code&gt; — verify webhook URL&lt;br&gt;POST &lt;code&gt;/api/test-s3&lt;/code&gt; — verify S3 credentials" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="cleanLane">
+          <mxGeometry x="340" y="50" width="280" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="dn3" value="&lt;b&gt;Re-embed (developer only)&lt;/b&gt;&lt;br&gt;POST &lt;code&gt;/api/reembed&lt;/code&gt; — SSE progress&lt;br&gt;Re-processes all files when embedding&lt;br&gt;model/dimension changes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="cleanLane">
+          <mxGeometry x="660" y="50" width="280" height="100" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="robot-api-extras" name="9. Robot, API Key Modes and Extra Features">
+    <mxGraphModel dx="1644" dy="944" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="rxt" value="&lt;font style=&quot;font-size:22px;&quot;&gt;&lt;b&gt;Robot Settings, API Key Modes, and Additional Features&lt;/b&gt;&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;fontColor=#333333;align=left;verticalAlign=top;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="800" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="robotLane" value="&lt;b&gt;A. Robot Settings&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#dae8fc;fontColor=#333333;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="70" width="800" height="280" as="geometry"/>
+        </mxCell>
+        <mxCell id="rb1" value="&lt;b&gt;robot_settings collection&lt;/b&gt;&lt;br&gt;&lt;code&gt;name&lt;/code&gt; — robot profile name&lt;br&gt;&lt;code&gt;navigation[]&lt;/code&gt; — nav commands&lt;br&gt;&lt;code&gt;motion[]&lt;/code&gt; — motion commands&lt;br&gt;&lt;code&gt;emotion[]&lt;/code&gt; — emotion expressions" style="shape=cylinder;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="robotLane">
+          <mxGeometry x="20" y="50" width="220" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="rb2" value="&lt;b&gt;CRUD endpoints&lt;/b&gt;&lt;br&gt;GET/POST/PUT/DELETE &lt;code&gt;/api/robot-settings&lt;/code&gt;&lt;br&gt;Developer only" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="robotLane">
+          <mxGeometry x="280" y="50" width="220" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="rb3" value="&lt;b&gt;Robot API endpoints (API key auth)&lt;/b&gt;&lt;br&gt;GET &lt;code&gt;/api/robot-data&lt;/code&gt; — get robot config&lt;br&gt;POST &lt;code&gt;/api/robot-navigation&lt;/code&gt; — send nav command&lt;br&gt;API key links to robotSettingId" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#6c8ebf;" vertex="1" parent="robotLane">
+          <mxGeometry x="540" y="50" width="230" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="apiKeyLane" value="&lt;b&gt;B. API Key System (Native vs Webhook)&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#d5e8d4;fontColor=#333333;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="860" y="70" width="800" height="280" as="geometry"/>
+        </mxCell>
+        <mxCell id="ak1" value="&lt;b&gt;api_keys collection&lt;/b&gt;&lt;br&gt;&lt;code&gt;key&lt;/code&gt; — full API key&lt;br&gt;&lt;code&gt;shortKey&lt;/code&gt; — optional short version&lt;br&gt;&lt;code&gt;chatMode&lt;/code&gt; — native or webhook&lt;br&gt;&lt;code&gt;webhookUrl&lt;/code&gt; — for webhook mode&lt;br&gt;&lt;code&gt;systemPrompt&lt;/code&gt; — for native mode&lt;br&gt;&lt;code&gt;userId&lt;/code&gt; — mapped user context&lt;br&gt;&lt;code&gt;robotSettingId&lt;/code&gt; — optional robot link" style="shape=cylinder;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="apiKeyLane">
+          <mxGeometry x="20" y="40" width="230" height="180" as="geometry"/>
+        </mxCell>
+        <mxCell id="ak2" value="&lt;b&gt;Native mode&lt;/b&gt;&lt;br&gt;POST &lt;code&gt;/api/v1/chat&lt;/code&gt;&lt;br&gt;Uses internal RAG pipeline&lt;br&gt;Org-scoped via mapped user&lt;br&gt;Returns text + speak split" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="apiKeyLane">
+          <mxGeometry x="290" y="50" width="210" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="ak3" value="&lt;b&gt;Webhook mode&lt;/b&gt;&lt;br&gt;POST &lt;code&gt;/api/v1/chat&lt;/code&gt;&lt;br&gt;Forwards to API-key-specific&lt;br&gt;webhook URL (e.g. n8n)&lt;br&gt;Bypasses native RAG" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#82b366;" vertex="1" parent="apiKeyLane">
+          <mxGeometry x="540" y="50" width="210" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="ak4" value="&lt;b&gt;Auth: &lt;code&gt;authenticateApiKey&lt;/code&gt;&lt;/b&gt;&lt;br&gt;Checks &lt;code&gt;x-api-key&lt;/code&gt; header&lt;br&gt;Matches full key or shortKey&lt;br&gt;Logs to &lt;code&gt;api_usage&lt;/code&gt; collection" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="apiKeyLane">
+          <mxGeometry x="290" y="180" width="210" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="extraLane" value="&lt;b&gt;C. Additional Features Not in Previous Pages&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#fff2cc;fontColor=#333333;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="380" width="1640" height="310" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex1b" value="&lt;b&gt;Text Embeddings (Manual Knowledge)&lt;/b&gt;&lt;br&gt;&lt;code&gt;embedding_files&lt;/code&gt; collection&lt;br&gt;Users add text-based knowledge directly&lt;br&gt;Supports markdown links like &lt;code&gt;[click here](/form/...)&lt;/code&gt;&lt;br&gt;TextEmbeddedPage.tsx" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="extraLane">
+          <mxGeometry x="20" y="50" width="250" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex2b" value="&lt;b&gt;Download Tracking&lt;/b&gt;&lt;br&gt;&lt;code&gt;download_tracking&lt;/code&gt; collection&lt;br&gt;fileId, fileName, userId, downloadedAt, IP&lt;br&gt;Stats: per-file counts, unique users&lt;br&gt;DownloadTrackingPage.tsx" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="extraLane">
+          <mxGeometry x="300" y="50" width="250" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex3b" value="&lt;b&gt;Deleted Chats Archive&lt;/b&gt;&lt;br&gt;&lt;code&gt;deleted_messages&lt;/code&gt; collection&lt;br&gt;Stores deletedBy, deletedAt for audit&lt;br&gt;Developer can view all deleted sessions&lt;br&gt;DeletedChatsPage.tsx" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="extraLane">
+          <mxGeometry x="580" y="50" width="250" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex4b" value="&lt;b&gt;Fuzzy File Download&lt;/b&gt;&lt;br&gt;&lt;code&gt;calculateSimilarity()&lt;/code&gt; Levenshtein&lt;br&gt;POST &lt;code&gt;/api/files/check-downloadable&lt;/code&gt;&lt;br&gt;Parses file names from bot messages&lt;br&gt;Shows download buttons with match %" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="extraLane">
+          <mxGeometry x="860" y="50" width="250" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex5b" value="&lt;b&gt;Split-Screen WebView&lt;/b&gt;&lt;br&gt;Links in chat open in side panel&lt;br&gt;WebViewPanel.tsx — iframe 50/50 split&lt;br&gt;Refresh, open in new tab, close&lt;br&gt;10s timeout with error fallback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="extraLane">
+          <mxGeometry x="1140" y="50" width="250" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex6b" value="&lt;b&gt;Audit Trail&lt;/b&gt;&lt;br&gt;&lt;code&gt;audit_logs&lt;/code&gt; collection&lt;br&gt;Tracks: file upload, file delete&lt;br&gt;action, userId, userEmail, orgId, details&lt;br&gt;AuditTrailPage.tsx" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="extraLane">
+          <mxGeometry x="20" y="190" width="250" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex7b" value="&lt;b&gt;Session Security&lt;/b&gt;&lt;br&gt;Single-session enforcement via &lt;code&gt;activeSessionToken&lt;/code&gt;&lt;br&gt;30-min idle timeout (frontend)&lt;br&gt;15-sec health check polling&lt;br&gt;First-login forced password change" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="extraLane">
+          <mxGeometry x="300" y="190" width="250" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex8b" value="&lt;b&gt;S3 Dual Storage Path&lt;/b&gt;&lt;br&gt;Files stored locally by default&lt;br&gt;Optional S3 via &lt;code&gt;getS3Client()&lt;/code&gt;&lt;br&gt;Download returns S3 signed URL or local stream&lt;br&gt;Logo upload also supports S3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="extraLane">
+          <mxGeometry x="580" y="190" width="250" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="ex9b" value="&lt;b&gt;Ollama Model Management&lt;/b&gt;&lt;br&gt;SettingsPage AI Models tab&lt;br&gt;Docker vs Native source toggle&lt;br&gt;Pull models with SSE progress&lt;br&gt;List, delete, health check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#d6b656;" vertex="1" parent="extraLane">
+          <mxGeometry x="860" y="190" width="250" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="bugLane" value="&lt;b&gt;D. Known Bugs / Technical Debt&lt;/b&gt;" style="swimlane;html=1;rounded=1;fillColor=#f8cecc;fontColor=#333333;strokeColor=#b85450;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="720" width="1640" height="180" as="geometry"/>
+        </mxCell>
+        <mxCell id="bug1" value="&lt;b&gt;getAllChildrenOrgs() undefined&lt;/b&gt;&lt;br&gt;Called in GET /api/forms but never defined&lt;br&gt;Forms endpoint may error for non-developer users" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="bugLane">
+          <mxGeometry x="20" y="50" width="250" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="bug2" value="&lt;b&gt;Duplicate route definitions&lt;/b&gt;&lt;br&gt;GET /api/keys, POST /api/keys, GET /api/usage,&lt;br&gt;GET /api/forms, organizations endpoints&lt;br&gt;Later definitions are dead code" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="bugLane">
+          <mxGeometry x="300" y="50" width="280" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="bug3" value="&lt;b&gt;Auth middleware gaps&lt;/b&gt;&lt;br&gt;Some endpoints reference req.user.organizationId&lt;br&gt;and req.user.userId which are never set&lt;br&gt;(auth sets req.user.id, email, fullName, role)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="bugLane">
+          <mxGeometry x="610" y="50" width="280" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="bug4" value="&lt;b&gt;Dual API key collections&lt;/b&gt;&lt;br&gt;&lt;code&gt;api_keys&lt;/code&gt; (new) vs &lt;code&gt;apiKeys&lt;/code&gt; (legacy)&lt;br&gt;Both referenced in different parts of server.js" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;fontColor=#333333;strokeColor=#b85450;" vertex="1" parent="bugLane">
+          <mxGeometry x="920" y="50" width="250" height="80" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

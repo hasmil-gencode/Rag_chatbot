@@ -203,16 +203,45 @@ class API {
     return res.json()
   }
 
-  async uploadFile(file: File, sharedWith: string[]): Promise<{ success: boolean; fileId: string; message: string; chunks: number }> {
+  async uploadFile(file: File, sharedWith: string[], onProgress?: (step: string, detail: string) => void, isPublic: boolean = false): Promise<{ success: boolean; fileId: string; message: string; chunks: number }> {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('sharedWith', JSON.stringify(sharedWith))
+    if (isPublic) formData.append('isPublic', 'true')
     
     const res = await fetchWithAuth(`${API_BASE}/upload`, {
       method: 'POST',
       headers: this.getAuthHeaders(),
       body: formData,
     })
+
+    // Handle SSE stream for document uploads
+    if (res.headers.get('content-type')?.includes('text/event-stream')) {
+      const reader = res.body?.getReader()
+      const decoder = new TextDecoder()
+      let result: any = null
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const text = decoder.decode(value)
+          const lines = text.split('\n').filter(l => l.startsWith('data: '))
+          for (const line of lines) {
+            try {
+              const data = JSON.parse(line.slice(6))
+              if (data.error) throw new Error(data.error)
+              if (data.step && data.detail && onProgress) onProgress(data.step, data.detail)
+              if (data.success !== undefined) result = data
+            } catch (e: any) { if (e.message && !e.message.includes('JSON')) throw e }
+          }
+        }
+      }
+      if (!result) throw new Error('Upload failed: no response')
+      if (!result.success) throw new Error(result.error || 'Upload failed')
+      return result
+    }
+
+    // Fallback for non-SSE (forms)
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Upload failed')
     return json
@@ -425,11 +454,11 @@ class API {
     return json
   }
 
-  async updateOrganization(orgId: string, name: string, type: string, parentId: string | null) {
+  async updateOrganization(orgId: string, name: string, type: string, parentId: string | null, publicEnabled?: boolean) {
     const res = await fetchWithAuth(`${API_BASE}/organizations/${orgId}`, {
       method: 'PUT',
       headers: this.getHeaders(),
-      body: JSON.stringify({ name, type, parentId }),
+      body: JSON.stringify({ name, type, parentId, publicEnabled }),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to update organization')
@@ -468,14 +497,23 @@ class API {
     return json
   }
 
-  async createApiKey(name: string, userId: string, generateShortKey: boolean = false, robotSettingId: string | null = null) {
+  async createApiKey(name: string, userId: string, generateShortKey: boolean = false, _robotSettingId: string | null = null, description: string = '', webhookUrl: string = '', chatMode: string = 'native', systemPrompt: string = '') {
     const res = await fetchWithAuth(`${API_BASE}/keys`, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({ name, userId, generateShortKey, robotSettingId }),
+      body: JSON.stringify({ name, userId, generateShortKey, description, webhookUrl, chatMode, systemPrompt }),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to create API key')
+    return json
+  }
+
+  async updateApiKeyDetails(id: string, data: { name: string; description: string; chatMode: string; webhookUrl: string; systemPrompt: string }) {
+    const res = await fetchWithAuth(`${API_BASE}/keys/${id}/details`, {
+      method: 'PUT', headers: this.getHeaders(), body: JSON.stringify(data),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to update API key')
     return json
   }
 
@@ -650,11 +688,11 @@ class API {
     return json
   }
 
-  async createOrganization(name: string, type: string, parentId: string | null) {
+  async createOrganization(name: string, type: string, parentId: string | null, publicEnabled?: boolean) {
     const res = await fetchWithAuth(`${API_BASE}/organizations`, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({ name, type, parentId }),
+      body: JSON.stringify({ name, type, parentId, publicEnabled }),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to create organization')
@@ -669,6 +707,87 @@ class API {
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to assign user')
+    return json
+  }
+
+  async getAuditLogs() {
+    const res = await fetchWithAuth(`${API_BASE}/audit-logs`, { headers: this.getHeaders() })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to get audit logs')
+    return json
+  }
+
+  async createClient(orgName: string, adminEmail: string, adminPassword: string, adminName: string, planId: string | null, publicEnabled: boolean = false) {
+    const res = await fetchWithAuth(`${API_BASE}/create-client`, {
+      method: 'POST', headers: this.getHeaders(),
+      body: JSON.stringify({ orgName, adminEmail, adminPassword, adminName, planId, publicEnabled }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to create client')
+    return json
+  }
+
+  // Provider Keys
+  async getProviderKeys(orgId?: string) {
+    const url = orgId ? `${API_BASE}/provider-keys?orgId=${orgId}` : `${API_BASE}/provider-keys`;
+    const res = await fetchWithAuth(url, { headers: this.getHeaders() })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to get keys')
+    return json
+  }
+
+  async saveProviderKeys(keys: Record<string, string>, orgId?: string) {
+    const url = orgId ? `${API_BASE}/provider-keys?orgId=${orgId}` : `${API_BASE}/provider-keys`;
+    const res = await fetchWithAuth(url, {
+      method: 'PUT', headers: this.getHeaders(), body: JSON.stringify(keys),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to save keys')
+    return json
+  }
+
+  // Embed Widgets
+  async getEmbedWidgets() {
+    const res = await fetchWithAuth(`${API_BASE}/embed-widgets`, { headers: this.getHeaders() })
+    if (!res.ok) throw new Error('Failed to get widgets')
+    return res.json()
+  }
+
+  async createEmbedWidget(data: any) {
+    const res = await fetchWithAuth(`${API_BASE}/embed-widgets`, {
+      method: 'POST', headers: this.getHeaders(), body: JSON.stringify(data),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to create widget')
+    return json
+  }
+
+  async updateEmbedWidget(id: string, data: any) {
+    const res = await fetchWithAuth(`${API_BASE}/embed-widgets/${id}`, {
+      method: 'PUT', headers: this.getHeaders(), body: JSON.stringify(data),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to update widget')
+    return json
+  }
+
+  async deleteEmbedWidget(id: string) {
+    const res = await fetchWithAuth(`${API_BASE}/embed-widgets/${id}`, {
+      method: 'DELETE', headers: this.getHeaders(),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to delete widget')
+    return json
+  }
+
+  async uploadWidgetLogo(file: File) {
+    const formData = new FormData()
+    formData.append('logo', file)
+    const res = await fetchWithAuth(`${API_BASE}/embed-widgets/upload-logo`, {
+      method: 'POST', headers: this.getAuthHeaders(), body: formData,
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Upload failed')
     return json
   }
 

@@ -1,5 +1,2 @@
-// Simple toast placeholder
-export const toast = {
-  success: (message: string) => alert(message),
-  error: (message: string) => alert(message),
-}
+// Unused — toast is imported from "sonner" package directly
+export {}

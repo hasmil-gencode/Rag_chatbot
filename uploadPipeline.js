@@ -7,6 +7,7 @@ import path from 'path';
 import FormData from 'form-data';
 import mammoth from 'mammoth';
 import XLSX from 'xlsx';
+import pdfParse from 'pdf-parse';
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { Pinecone } from '@pinecone-database/pinecone';
 import OpenAI from 'openai';
@@ -60,77 +61,60 @@ async function ocrOffline(filePath, settings) {
   return res.data.pages || [{ page_number: 1, content: '', regions: [] }];
 }
 
-async function ocrOnlineZai(filePath, settings) {
-  const fileBuffer = fs.readFileSync(filePath);
-  const base64 = fileBuffer.toString('base64');
-  const ext = path.extname(filePath).toLowerCase().replace('.', '');
-  const mime = ext === 'pdf' ? 'application/pdf' : `image/${ext === 'jpg' ? 'jpeg' : ext}`;
-  const dataUri = `data:${mime};base64,${base64}`;
-
-  const res = await axios.post('https://api.z.ai/api/paas/v4/layout_parsing', {
-    model: 'glm-ocr',
-    file: dataUri,
-  }, {
-    headers: { Authorization: `Bearer ${settings.ocrApiKey}`, 'Content-Type': 'application/json' },
-    timeout: 300000,
-  });
-
-  const data = res.data;
-  const layoutPages = data.layout_details || [];
-  const numPages = data.data_info?.num_pages || 1;
-
-  // If layout_details has per-page arrays, build structured pages
-  if (layoutPages.length > 0 && Array.isArray(layoutPages[0])) {
-    return layoutPages.map((pageRegions, idx) => ({
-      page_number: idx + 1,
-      content: pageRegions.map(r => r.content || '').join('\n\n'),
-      regions: pageRegions.map(r => ({
-        type: r.label || 'text',
-        content: r.content || '',
-        bbox: r.bbox_2d || [],
-      })),
-    }));
-  }
-
-  // Fallback: use md_results as single/combined content, split by page count
-  const md = data.md_results || '';
-  if (numPages <= 1) {
-    return [{ page_number: 1, content: md, regions: [] }];
-  }
-  // Best-effort split for multi-page: divide markdown evenly
-  const lines = md.split('\n');
-  const linesPerPage = Math.ceil(lines.length / numPages);
-  const pages = [];
-  for (let i = 0; i < numPages; i++) {
-    pages.push({
-      page_number: i + 1,
-      content: lines.slice(i * linesPerPage, (i + 1) * linesPerPage).join('\n'),
-      regions: [],
-    });
-  }
-  return pages;
-}
-
 async function ocrOnlineMistral(filePath, settings) {
   const fileBuffer = fs.readFileSync(filePath);
   const base64 = fileBuffer.toString('base64');
   const ext = path.extname(filePath).toLowerCase().replace('.', '');
-  const mime = ext === 'pdf' ? 'application/pdf' : `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+
+  // Determine mime type
+  const mimeMap = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', tiff: 'image/tiff', bmp: 'image/bmp', webp: 'image/webp', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' };
+  const mime = mimeMap[ext] || 'application/octet-stream';
+  const dataUri = `data:${mime};base64,${base64}`;
+
+  // Images use image_url, everything else (pdf, docx, pptx) uses document_url
+  const isImage = ['png', 'jpg', 'jpeg', 'tiff', 'bmp', 'webp', 'avif'].includes(ext);
+  const document = isImage
+    ? { type: 'image_url', image_url: dataUri }
+    : { type: 'document_url', document_url: dataUri };
 
   const res = await axios.post('https://api.mistral.ai/v1/ocr', {
     model: 'mistral-ocr-latest',
-    document: { type: 'base64', data: base64, mime_type: mime },
+    document,
+    table_format: 'html',
   }, {
-    headers: { Authorization: `Bearer ${settings.ocrApiKey}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${settings[`ocrApiKey_${settings.ocrProvider}`] || settings.ocrApiKey}`, 'Content-Type': 'application/json' },
     timeout: 300000,
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity,
   });
 
-  // Mistral returns { pages: [{ index, markdown, images, dimensions }] }
-  const pages = (res.data?.pages || []).map(p => ({
-    page_number: p.index || 1,
-    content: p.markdown || '',
-    regions: [],
-  }));
+  // Mistral returns { pages: [{ index, markdown, images, dimensions, tables }] }
+  const pages = (res.data?.pages || []).map(p => {
+    let content = p.markdown || '';
+
+    // Replace table placeholders [tbl-N.html](tbl-N.html) with actual table content
+    if (p.tables && p.tables.length > 0) {
+      for (const t of p.tables) {
+        const id = t.id || t.name || '';
+        const tableContent = t.content || t.html || t.markdown || '';
+        if (id && tableContent) {
+          content = content.replace(`[${id}](${id})`, tableContent);
+        }
+      }
+    }
+
+    // Remove image placeholders — no text value for RAG
+    content = content.replace(/!\[.*?\]\(.*?\)\n*/g, '');
+
+    // Clean up excessive blank lines
+    content = content.replace(/\n{3,}/g, '\n\n').trim();
+
+    return {
+      page_number: p.index || 1,
+      content,
+      regions: [],
+    };
+  });
   return pages.length ? pages : [{ page_number: 1, content: '', regions: [] }];
 }
 
@@ -147,6 +131,43 @@ function chunkText(text, chunkSize = 1000, overlap = 200) {
     i += chunkSize - overlap;
   }
   return chunks;
+}
+
+async function ocrOnlineGcDocAI(filePath, settings) {
+  const fileBuffer = fs.readFileSync(filePath);
+  const base64 = fileBuffer.toString('base64');
+  const ext = path.extname(filePath).toLowerCase().replace('.', '');
+  const mime = ext === 'pdf' ? 'application/pdf' : `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+
+  const projectId = settings.gcdaiProjectId;
+  const location = settings.gcdaiLocation || 'us';
+  const processorId = settings.gcdaiProcessorId;
+  if (!projectId || !processorId) throw new Error('Document AI Project ID and Processor ID required. Set in Settings → OCR.');
+
+  const { GoogleAuth } = await import('google-auth-library');
+  const sa = JSON.parse(settings.gclasServiceAccount || '{}');
+  const auth = new GoogleAuth({ credentials: sa, scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
+  const client = await auth.getClient();
+  const { token } = await client.getAccessToken();
+
+  const url = `https://${location}-documentai.googleapis.com/v1/projects/${projectId}/locations/${location}/processors/${processorId}:process`;
+  const res = await axios.post(url, {
+    rawDocument: { content: base64, mimeType: mime },
+    processOptions: { ocrConfig: { enableNativePdfParsing: true } }
+  }, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 120000 });
+
+  const doc = res.data.document || {};
+  const text = doc.text || '';
+  const docPages = doc.pages || [];
+
+  if (docPages.length <= 1) return [{ page_number: 1, content: text, regions: [] }];
+
+  // Split text by page using textAnchor offsets
+  return docPages.map((p, i) => {
+    const segments = p.layout?.textAnchor?.textSegments || [];
+    const pageText = segments.map(s => text.substring(parseInt(s.startIndex || '0'), parseInt(s.endIndex || '0'))).join('');
+    return { page_number: i + 1, content: pageText || '', regions: [] };
+  }).filter(p => p.content);
 }
 
 // ─── Embedding ─────────────────────────────────────────────────
@@ -166,21 +187,31 @@ async function embedTexts(texts, settings) {
   }
 
   if (provider === 'openai') {
-    const openai = new OpenAI({ apiKey: settings.embeddingApiKey });
+    const apiKey = settings[`embeddingApiKey_openai`] || settings.embeddingApiKey;
+    const openai = new OpenAI({ apiKey });
     const res = await openai.embeddings.create({ model, input: texts });
     return res.data.map(d => d.embedding);
   }
 
   if (provider === 'gemini') {
+    const apiKey = settings[`embeddingApiKey_gemini`] || settings.embeddingApiKey;
     const results = [];
     for (const text of texts) {
       const res = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${settings.embeddingApiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${apiKey}`,
         { content: { parts: [{ text }] }, taskType: 'RETRIEVAL_DOCUMENT' }
       );
       results.push(res.data.embedding.values);
     }
     return results;
+  }
+
+  if (provider === 'mistral') {
+    const apiKey = settings[`embeddingApiKey_mistral`] || settings.embeddingApiKey;
+    const res = await axios.post('https://api.mistral.ai/v1/embeddings', { model, input: texts }, {
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }
+    });
+    return res.data.data.map(d => d.embedding);
   }
 
   throw new Error(`Unknown embedding provider: ${provider}`);
@@ -263,19 +294,56 @@ export async function deleteFileVectors(fileId, settings) {
 }
 
 // ─── Main Pipeline ─────────────────────────────────────────────
-export async function processUploadedFile(filePath, fileName, fileId, metadata, settings) {
+export async function processUploadedFile(filePath, fileName, fileId, metadata, settings, onProgress = null) {
+  const notify = (step, detail) => { if (onProgress) onProgress(step, detail); };
   const category = getFileCategory(fileName);
   const mode = settings.uploadProcessingMode || 'offline';
   let pages;
 
   // Step 1: Extract text
+  notify('ocr', `Extracting text from ${fileName}...`);
   if (category === 'ocr') {
-    if (mode === 'offline') {
-      pages = await ocrOffline(filePath, settings);
-    } else if (settings.ocrProvider === 'mistral') {
-      pages = await ocrOnlineMistral(filePath, settings);
+    const ext = path.extname(fileName).toLowerCase();
+    let needsOcr = false;
+    let pdfText = '';
+
+    if (ext === '.pdf') {
+      // Try text extraction first
+      try {
+        const buf = fs.readFileSync(filePath);
+        const parsed = await pdfParse(buf);
+        pdfText = (parsed.text || '').trim();
+        const threshold = settings.ocrMinTextThreshold || 50;
+        needsOcr = pdfText.length < threshold;
+      } catch (e) {
+        console.error('pdf-parse failed:', e.message);
+        needsOcr = true;
+      }
     } else {
-      pages = await ocrOnlineZai(filePath, settings);
+      // Images always need OCR
+      needsOcr = true;
+    }
+
+    if (needsOcr) {
+      if (settings.ocrEnabled === false) {
+        // OCR disabled — use whatever text we got from pdf-parse (may be empty for scanned)
+        if (pdfText) {
+          pages = [{ page_number: 1, content: pdfText, regions: [] }];
+          notify('ocr_done', 'OCR disabled. Used PDF text extraction.');
+        } else {
+          pages = [{ page_number: 1, content: '', regions: [] }];
+          notify('ocr_done', 'OCR disabled. No extractable text found — scanned PDF needs OCR enabled.');
+        }
+      } else if (mode === 'offline') {
+        pages = await ocrOffline(filePath, settings);
+      } else if (settings.ocrProvider === 'gcdai') {
+        pages = await ocrOnlineGcDocAI(filePath, settings);
+      } else {
+        pages = await ocrOnlineMistral(filePath, settings);
+      }
+    } else {
+      // PDF has enough text — no OCR needed
+      pages = [{ page_number: 1, content: pdfText, regions: [] }];
     }
   } else if (category === 'docx') {
     pages = await extractTextFromDocx(filePath);
@@ -284,8 +352,27 @@ export async function processUploadedFile(filePath, fileName, fileId, metadata, 
   } else {
     pages = extractTextFromPlain(filePath);
   }
+  notify('ocr_done', `Extracted ${pages.length} page(s)`);
+
+  // Send text preview for developer debugging
+  for (const page of pages) {
+    if (page.content) {
+      // Convert HTML tables to readable text for preview
+      let preview = page.content
+        .replace(/<table>/gi, '')
+        .replace(/<\/table>/gi, '')
+        .replace(/<tr>/gi, '')
+        .replace(/<\/tr>/gi, '\n')
+        .replace(/<td>/gi, '')
+        .replace(/<\/td>/gi, ' | ')
+        .replace(/\n{2,}/g, '\n')
+        .trim();
+      notify('preview', `--- Page ${page.page_number} ---\n${preview}`);
+    }
+  }
 
   // Step 2: Chunk each page
+  notify('chunking', 'Splitting text into chunks...');
   const chunkSize = settings.chunkSize || 1000;
   const chunkOverlap = settings.chunkOverlap || 200;
   const allChunks = [];
@@ -308,13 +395,17 @@ export async function processUploadedFile(filePath, fileName, fileId, metadata, 
   }
 
   if (allChunks.length === 0) {
+    notify('done', 'No text content extracted');
     return { success: true, chunks: 0, pages: pages.length, message: 'No text content extracted' };
   }
 
   // Step 3: Embed all chunks
+  notify('embedding', `Embedding ${allChunks.length} chunk(s)...`);
   const vectors = await embedTexts(allChunks, settings);
+  notify('embedding_done', `Embedded ${vectors.length} chunk(s)`);
 
   // Step 4: Store in vector DB
+  notify('storing', 'Storing vectors in database...');
   const vectorDb = mode === 'offline' ? 'qdrant' : (settings.vectorDbProvider || 'qdrant');
   let stored = 0;
 

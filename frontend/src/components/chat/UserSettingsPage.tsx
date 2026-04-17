@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { User, Building2, MessageSquare, Pencil, Check, X } from 'lucide-react';
 
@@ -52,7 +53,7 @@ export function UserSettingsPage() {
       await api.updateUserName(fullName);
       localStorage.setItem('userFullName', fullName);
       setIsEditing(false);
-    } catch (error: any) { alert(error.message); }
+    } catch (error: any) { toast.error(error.message); }
   };
 
   if (!settings) return <div className="px-6 py-5 text-sm text-muted-foreground">Loading...</div>;

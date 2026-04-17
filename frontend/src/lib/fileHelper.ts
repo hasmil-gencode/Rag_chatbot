@@ -53,16 +53,33 @@ export async function downloadFile(fileId: string) {
   
   if (!response.ok) throw new Error('Download failed');
   
-  const { downloadUrl, fileName } = await response.json();
+  const contentType = response.headers.get('content-type') || '';
   
-  // Trigger download
-  const link = document.createElement('a');
-  link.href = downloadUrl;
-  link.download = fileName;
-  link.target = '_blank';
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  
-  return fileName;
+  if (contentType.includes('application/json')) {
+    // S3 or external URL
+    const { downloadUrl, fileName } = await response.json();
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = fileName;
+    link.target = '_blank';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    return fileName;
+  } else {
+    // Direct file stream from server
+    const disposition = response.headers.get('content-disposition') || '';
+    const match = disposition.match(/filename="(.+?)"/);
+    const fileName = match ? match[1] : 'download';
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    return fileName;
+  }
 }

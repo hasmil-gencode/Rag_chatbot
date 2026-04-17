@@ -1,21 +1,80 @@
-import { useState, useEffect } from "react";
-import { Save } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Save, Download, Trash2, Search, HardDrive, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
+import { toast } from "sonner";
+import { useConfirm } from "./ConfirmDialog";
+
+interface OllamaModel { name: string; size: number; modified_at: string; digest: string; }
+interface PullProgress { status: string; total?: number; completed?: number; }
 
 export const SettingsPage = () => {
   const [settings, setSettings] = useState<any>({});
+  const confirm = useConfirm();
   const [isSaving, setIsSaving] = useState(false);
   const [activeTab, setActiveTab] = useState("general");
   const [ollamaLocalModels, setOllamaLocalModels] = useState<any[]>([]);
   const [ollamaCloudModels, setOllamaCloudModels] = useState<any[]>([]);
-  const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const [providerModels, setProviderModels] = useState<{id: string; name: string}[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
+  // Re-embed state
+  const [qdrantInfo, setQdrantInfo] = useState<{dimension: number; points: number; exists: boolean} | null>(null);
+  const [showReembedModal, setShowReembedModal] = useState(false);
+  const [reembedProgress, setReembedProgress] = useState<{step: string; detail: string; current: number; total: number} | null>(null);
+  const [pendingProvider, setPendingProvider] = useState<string | null>(null);
 
-  useEffect(() => { loadSettings(); }, []);
+  // AI Models tab state
+  const [ollamaSource, setOllamaSource] = useState<'docker' | 'native'>('docker');
+  const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([]);
+  const [ollamaHealth, setOllamaHealth] = useState<{docker: boolean; native: boolean}>({docker: true, native: true});
+  const [pullName, setPullName] = useState("");
+  const [pulling, setPulling] = useState(false);
+  const [pullProgress, setPullProgress] = useState<PullProgress | null>(null);
+  const [modelSearch, setModelSearch] = useState("");
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => { loadSettings(); loadQdrantInfo(); }, []);
 
   const loadSettings = async () => { try { setSettings(await api.getSettings()); } catch (e) { console.error(e); } };
+  const loadQdrantInfo = async () => { try { const r = await fetch('/api/qdrant-info', { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }); setQdrantInfo(await r.json()); } catch {} };
+  const MODEL_DIMS: Record<string, number> = { 'text-embedding-004': 768, 'gemini-embedding-001': 3072, 'text-embedding-3-small': 1536, 'text-embedding-3-large': 3072, 'nomic-embed-text-v2-moe': 768, 'nomic-embed-text': 768, 'mistral-embed': 1024 };
+
+  const handleEmbeddingChange = (provider: string) => {
+    const defaults: Record<string,string> = { gemini: 'text-embedding-004', openai: 'text-embedding-3-small', mistral: 'mistral-embed', ollama: 'nomic-embed-text-v2-moe' };
+    const newModel = defaults[provider] || '';
+    const newDim = MODEL_DIMS[newModel] || 768;
+    if (qdrantInfo?.exists && qdrantInfo.points > 0 && qdrantInfo.dimension !== newDim) {
+      setPendingProvider(provider); setShowReembedModal(true);
+    } else {
+      updateSettings({ embeddingProvider: provider, embeddingModel: newModel });
+    }
+  };
+
+  const confirmReembed = () => { if (!pendingProvider) return; const defaults: Record<string,string> = { gemini: 'text-embedding-004', openai: 'text-embedding-3-small', mistral: 'mistral-embed', ollama: 'nomic-embed-text-v2-moe' }; updateSettings({ embeddingProvider: pendingProvider, embeddingModel: defaults[pendingProvider] || '' }); setShowReembedModal(false); setPendingProvider(null); };
+
+  const startReembed = async () => {
+    setReembedProgress({ step: 'starting', detail: 'Starting...', current: 0, total: 0 });
+    // Save settings first
+    try { await api.updateSettings(settings); } catch {}
+    const res = await fetch('/api/reembed', { method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } });
+    const reader = res.body?.getReader();
+    const decoder = new TextDecoder();
+    if (!reader) return;
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() || '';
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try { const d = JSON.parse(line.slice(6)); setReembedProgress(d); } catch {}
+        }
+      }
+    }
+    loadQdrantInfo();
+  };
   const loadOllamaModels = async () => { try { setOllamaLocalModels(await api.getOllamaModels()); } catch {} };
   const loadOllamaCloudModels = async () => { try { setOllamaCloudModels(await api.getOllamaCloudModels()); } catch {} };
   const loadProviderModels = async (provider?: string) => { 
@@ -30,8 +89,8 @@ export const SettingsPage = () => {
 
   const handleSave = async () => {
     setIsSaving(true);
-    try { await api.updateSettings(settings); alert("Settings saved!"); }
-    catch (e: any) { alert(e.message); }
+    try { await api.updateSettings(settings); toast.success("Settings saved!"); }
+    catch (e: any) { toast.error(e.message); }
     finally { setIsSaving(false); }
   };
 
@@ -39,17 +98,21 @@ export const SettingsPage = () => {
     { id: 'general', label: 'General' },
     { id: 'upload', label: 'Upload Processing' },
     { id: 'chat', label: 'Chat' },
-    { id: 'voice', label: 'Voice' }
+    { id: 'voice', label: 'Voice' },
+    { id: 'ai-models', label: 'AI Models' },
   ];
 
   return (
     <div className="h-full overflow-y-auto">
       <div className="px-6 py-5">
         {/* Header */}
-        <div className="mb-5">
-          <p className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">Configuration</p>
-          <h1 className="text-xl font-semibold">Settings</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">Manage application preferences and integrations.</p>
+        <div className="flex items-start justify-between mb-5">
+          <div>
+            <p className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">Configuration</p>
+            <h1 className="text-xl font-semibold">Settings</h1>
+            <p className="text-xs text-muted-foreground mt-0.5">Manage application preferences and integrations.</p>
+          </div>
+          <Button size="sm" onClick={handleSave} disabled={isSaving} className="text-xs h-8 rounded-lg"><Save className="w-3.5 h-3.5 mr-1.5" />{isSaving ? "Saving..." : "Save"}</Button>
         </div>
 
         {/* Tabs */}
@@ -73,7 +136,6 @@ export const SettingsPage = () => {
                   className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
                 <p className="text-[10px] text-muted-foreground mt-1">Deleted chats auto-removed after this many days.</p>
               </div>
-              <Button size="sm" onClick={handleSave} disabled={isSaving} className="text-xs h-8"><Save className="w-3.5 h-3.5 mr-1.5" />{isSaving ? "Saving..." : "Save"}</Button>
             </div>
           </div>
         )}
@@ -90,7 +152,7 @@ export const SettingsPage = () => {
                   {['online', 'offline'].map(mode => (
                     <button key={mode} onClick={() => updateSetting('uploadProcessingMode', mode)}
                       className={`flex-1 px-4 py-2.5 rounded-lg text-xs font-medium border transition-colors ${settings.uploadProcessingMode === mode ? 'bg-foreground text-background border-foreground' : 'hover:bg-muted'}`}>
-                      {mode === 'online' ? '☁️ Online (Cloud APIs)' : '🖥️ Offline (Self-hosted)'}
+                      {mode === 'online' ? 'Online (Cloud APIs)' : 'Offline (Self-hosted)'}
                     </button>
                   ))}
                 </div>
@@ -100,31 +162,69 @@ export const SettingsPage = () => {
               </div>
             </div>
 
+            {/* OCR Settings */}
+            <div className="border rounded-lg overflow-hidden">
+              <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">OCR Settings</p></div>
+              <div className="p-4 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-[13px]">Enable OCR</p>
+                    <p className="text-[10px] text-muted-foreground">When disabled, scanned PDFs and images will not be processed.</p>
+                  </div>
+                  <button onClick={() => updateSetting('ocrEnabled', !settings.ocrEnabled)}
+                    className={`w-10 h-5 rounded-full transition-colors ${settings.ocrEnabled !== false ? 'bg-foreground' : 'bg-muted'}`}>
+                    <div className={`w-4 h-4 rounded-full bg-background transition-transform mx-0.5 ${settings.ocrEnabled !== false ? 'translate-x-5' : 'translate-x-0'}`} />
+                  </button>
+                </div>
+                <div>
+                  <label className="text-[11px] text-muted-foreground">Min Text Threshold (characters)</label>
+                  <input type="number" value={settings.ocrMinTextThreshold || 50} onChange={(e) => updateSetting('ocrMinTextThreshold', parseInt(e.target.value))}
+                    className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+                  <p className="text-[10px] text-muted-foreground mt-1">PDFs with extractable text above this threshold skip OCR. Lower = more OCR, higher = less OCR.</p>
+                </div>
+              </div>
+            </div>
+
             {/* ── ONLINE MODE ── */}
             {settings.uploadProcessingMode === 'online' && (
               <>
                 {/* OCR Provider */}
                 <div className="border rounded-lg overflow-hidden">
                   <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">OCR Provider</p></div>
-                  <div className="p-4 space-y-4">
+                  <div className="p-4">
                     <div>
                       <label className="text-[11px] text-muted-foreground">Provider</label>
-                      <select value={settings.ocrProvider || 'zai'} onChange={(e) => updateSetting('ocrProvider', e.target.value)}
+                      <select value={settings.ocrProvider || 'mistral'} onChange={(e) => updateSetting('ocrProvider', e.target.value)}
                         className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
-                        <option value="zai">Z.ai (GLM-OCR) — ~$0.03/1M tokens</option>
                         <option value="mistral">Mistral OCR — ~$1/1000 pages</option>
+                        <option value="gcdai">Google Cloud Document AI — $1.50/1000 pages</option>
                       </select>
+                      <p className="text-[10px] text-muted-foreground mt-1">API key managed in Provider Keys.</p>
                     </div>
-                    <div>
-                      <label className="text-[11px] text-muted-foreground">{settings.ocrProvider === 'mistral' ? 'Mistral' : 'Z.ai'} API Key</label>
-                      <input type={showKeys.ocr ? 'text' : 'password'} value={settings.ocrApiKey || ''} onChange={(e) => updateSetting('ocrApiKey', e.target.value)}
-                        placeholder={settings.ocrProvider === 'mistral' ? 'sk-...' : 'your-zai-api-key'}
-                        className="w-full h-9 px-3 pr-10 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                      <button type="button" onClick={() => setShowKeys(p => ({...p, ocr: !p.ocr}))} className="absolute right-3 bottom-[26px] text-muted-foreground hover:text-foreground text-[11px]">{showKeys.ocr ? 'Hide' : 'Show'}</button>
-                      <p className="text-[10px] text-muted-foreground mt-1">
-                        {settings.ocrProvider === 'mistral' ? 'Get from https://console.mistral.ai' : 'Get from https://open.bigmodel.cn'}
-                      </p>
-                    </div>
+                    {settings.ocrProvider === 'gcdai' && (
+                      <>
+                        <div>
+                          <label className="text-[11px] text-muted-foreground">Project ID</label>
+                          <input value={settings.gcdaiProjectId || ''} onChange={(e) => updateSetting('gcdaiProjectId', e.target.value)} placeholder="my-project-123"
+                            className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+                        </div>
+                        <div>
+                          <label className="text-[11px] text-muted-foreground">Location</label>
+                          <select value={settings.gcdaiLocation || 'us'} onChange={(e) => updateSetting('gcdaiLocation', e.target.value)}
+                            className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
+                            <option value="us">US</option>
+                            <option value="eu">EU</option>
+                            <option value="asia-southeast1">Asia Southeast 1 (Singapore)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[11px] text-muted-foreground">Processor ID</label>
+                          <input value={settings.gcdaiProcessorId || ''} onChange={(e) => updateSetting('gcdaiProcessorId', e.target.value)} placeholder="abc123def456"
+                            className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+                          <p className="text-[10px] text-muted-foreground mt-1">Create an Enterprise Document OCR processor at console.cloud.google.com/document-ai</p>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -134,21 +234,16 @@ export const SettingsPage = () => {
                   <div className="p-4 space-y-4">
                     <div>
                       <label className="text-[11px] text-muted-foreground">Provider</label>
-                      <select value={settings.embeddingProvider || 'ollama'} onChange={(e) => { const p = e.target.value; updateSettings({embeddingProvider: p, embeddingModel: p === 'gemini' ? 'text-embedding-004' : p === 'openai' ? 'text-embedding-3-small' : 'nomic-embed-text-v2-moe'}); }}
+                      <select value={settings.embeddingProvider || 'ollama'} onChange={(e) => handleEmbeddingChange(e.target.value)}
                         className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
-                        <option value="gemini">Gemini — $0.15/1M tokens</option>
-                        <option value="openai">OpenAI — $0.02-$0.13/1M tokens</option>
-                        <option value="ollama">Ollama (Self-hosted) — Free</option>
+                        <option value="gemini">Gemini — 3072d — $0.15/1M tokens</option>
+                        <option value="mistral">Mistral — 1024d — $0.01/1M tokens</option>
+                        <option value="openai">OpenAI — 1536d — $0.02/1M tokens</option>
+                        <option value="ollama">Ollama (Self-hosted) — 768d — Free</option>
                       </select>
                     </div>
-                    {settings.embeddingProvider !== 'ollama' && (
-                      <div>
-                        <label className="text-[11px] text-muted-foreground">{settings.embeddingProvider === 'gemini' ? 'Gemini' : 'OpenAI'} API Key</label>
-                        <input type={showKeys.embed ? 'text' : 'password'} value={settings.embeddingApiKey || ''} onChange={(e) => updateSetting('embeddingApiKey', e.target.value)}
-                          placeholder={settings.embeddingProvider === 'gemini' ? 'AIzaSy...' : 'sk-...'}
-                          className="w-full h-9 px-3 pr-10 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                        <button type="button" onClick={() => setShowKeys(p => ({...p, embed: !p.embed}))} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground text-[11px]">{showKeys.embed ? 'Hide' : 'Show'}</button>
-                      </div>
+                    {settings.embeddingProvider && settings.embeddingProvider !== 'ollama' && (
+                      <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys.</p>
                     )}
                     {settings.embeddingProvider === 'ollama' && (
                       <div>
@@ -159,7 +254,7 @@ export const SettingsPage = () => {
                     )}
                     <div>
                       <label className="text-[11px] text-muted-foreground">Embedding Model</label>
-                      <select value={settings.embeddingModel || ''} onChange={(e) => updateSetting('embeddingModel', e.target.value)}
+                      <select value={settings.embeddingModel || ''} onChange={(e) => { const m = e.target.value; const newDim = MODEL_DIMS[m] || 768; if (qdrantInfo?.exists && qdrantInfo.points > 0 && qdrantInfo.dimension !== newDim) { setPendingProvider(null); setShowReembedModal(true); updateSetting('embeddingModel', m); } else { updateSetting('embeddingModel', m); } }}
                         className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
                         {settings.embeddingProvider === 'gemini' && <>
                           <option value="text-embedding-004">text-embedding-004 (768d)</option>
@@ -173,8 +268,12 @@ export const SettingsPage = () => {
                           <option value="nomic-embed-text-v2-moe">nomic-embed-text-v2-moe (768d)</option>
                           <option value="nomic-embed-text">nomic-embed-text (768d)</option>
                         </>}
+                        {settings.embeddingProvider === 'mistral' && <>
+                          <option value="mistral-embed">mistral-embed (1024d)</option>
+                        </>}
                       </select>
                     </div>
+                    <p className="text-[10px] text-muted-foreground">Embedding provider for file upload processing.</p>
                   </div>
                 </div>
 
@@ -192,10 +291,7 @@ export const SettingsPage = () => {
                     </div>
                     {settings.vectorDbProvider === 'pinecone' && <>
                       <div>
-                        <label className="text-[11px] text-muted-foreground">Pinecone API Key</label>
-                        <input type={showKeys.pinecone ? 'text' : 'password'} value={settings.pineconeApiKey || ''} onChange={(e) => updateSetting('pineconeApiKey', e.target.value)} placeholder="pc-..."
-                          className="w-full h-9 px-3 pr-10 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                        <button type="button" onClick={() => setShowKeys(p => ({...p, pinecone: !p.pinecone}))} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground text-[11px]">{showKeys.pinecone ? 'Hide' : 'Show'}</button>
+                        <p className="text-[10px] text-muted-foreground">Pinecone API key managed in Provider Keys.</p>
                       </div>
                       <div>
                         <label className="text-[11px] text-muted-foreground">Index Name</label>
@@ -232,9 +328,9 @@ export const SettingsPage = () => {
                 <div className="p-4 space-y-4">
                   <div>
                     <label className="text-[11px] text-muted-foreground">OCR Service URL</label>
-                    <input value={settings.offlineOcrUrl || 'http://glmocr-service:5002'} onChange={(e) => updateSetting('offlineOcrUrl', e.target.value)}
+                    <input value={settings.offlineOcrUrl || 'http://ocr-service:5002'} onChange={(e) => updateSetting('offlineOcrUrl', e.target.value)}
                       className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                    <p className="text-[10px] text-muted-foreground mt-1">GLM-OCR SDK + PP-DocLayoutV3 service</p>
+                    <p className="text-[10px] text-muted-foreground mt-1">Offline OCR service URL</p>
                   </div>
                   <div>
                     <label className="text-[11px] text-muted-foreground">Ollama URL</label>
@@ -263,8 +359,8 @@ export const SettingsPage = () => {
               </div>
             )}
 
-            {/* Common Settings */}
-            <div className="border rounded-lg overflow-hidden">
+            {/* Chunking Settings */}
+              <div className="border rounded-lg overflow-hidden">
               <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">Chunking Settings</p></div>
               <div className="p-4 space-y-4">
                 <div>
@@ -287,8 +383,6 @@ export const SettingsPage = () => {
                 <p className="text-[10px] text-muted-foreground">Larger chunks retain more context. Overlap ensures no information is lost between chunks.</p>
               </div>
             </div>
-
-            <Button size="sm" onClick={handleSave} disabled={isSaving} className="text-xs h-8"><Save className="w-3.5 h-3.5 mr-1.5" />{isSaving ? "Saving..." : "Save Settings"}</Button>
           </div>
         )}
 
@@ -311,25 +405,17 @@ export const SettingsPage = () => {
               <div className="p-4 space-y-4">
                 <div>
                   <label className="text-[11px] text-muted-foreground">Provider</label>
-                  <select value={settings.chatLlmProvider || 'gemini'} onChange={(e) => { const p = e.target.value; const defaults: Record<string,string> = {gemini:'gemini-2.5-flash',openai:'gpt-4o-mini',groq:'llama-3.3-70b-versatile',zai:'glm-5-turbo',ollama_cloud:'',ollama_local:''}; updateSettings({chatLlmProvider: p, chatLlmModel: defaults[p] || '', chatLlmApiKey: settings[`chatLlmApiKey_${p}`] || ''}); if (p === 'ollama_local') loadOllamaModels(); else if (p === 'ollama_cloud') loadOllamaCloudModels(); else loadProviderModels(p); }}
+                  <select value={settings.chatLlmProvider || 'gemini'} onChange={(e) => { const p = e.target.value; const defaults: Record<string,string> = {gemini:'gemini-2.5-flash',openai:'gpt-4o-mini',groq:'llama-3.3-70b-versatile',ollama_cloud:'',ollama_local:''}; updateSettings({chatLlmProvider: p, chatLlmModel: defaults[p] || '', chatLlmApiKey: settings[`chatLlmApiKey_${p}`] || ''}); if (p === 'ollama_local') loadOllamaModels(); else if (p === 'ollama_cloud') loadOllamaCloudModels(); else loadProviderModels(p); }}
                     className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
                     <option value="gemini">Gemini</option>
                     <option value="openai">OpenAI</option>
                     <option value="groq">Groq</option>
-                    <option value="zai">Z.ai</option>
                     <option value="ollama_cloud">Ollama Cloud</option>
                     <option value="ollama_local">Ollama Local</option>
                   </select>
                 </div>
                 {!['ollama_local'].includes(settings.chatLlmProvider) && (
-                  <div>
-                    <label className="text-[11px] text-muted-foreground">API Key</label>
-                    <div className="relative mt-1">
-                      <input type={showKeys.chatLlm ? 'text' : 'password'} value={settings[`chatLlmApiKey_${settings.chatLlmProvider}`] || settings.chatLlmApiKey || ''} onChange={(e) => updateSettings({[`chatLlmApiKey_${settings.chatLlmProvider}`]: e.target.value, chatLlmApiKey: e.target.value})}
-                        className="w-full h-9 px-3 pr-10 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                      <button type="button" onClick={() => setShowKeys(p => ({...p, chatLlm: !p.chatLlm}))} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground text-[11px]">{showKeys.chatLlm ? 'Hide' : 'Show'}</button>
-                    </div>
-                  </div>
+                  <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys.</p>
                 )}
                 {settings.chatLlmProvider === 'ollama_local' && (
                   <div>
@@ -365,7 +451,6 @@ export const SettingsPage = () => {
                           {settings.chatLlmProvider === 'gemini' && <><option value="gemini-2.5-flash">gemini-2.5-flash</option><option value="gemini-2.5-pro">gemini-2.5-pro</option></>}
                           {settings.chatLlmProvider === 'openai' && <><option value="gpt-4o">gpt-4o</option><option value="gpt-4o-mini">gpt-4o-mini</option></>}
                           {settings.chatLlmProvider === 'groq' && <><option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile</option><option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option></>}
-                          {settings.chatLlmProvider === 'zai' && <><option value="glm-5">glm-5</option><option value="glm-5-turbo">glm-5-turbo</option></>}
                         </>
                       )}
                     </select>
@@ -381,42 +466,26 @@ export const SettingsPage = () => {
 
             {/* Chat Embedding */}
             <div className="border rounded-lg overflow-hidden">
-              <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">Chat Embedding (Query)</p></div>
+              <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">Embedding</p></div>
               <div className="p-4 space-y-4">
-                <p className="text-[10px] text-muted-foreground">Embedding model for search queries. Must match dimensions of upload embedding model.</p>
                 <div>
                   <label className="text-[11px] text-muted-foreground">Provider</label>
-                  <select value={settings.chatEmbeddingProvider || 'ollama'} onChange={(e) => updateSetting('chatEmbeddingProvider', e.target.value)}
+                  <select value={settings.chatEmbeddingProvider || 'ollama'} onChange={(e) => {
+                    const p = e.target.value;
+                    const defaults: Record<string,string> = { gemini: 'gemini-embedding-001', openai: 'text-embedding-3-small', mistral: 'mistral-embed', ollama: 'nomic-embed-text-v2-moe' };
+                    updateSettings({ chatEmbeddingProvider: p, chatEmbeddingModel: defaults[p] || '' });
+                  }}
                     className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
-                    <option value="ollama">Ollama (Local)</option>
-                    <option value="gemini">Gemini</option>
-                    <option value="openai">OpenAI</option>
+                    <option value="gemini">Gemini — 3072d — $0.15/1M tokens</option>
+                    <option value="mistral">Mistral — 1024d — $0.01/1M tokens</option>
+                    <option value="openai">OpenAI — 1536d — $0.02/1M tokens</option>
+                    <option value="ollama">Ollama (Self-hosted) — 768d — Free</option>
                   </select>
                 </div>
-                {settings.chatEmbeddingProvider !== 'ollama' && (
-                  <div>
-                    <label className="text-[11px] text-muted-foreground">API Key</label>
-                    <input type={showKeys.chatEmbed ? 'text' : 'password'} value={settings.chatEmbeddingApiKey || ''} onChange={(e) => updateSetting('chatEmbeddingApiKey', e.target.value)}
-                      className="w-full h-9 px-3 pr-10 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                    <button type="button" onClick={() => setShowKeys(p => ({...p, chatEmbed: !p.chatEmbed}))} className="absolute right-7 top-[38px] text-muted-foreground hover:text-foreground text-[11px]">{showKeys.chatEmbed ? 'Hide' : 'Show'}</button>
-                  </div>
+                {settings.chatEmbeddingProvider && settings.chatEmbeddingProvider !== 'ollama' && (
+                  <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys.</p>
                 )}
-                {settings.chatEmbeddingProvider === 'ollama' && (
-                  <div>
-                    <label className="text-[11px] text-muted-foreground">Ollama URL</label>
-                    <input value={settings.chatEmbeddingOllamaUrl || 'http://ollama:11434'} onChange={(e) => updateSetting('chatEmbeddingOllamaUrl', e.target.value)}
-                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                  </div>
-                )}
-                <div>
-                  <label className="text-[11px] text-muted-foreground">Model</label>
-                  <select value={settings.chatEmbeddingModel || ''} onChange={(e) => updateSetting('chatEmbeddingModel', e.target.value)}
-                    className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
-                    {settings.chatEmbeddingProvider === 'ollama' && <><option value="nomic-embed-text-v2-moe">nomic-embed-text-v2-moe (768d)</option><option value="nomic-embed-text">nomic-embed-text (768d)</option></>}
-                    {settings.chatEmbeddingProvider === 'gemini' && <><option value="text-embedding-004">text-embedding-004 (768d)</option><option value="gemini-embedding-001">gemini-embedding-001 (3072d)</option></>}
-                    {settings.chatEmbeddingProvider === 'openai' && <><option value="text-embedding-3-small">text-embedding-3-small (1536d)</option><option value="text-embedding-3-large">text-embedding-3-large (3072d)</option></>}
-                  </select>
-                </div>
+                <p className="text-[10px] text-amber-500">⚠️ Must match Upload Embedding provider to work correctly.</p>
               </div>
             </div>
 
@@ -430,18 +499,8 @@ export const SettingsPage = () => {
                     className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
                   <p className="text-[10px] text-muted-foreground mt-1">Number of document chunks to include as context for each chat message.</p>
                 </div>
-                <div>
-                  <label className="text-[11px] text-muted-foreground">Show Sources (default for new users)</label>
-                  <select value={settings.chatShowSourcesDefault ? 'true' : 'false'} onChange={(e) => updateSetting('chatShowSourcesDefault', e.target.value === 'true')}
-                    className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
-                    <option value="true">Yes — Show source citations</option>
-                    <option value="false">No — Hide source citations</option>
-                  </select>
-                </div>
               </div>
             </div>
-
-            <Button size="sm" onClick={handleSave} disabled={isSaving} className="text-xs h-8"><Save className="w-3.5 h-3.5 mr-1.5" />{isSaving ? "Saving..." : "Save Settings"}</Button>
           </div>
         )}
 
@@ -453,26 +512,17 @@ export const SettingsPage = () => {
               <div className="p-4 space-y-4">
                 <div>
                   <label className="text-[11px] text-muted-foreground">Voice Recognition Mode</label>
-                  <select value={settings.voiceMode || "browser"} onChange={(e) => updateSetting("voiceMode", e.target.value)}
+                  <select value={settings.voiceMode || "gemini"} onChange={(e) => updateSetting("voiceMode", e.target.value)}
                     className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
-                    <option value="browser">Browser (Free, instant, Chrome only)</option>
-                    <option value="gemini">Gemini AI (Best quality, AI-powered)</option>
-                    <option value="elevenlabs">ElevenLabs (Fast, accurate)</option>
+                    <option value="gemini">Gemini AI (Best quality, mixed language)</option>
+                    <option value="mistral">Mistral Voxtral (Cheap, accurate, 13 langs)</option>
                   </select>
                 </div>
                 {settings.voiceMode === "gemini" && (
-                  <div>
-                    <label className="text-[11px] text-muted-foreground">Gemini STT API Key</label>
-                    <input type="password" value={settings.geminiSttApiKey || ""} onChange={(e) => updateSetting("geminiSttApiKey", e.target.value)} placeholder="AIzaSy..."
-                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                  </div>
+                  <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys (Gemini).</p>
                 )}
-                {settings.voiceMode === "elevenlabs" && (
-                  <div>
-                    <label className="text-[11px] text-muted-foreground">ElevenLabs API Key</label>
-                    <input type="password" value={settings.elevenlabsApiKey || ""} onChange={(e) => updateSetting("elevenlabsApiKey", e.target.value)} placeholder="sk_..."
-                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                  </div>
+                {settings.voiceMode === "mistral" && (
+                  <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys (Mistral). Supports EN, ZH, HI, ES, AR, FR, PT, RU, DE, JA, KO, IT, NL.</p>
                 )}
                 {settings.voiceMode !== "gemini" && (
                   <div>
@@ -495,28 +545,18 @@ export const SettingsPage = () => {
               <div className="p-4 space-y-4">
                 <div>
                   <label className="text-[11px] text-muted-foreground">TTS Mode</label>
-                  <select value={settings.ttsMode || "browser"} onChange={(e) => updateSetting("ttsMode", e.target.value)}
+                  <select value={settings.ttsMode || "gemini"} onChange={(e) => updateSetting("ttsMode", e.target.value)}
                     className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
-                    <option value="browser">Browser (Free, works offline)</option>
                     <option value="gemini">Gemini AI (High quality)</option>
-                    <option value="elevenlabs">ElevenLabs (Best quality)</option>
                     <option value="gclas">Google Cloud Long Audio</option>
                   </select>
                 </div>
                 {settings.ttsMode === "gemini" && (
-                  <div>
-                    <label className="text-[11px] text-muted-foreground">Gemini TTS API Key</label>
-                    <input type="password" value={settings.geminiTtsApiKey || ""} onChange={(e) => updateSetting("geminiTtsApiKey", e.target.value)} placeholder="AIzaSy..."
-                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                  </div>
+                  <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys (Gemini).</p>
                 )}
                 {settings.ttsMode === "gclas" && (
                   <>
-                    <div>
-                      <label className="text-[11px] text-muted-foreground">Google Cloud Service Account JSON</label>
-                      <textarea value={settings.gclasServiceAccount || ""} onChange={(e) => updateSetting("gclasServiceAccount", e.target.value)}
-                        className="w-full h-24 px-3 py-2 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring font-mono" />
-                    </div>
+                    <p className="text-[10px] text-muted-foreground">Service account managed in Provider Keys (Google Cloud).</p>
                     <div>
                       <label className="text-[11px] text-muted-foreground">Language</label>
                       <select value={settings.gclasLanguage || "auto"} onChange={(e) => updateSetting("gclasLanguage", e.target.value)}
@@ -535,26 +575,186 @@ export const SettingsPage = () => {
                     </div>
                   </>
                 )}
-                {settings.ttsMode === "elevenlabs" && (
-                  <>
-                    <div>
-                      <label className="text-[11px] text-muted-foreground">ElevenLabs API Key</label>
-                      <input type="password" value={settings.elevenlabsApiKey || ""} onChange={(e) => updateSetting("elevenlabsApiKey", e.target.value)} placeholder="sk_..."
-                        className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                    </div>
-                    <div>
-                      <label className="text-[11px] text-muted-foreground">Voice ID</label>
-                      <input value={settings.elevenlabsVoice || ""} onChange={(e) => updateSetting("elevenlabsVoice", e.target.value)} placeholder="EXAVITQu4vr4xnSDxMaL"
-                        className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                    </div>
-                  </>
-                )}
-                <Button size="sm" onClick={handleSave} disabled={isSaving} className="text-xs h-8"><Save className="w-3.5 h-3.5 mr-1.5" />{isSaving ? "Saving..." : "Save"}</Button>
               </div>
             </div>
           </div>
         )}
+
+        {activeTab === 'ai-models' && (() => {
+          const loadOllamaModelsList = async () => { try { const res = await fetch(`/api/ollama-models?source=${ollamaSource}`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }); setOllamaModels(await res.json()); } catch {} };
+          const checkHealth = async () => { try { const res = await fetch('/api/ollama-health', { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }); setOllamaHealth(await res.json()); } catch {} };
+          const progressPercent = pullProgress?.total && pullProgress?.completed ? Math.round((pullProgress.completed / pullProgress.total) * 100) : 0;
+          const filtered = ollamaModels.filter(m => !modelSearch || m.name.toLowerCase().includes(modelSearch.toLowerCase()));
+
+          const handlePull = async () => {
+            if (!pullName.trim() || pulling) return;
+            setPulling(true); setPullProgress({ status: "starting..." });
+            try {
+              abortRef.current = new AbortController();
+              const res = await fetch("/api/ollama-pull", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ model: pullName.trim(), source: ollamaSource }), signal: abortRef.current.signal });
+              const reader = res.body?.getReader(); const decoder = new TextDecoder();
+              if (!reader) throw new Error("No stream");
+              while (true) {
+                const { done, value } = await reader.read(); if (done) break;
+                for (const line of decoder.decode(value).split("\n").filter(l => l.startsWith("data: "))) {
+                  try { const data = JSON.parse(line.slice(6)); if (data.error) { toast.error(data.error); setPulling(false); setPullProgress(null); return; } if (data.status === "done") { toast.success(`${pullName} pulled`); setPullName(""); loadOllamaModelsList(); setPulling(false); setPullProgress(null); return; } setPullProgress(data); } catch {}
+                }
+              }
+            } catch (e: any) { if (e.name !== "AbortError") toast.error(e.message); }
+            setPulling(false); setPullProgress(null);
+          };
+
+          const handleDeleteModel = async (name: string) => {
+            if (!await confirm(`Delete "${name}"?`)) return;
+            try { await fetch(`/api/ollama-models/${encodeURIComponent(name)}?source=${ollamaSource}`, { method: 'DELETE', headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }); loadOllamaModelsList(); toast.success(`${name} deleted`); } catch (e: any) { toast.error(e.message); }
+          };
+
+          // Auto-load on tab open
+          if (ollamaModels.length === 0) { loadOllamaModelsList(); checkHealth(); }
+
+          return (
+            <div className="space-y-5">
+              {/* Source toggle */}
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-muted-foreground">
+                  {ollamaSource === 'docker'
+                    ? (ollamaHealth.docker ? 'Models in Docker Ollama container' : 'Docker Ollama is not available')
+                    : (ollamaHealth.native ? 'Models in native Ollama on host' : 'Native Ollama is not available')}
+                </p>
+                <div className="flex items-center gap-2">
+                  <div className="flex gap-1 border rounded-lg p-0.5">
+                    {(['docker', 'native'] as const).map(s => (
+                      <button key={s} onClick={() => { if ((s === 'native' && !ollamaHealth.native) || (s === 'docker' && !ollamaHealth.docker)) return; setOllamaSource(s); setOllamaModels([]); }}
+                        className={`px-3 py-1 text-[11px] font-medium rounded-md transition-colors ${
+                          (s === 'native' && !ollamaHealth.native) || (s === 'docker' && !ollamaHealth.docker)
+                            ? 'text-muted-foreground/40 cursor-not-allowed'
+                            : ollamaSource === s ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'
+                        }`}>
+                        {s === 'docker' ? 'Docker' : 'Native'}{((s === 'native' && !ollamaHealth.native) || (s === 'docker' && !ollamaHealth.docker)) ? ' (offline)' : ''}
+                      </button>
+                    ))}
+                  </div>
+                  <Button size="sm" variant="outline" onClick={() => { loadOllamaModelsList(); checkHealth(); }} className="text-xs h-8">
+                    <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Refresh
+                  </Button>
+                </div>
+              </div>
+
+              {/* Stats */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="border rounded-lg px-4 py-3">
+                  <p className="text-[11px] text-muted-foreground">Models Installed</p>
+                  <p className="text-2xl font-semibold mt-0.5">{ollamaModels.length}</p>
+                </div>
+                <div className="border rounded-lg px-4 py-3">
+                  <p className="text-[11px] text-muted-foreground">Docker</p>
+                  <p className={`text-2xl font-semibold mt-0.5 ${ollamaHealth.docker ? 'text-green-500' : 'text-red-500'}`}>{ollamaHealth.docker ? 'Online' : 'Offline'}</p>
+                </div>
+                <div className="border rounded-lg px-4 py-3">
+                  <p className="text-[11px] text-muted-foreground">Native</p>
+                  <p className={`text-2xl font-semibold mt-0.5 ${ollamaHealth.native ? 'text-green-500' : 'text-red-500'}`}>{ollamaHealth.native ? 'Online' : 'Offline'}</p>
+                </div>
+              </div>
+
+              {/* Pull */}
+              <div className="border rounded-lg overflow-hidden">
+                <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">Pull New Model</p></div>
+                <div className="p-4 space-y-3">
+                  <div className="flex gap-2">
+                    <input value={pullName} onChange={(e) => setPullName(e.target.value)} placeholder="e.g. llama3.2, mistral, nomic-embed-text"
+                      onKeyDown={(e) => e.key === "Enter" && handlePull()} disabled={pulling}
+                      className="flex-1 h-9 px-3 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+                    <Button size="sm" onClick={handlePull} disabled={pulling || !pullName.trim()} className="text-xs h-9">
+                      <Download className="w-3.5 h-3.5 mr-1.5" />{pulling ? "Pulling..." : "Pull"}
+                    </Button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">Browse models at <a href="https://ollama.com/search" target="_blank" rel="noopener" className="underline">ollama.com/search</a></p>
+                  {pulling && pullProgress && (
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between text-[11px] text-muted-foreground">
+                        <span>{pullProgress.status}</span>
+                        {pullProgress.total ? <span>{progressPercent}%</span> : null}
+                      </div>
+                      <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
+                        {pullProgress.total ? <div className="bg-foreground/60 h-2 rounded-full transition-all duration-300" style={{ width: `${progressPercent}%` }} />
+                          : <div className="bg-foreground/60 h-2 rounded-full w-1/3 animate-pulse" />}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Search + Table */}
+              <div className="relative">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <input type="text" placeholder="Search models..." value={modelSearch} onChange={(e) => setModelSearch(e.target.value)}
+                  className="w-full h-9 pl-9 pr-3 text-xs rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div className="border rounded-lg overflow-hidden">
+                <table className="w-full text-[13px]">
+                  <thead><tr className="border-b">
+                    <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">Model</th>
+                    <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">Size</th>
+                    <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">Modified</th>
+                    <th className="px-4 py-2.5 w-16"></th>
+                  </tr></thead>
+                  <tbody>
+                    {filtered.length === 0 ? (
+                      <tr><td colSpan={4} className="px-4 py-10 text-center text-sm text-muted-foreground">No models found</td></tr>
+                    ) : filtered.map((m) => (
+                      <tr key={m.digest} className="border-t hover:bg-muted/30 transition-colors">
+                        <td className="px-4 py-2.5">
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center flex-shrink-0"><HardDrive className="w-4 h-4 text-muted-foreground" /></div>
+                            <div><p className="font-medium">{m.name}</p><p className="text-[10px] text-muted-foreground font-mono">{m.digest?.slice(0, 12)}</p></div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-2.5 text-muted-foreground">{(m.size / 1e9).toFixed(1)} GB</td>
+                        <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">{new Date(m.modified_at).toLocaleDateString()}</td>
+                        <td className="px-4 py-2.5 text-right">
+                          <button onClick={() => handleDeleteModel(m.name)} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-destructive"><Trash2 className="w-4 h-4" /></button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
       </div>
+
+      {/* Re-embed Warning Modal */}
+      {showReembedModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-background rounded-xl p-5 w-full max-w-md mx-4 border">
+            {!reembedProgress ? (<>
+              <h2 className="text-sm font-semibold mb-3">Dimension Mismatch</h2>
+              <p className="text-xs text-muted-foreground mb-2">Current collection: <span className="text-foreground font-medium">{qdrantInfo?.dimension}d</span> with <span className="text-foreground font-medium">{qdrantInfo?.points}</span> vectors.</p>
+              <p className="text-xs text-muted-foreground mb-4">Switching provider requires deleting all vectors and re-embedding all files. This may take a while and cost API credits.</p>
+              <div className="flex gap-2">
+                <Button size="sm" className="text-xs h-8 flex-1" onClick={() => { confirmReembed(); startReembed(); }}>Re-embed All Files</Button>
+                <Button size="sm" variant="outline" className="text-xs h-8" onClick={() => { confirmReembed(); }}>Switch Only (re-embed later)</Button>
+                <Button size="sm" variant="outline" className="text-xs h-8" onClick={() => { setShowReembedModal(false); setPendingProvider(null); }}>Cancel</Button>
+              </div>
+            </>) : (<>
+              <h2 className="text-sm font-semibold mb-3">Re-embedding Files</h2>
+              <p className="text-xs mb-2">{reembedProgress.detail}</p>
+              {reembedProgress.total > 0 && (
+                <div className="mb-3">
+                  <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+                    <div className="h-full bg-foreground rounded-full transition-all duration-300" style={{ width: `${Math.round((reembedProgress.current / reembedProgress.total) * 100)}%` }} />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-1">{reembedProgress.current} / {reembedProgress.total} ({Math.round((reembedProgress.current / reembedProgress.total) * 100)}%)</p>
+                </div>
+              )}
+              {reembedProgress.step === 'done' || reembedProgress.step === 'error' ? (
+                <Button size="sm" className="text-xs h-8 w-full" onClick={() => { setShowReembedModal(false); setReembedProgress(null); }}>Close</Button>
+              ) : null}
+            </>)}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
