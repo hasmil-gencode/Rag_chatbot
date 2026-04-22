@@ -1,0 +1,874 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Toaster, toast } from "sonner";
+import { ConfirmDialogProvider, useConfirm } from "@/components/chat/ConfirmDialog";
+import { ChatSidebar } from "@/components/chat/ChatSidebar";
+import { ChatArea } from "@/components/chat/ChatArea";
+import { FilesPage } from "@/components/chat/FilesPage";
+import { SettingsPage } from "@/components/chat/SettingsPage";
+import { ApiManagementPage } from "@/components/chat/ApiManagementPage";
+import { ProviderKeysPage } from "@/components/chat/ProviderKeysPage";
+import { UsersPage } from "@/components/chat/UsersPage";
+import { OrganizationsPage } from "@/components/chat/OrganizationsPage";
+import { AuditTrailPage } from "@/components/chat/AuditTrailPage";
+import { DeletedChatsPage } from "@/components/chat/DeletedChatsPage";
+import { SystemHealthPage } from "@/components/chat/SystemHealthPage";
+import { VectorBrowserPage } from "@/components/chat/VectorBrowserPage";
+import { MongoBrowserPage } from "@/components/chat/MongoBrowserPage";
+import { UserSettingsPage } from "@/components/chat/UserSettingsPage";
+import { WebViewPanel } from "@/components/chat/WebViewPanel";
+import { EmbedWidgetsPage } from "@/components/chat/EmbedWidgetsPage";
+import { api, setUnauthorizedHandler } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+
+interface Message {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  startedBy?: string;
+  sources?: { file_name: string; page_number: number }[];
+  responseTimeMs?: number;
+}
+
+interface ChatSession {
+  id: string;
+  title: string;
+  date: string;
+  isActive?: boolean;
+  startedBy?: string;
+  startedByEmail?: string;
+}
+
+const Index = () => {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const confirm = useConfirm();
+  const [isLoading, setIsLoading] = useState(false);
+  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser">("chat");
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const currentSessionIdRef = useRef<string | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [userEmail, setUserEmail] = useState<string>("");
+  const [userFullName, setUserFullName] = useState<string>("");
+  const [userRole, setUserRole] = useState<string>("");
+  const [canUploadFiles, setCanUploadFiles] = useState<boolean>(true);
+  const [userOrganizations, setUserOrganizations] = useState<any[]>([]);
+  const [currentOrganizationId, setCurrentOrganizationId] = useState<string | null>(null);
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
+  const unauthorizedHandledRef = useRef(false);
+  const idleTimerRef = useRef<number | null>(null);
+  
+  // Split screen web view state
+  const [webViewUrl, setWebViewUrl] = useState<string | null>(null);
+
+  // Login state
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  
+  // Password change state
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+  const [tempToken, setTempToken] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+
+  useEffect(() => {
+    // Check for token in URL (from Gateway Cara 3 auto-login)
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlToken = urlParams.get('token');
+    const mustChange = urlParams.get('mustChange');
+    if (urlToken) {
+      localStorage.setItem('token', urlToken);
+      localStorage.setItem('gatewayUrl', urlParams.get('gateway') || document.referrer || '');
+      try {
+        const payload = JSON.parse(atob(urlToken.split('.')[1]));
+        if (payload.email) localStorage.setItem('userEmail', payload.email);
+        if (payload.role) localStorage.setItem('userRole', payload.role);
+        if (payload.fullName) localStorage.setItem('userFullName', payload.fullName);
+        if (payload.id) localStorage.setItem('userId', payload.id);
+      } catch {}
+      window.history.replaceState({}, '', '/');
+    }
+    if (mustChange === '1') {
+      localStorage.setItem('gatewayUrl', urlParams.get('gateway') || document.referrer || '');
+      const tempTk = urlParams.get('tempToken') || '';
+      const em = urlParams.get('email') || '';
+      setTempToken(tempTk); setUserEmail(em);
+      setShowChangePasswordModal(true);
+      window.history.replaceState({}, '', '/');
+      return;
+    }
+
+    const token = localStorage.getItem("token");
+    const storedEmail = localStorage.getItem("userEmail");
+    const storedRole = localStorage.getItem("userRole");
+    const storedOrgId = localStorage.getItem("currentOrganizationId");
+    if (token) {
+      setIsAuthenticated(true);
+      if (storedEmail) setUserEmail(storedEmail);
+      if (storedRole) setUserRole(storedRole);
+      if (storedOrgId) setCurrentOrganizationId(storedOrgId);
+      const storedFullName = localStorage.getItem("userFullName");
+      if (storedFullName) setUserFullName(storedFullName);
+      
+      // Reset to chat page on load
+      setCurrentPage("chat");
+      
+      loadInitialData();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const sessionCheckInterval = setInterval(async () => {
+      try {
+        await api.getUserInfo();
+      } catch (error) {
+        console.log("[SESSION CHECK] Session check failed:", error);
+      }
+    }, 15000);
+
+    return () => clearInterval(sessionCheckInterval);
+  }, [isAuthenticated]);
+
+  const loadInitialData = async () => {
+    try {
+      // Load user info
+      const userInfo = await api.getUserInfo();
+      setCanUploadFiles(userInfo.canUploadFiles !== false);
+      if (userInfo.fullName) { setUserFullName(userInfo.fullName); localStorage.setItem('userFullName', userInfo.fullName); }
+      
+      // Load user's organizations
+      const orgsData = await api.getMyOrganizations();
+      setUserOrganizations(orgsData.organizations || []);
+      
+      // Set first org as current if none selected
+      if (!currentOrganizationId && orgsData.organizations?.length > 0) {
+        const firstOrgId = orgsData.organizations[0]._id;
+        setCurrentOrganizationId(firstOrgId);
+        localStorage.setItem("currentOrganizationId", firstOrgId);
+      }
+      
+      // Load sessions for current org
+      const sessionsData = await api.getSessions(currentOrganizationId);
+      setSessions(sessionsData.map(s => {
+        const date = new Date(s.lastMessageAt);
+        const formattedDate = date.toLocaleDateString("en-MY", { 
+          day: '2-digit', 
+          month: 'short' 
+        }) + ', ' + date.toLocaleTimeString("en-MY", { 
+          hour: '2-digit', 
+          minute: '2-digit',
+          hour12: true 
+        });
+        return {
+          ...s,
+          date: formattedDate,
+          isActive: false,
+        };
+      }));
+    } catch (error) {
+      console.error("Failed to load data:", error);
+    }
+  };
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    try {
+      const data = await api.login({ email, password });
+
+      // Check if user must change password
+      if (data.mustChangePassword) {
+        setTempToken(data.tempToken);
+        setShowChangePasswordModal(true);
+        setIsLoading(false);
+        return;
+      }
+
+      localStorage.setItem("token", data.token);
+      localStorage.setItem("userId", data.user?.id || "");
+      localStorage.setItem("userEmail", data.user?.email || email);
+      localStorage.setItem("userRole", data.user?.role || "user");
+      setUserEmail(data.user?.email || email);
+      setUserFullName(data.user?.fullName || "");
+      setUserRole(data.user?.role || "user");
+      setIsAuthenticated(true);
+      unauthorizedHandledRef.current = false;
+      
+      // Load user data after authentication
+      await loadInitialData();
+      
+      // Always redirect to chat page after login
+      setCurrentPage("chat");
+      
+      toast.success("Welcome back!");
+    } catch (error: any) {
+      toast.error(error.message || "Login failed");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (newPassword.length < 8) {
+      toast.error("Password must be at least 8 characters");
+      return;
+    }
+    
+    if (newPassword !== confirmPassword) {
+      toast.error("Passwords do not match");
+      return;
+    }
+    
+    setIsLoading(true);
+    try {
+      const data = await api.changePasswordFirstLogin(tempToken, newPassword);
+      
+      // Complete login with new token
+      localStorage.setItem("token", data.token);
+      localStorage.setItem("userId", data.user?.id || "");
+      localStorage.setItem("userEmail", data.user?.email || email);
+      localStorage.setItem("userRole", data.user?.role || "user");
+      setUserEmail(data.user?.email || email);
+      setUserRole(data.user?.role || "user");
+      setIsAuthenticated(true);
+      unauthorizedHandledRef.current = false;
+      
+      // Close modal and reset state
+      setShowChangePasswordModal(false);
+      setTempToken("");
+      setNewPassword("");
+      setConfirmPassword("");
+      
+      // Load user data
+      await loadInitialData();
+      setCurrentPage("chat");
+      
+      toast.success("Password changed successfully! Welcome!");
+    } catch (error: any) {
+      toast.error(error.message || "Failed to change password");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleLogout = useCallback(async () => {
+    const gatewayUrl = localStorage.getItem("gatewayUrl");
+    localStorage.removeItem("token");
+    localStorage.removeItem("userEmail");
+    localStorage.removeItem("userRole");
+    localStorage.removeItem("userFullName");
+    localStorage.removeItem("userId");
+    localStorage.removeItem("currentOrganizationId");
+    localStorage.removeItem("gatewayUrl");
+    // Clear gateway cookie and redirect
+    if (gatewayUrl) {
+      try { await fetch('/api/gateway/tenant-logout', { method: 'POST' }); } catch {}
+      window.location.href = gatewayUrl; return;
+    }
+    setIsAuthenticated(false);
+    setSessions([]);
+    setMessages([]);
+    setCurrentSessionId(null);
+    currentSessionIdRef.current = null;
+    setUserEmail("");
+    setUserRole("");
+    setUserOrganizations([]);
+    setCurrentOrganizationId(null);
+  }, []);
+
+  const resetIdleTimer = useCallback(() => {
+    if (!isAuthenticated) return;
+    if (idleTimerRef.current) {
+      window.clearTimeout(idleTimerRef.current);
+    }
+    idleTimerRef.current = window.setTimeout(() => {
+      handleLogout();
+      toast.error("Logged out after 30 minutes of inactivity.");
+    }, 30 * 60 * 1000);
+  }, [handleLogout, isAuthenticated]);
+
+  useEffect(() => {
+    setUnauthorizedHandler((payload) => {
+      if (unauthorizedHandledRef.current) return;
+      unauthorizedHandledRef.current = true;
+      handleLogout();
+      toast.error(payload?.message || "Session expired. Please log in again.");
+    });
+    return () => setUnauthorizedHandler(null);
+  }, [handleLogout]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    resetIdleTimer();
+    const events = ["mousemove", "mousedown", "keydown", "scroll", "touchstart", "focus"];
+    const handleActivity = () => resetIdleTimer();
+    events.forEach((event) => window.addEventListener(event, handleActivity));
+
+    return () => {
+      events.forEach((event) => window.removeEventListener(event, handleActivity));
+      if (idleTimerRef.current) {
+        window.clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+    };
+  }, [isAuthenticated, resetIdleTimer]);
+
+  const handleOrganizationChange = async (orgId: string) => {
+    setCurrentOrganizationId(orgId);
+    localStorage.setItem("currentOrganizationId", orgId);
+    
+    // Reload sessions and files for new org
+    await loadInitialData();
+    
+    // Clear current chat
+    handleNewChat();
+  };
+
+  const handleNewChat = () => {
+    setCurrentSessionId(null);
+    currentSessionIdRef.current = null;
+    setMessages([]);
+    setSessions(prev => prev.map(s => ({ ...s, isActive: false })));
+    
+    // Stop continuous mode if active
+    localStorage.removeItem('continuousMode');
+    localStorage.removeItem('continuousModeMessage');
+    localStorage.removeItem('ttsPlaying');
+    localStorage.removeItem('ttsBlocking');
+    localStorage.removeItem('waitingForTTS');
+  };
+
+  const handleSelectChat = async (id: string) => {
+    setCurrentSessionId(id);
+    currentSessionIdRef.current = id;
+    setSessions(prev => prev.map(s => ({ ...s, isActive: s.id === id })));
+    
+    try {
+      const msgs = await api.getMessages(id);
+      setMessages(msgs.map((m, i) => ({
+        id: i.toString(),
+        role: m.role === "bot" ? "assistant" : "user",
+        content: m.content || "",
+      })));
+    } catch (error) {
+      console.error("Failed to load messages:", error);
+    }
+  };
+
+  const handleDeleteChat = async (id: string) => {
+    try {
+      await api.deleteSession(id);
+      setSessions(prev => prev.filter(s => s.id !== id));
+      if (currentSessionId === id) {
+        handleNewChat();
+      }
+    } catch (error: any) {
+      toast.error(error.message);
+    }
+  };
+
+  const handleSendMessage = async (content: string, fileId?: string | null) => {
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: "user",
+      content,
+    };
+
+    setMessages(prev => [...prev, userMessage]);
+    setIsLoading(true);
+
+    try {
+      // Use ref for immediate session ID (avoids race condition)
+      const sessionId = currentSessionIdRef.current;
+      const response = await api.sendMessage(content, sessionId || undefined, fileId || undefined, currentOrganizationId);
+      
+      // Update session ID immediately if this was first message
+      if (!sessionId && response.sessionId) {
+        setCurrentSessionId(response.sessionId);
+        currentSessionIdRef.current = response.sessionId;
+      }
+      
+      const botMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: response.response,
+        sources: response.sources || [],
+        responseTimeMs: response.responseTimeMs,
+      };
+
+      setMessages(prev => [...prev, botMessage]);
+      
+      // Reload sessions list if new session was created
+      if (!sessionId) {
+        await loadInitialData();
+      }
+    } catch (error: any) {
+      // Check if quota exceeded
+      if (error.message.includes('quota exceeded') || error.message.includes('429')) {
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: `⚠️ Your quota exceeded limit, please contact Admin.`,
+        };
+        setMessages(prev => [...prev, errorMessage]);
+      } else {
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: `Error: ${error.message}`,
+        };
+        setMessages(prev => [...prev, errorMessage]);
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  if (!isAuthenticated) {
+    return (
+      <>
+        <Toaster position="top-center" theme="dark" toastOptions={{ style: { background: 'hsl(var(--background))', border: '1px solid hsl(var(--border))', color: 'hsl(var(--foreground))' } }} />
+        <ConfirmDialogProvider />
+        <div className="h-screen flex">
+        {/* Left Side - Marketing */}
+        <div className="hidden lg:flex lg:w-[60%] p-9 flex-col justify-between relative overflow-hidden">
+          {/* Background Pattern */}
+          <div className="absolute inset-0">
+            <div className="absolute inset-0" style={{
+              backgroundImage: 'url("https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=1200&q=80")',
+              backgroundSize: 'cover',
+              backgroundPosition: 'center'
+            }} />
+            {/* Dark overlay for text readability */}
+            <div className="absolute inset-0 bg-black/50" />
+          </div>
+          
+          {/* Logo */}
+          <div className="relative z-10 flex items-center">
+            <img src="/logos/g14_white_long_2.svg" alt="Logo" className="h-8 object-contain" />
+          </div>
+
+          {/* Marketing Content */}
+          <div className="relative z-10">
+            <p className="text-white text-sm font-medium mb-4 tracking-wider uppercase">
+              AI OPERATIONS SUITE
+            </p>
+            <h1 className="text-4xl lg:text-5xl font-bold text-white mb-6 leading-tight">
+              Streamline your<br />
+              <span className="text-white">knowledge workflows.</span>
+            </h1>
+            <p className="text-white text-lg mb-6 leading-relaxed">
+              Intelligent AI-powered conversations for your business. Streamline workflows, 
+              enhance productivity, and unlock insights with advanced RAG technology.
+            </p>
+          </div>
+
+          {/* Footer */}
+          <div className="relative z-10">
+            <p className="text-slate-500 text-sm">
+              © 2026 Gencode Sdn Bhd. All rights reserved.
+            </p>
+          </div>
+        </div>
+
+        {/* Right Side - Login Form */}
+        <div className="w-full lg:w-[40%] flex items-center justify-center p-8 bg-slate-50">
+          <div className="w-full max-w-md">
+            <div className="mb-8">
+              <h2 className="text-3xl font-bold text-slate-900 mb-2">Welcome back</h2>
+              <p className="text-slate-600">Please sign in to your dashboard</p>
+            </div>
+            
+            <form onSubmit={handleLogin} className="space-y-5">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Email Address
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <svg className="h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                    </svg>
+                  </div>
+                  <Input
+                    type="email"
+                    placeholder="e.g. admin@example.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="pl-10 h-12 bg-white border-slate-300 text-slate-900 placeholder:text-slate-400"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Password
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <svg className="h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                  </div>
+                  <Input
+                    type={showPassword ? "text" : "password"}
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="pl-10 pr-10 h-12 bg-white border-slate-300 text-slate-900 placeholder:text-slate-400"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                  >
+                    {showPassword ? (
+                      <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                      </svg>
+                    ) : (
+                      <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <Button 
+                type="submit" 
+                className="w-full h-12 bg-slate-900 hover:bg-slate-800 text-white text-base font-medium"
+                disabled={isLoading}
+              >
+                {isLoading ? "Signing in..." : "Sign In"}
+                <svg className="ml-2 w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                </svg>
+              </Button>
+            </form>
+
+            <div className="mt-6 text-center">
+              <p className="text-xs text-slate-500 flex items-center justify-center gap-1">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+                Protected by GenCode Secure Access
+              </p>
+              
+              {/* Powered by GenCode image */}
+              <div className="mt-4 flex justify-center">
+                <img src="/powerbygencode.png" alt="Powered by GenCode" className="h-12 object-contain" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Change Password Modal */}
+      {showChangePasswordModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-8 max-w-md w-full mx-4">
+            <h2 className="text-2xl font-bold text-slate-900 mb-2">Set Your New Password</h2>
+            <p className="text-slate-600 mb-6">
+              For security reasons, you must change your password before continuing.
+            </p>
+            
+            <form onSubmit={handleChangePassword} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  New Password
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    placeholder="At least 8 characters"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="w-full h-12 px-4 pr-12 bg-white text-slate-900 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                    minLength={8}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    {showPassword ? (
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                      </svg>
+                    ) : (
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Confirm Password
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    placeholder="Re-enter your password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="w-full h-12 px-4 pr-12 bg-white text-slate-900 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                    minLength={8}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    {showPassword ? (
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                      </svg>
+                    ) : (
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={isLoading}
+              >
+                {isLoading ? "Changing Password..." : "Change Password & Continue"}
+              </button>
+            </form>
+
+            <p className="text-xs text-slate-500 mt-4 text-center">
+              Your password must be different from the default password and at least 8 characters long.
+            </p>
+          </div>
+        </div>
+      )}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Toaster position="top-center" theme="dark" toastOptions={{ style: { background: 'hsl(var(--background))', border: '1px solid hsl(var(--border))', color: 'hsl(var(--foreground))' } }} />
+      <ConfirmDialogProvider />
+      <div 
+        className="flex h-screen bg-background overflow-hidden"
+        onClick={() => {
+          // Close mobile menu when clicking outside
+          setShowMobileMenu(false);
+        }}
+      >
+      
+      {/* Mobile Header Bar - Only when there's an active chat */}
+      {currentPage === "chat" && currentSessionId && (
+        <div className="md:hidden fixed top-0 left-0 right-0 z-[50] bg-background border-b border-border">
+          <div className="flex items-center justify-between px-3 py-2">
+            {/* Hamburger */}
+            <button
+              onClick={() => {
+                const sidebar = document.querySelector('.sidebar-container');
+                sidebar?.classList.add('open');
+              }}
+              className="p-2 hover:bg-accent rounded-md transition-colors"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+
+            {/* Chat Title */}
+            <div className="flex-1 text-center px-2 min-w-0">
+              <h1 className="text-sm font-medium truncate max-w-[200px] mx-auto">
+                {sessions.find(s => s.id === currentSessionId)?.title || 'Chat'}
+              </h1>
+            </div>
+
+            {/* Three dots menu */}
+            <div className="relative">
+              <button 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowMobileMenu(!showMobileMenu);
+                }}
+                className="p-2 hover:bg-accent rounded-md transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <circle cx="12" cy="5" r="1" fill="currentColor" />
+                  <circle cx="12" cy="12" r="1" fill="currentColor" />
+                  <circle cx="12" cy="19" r="1" fill="currentColor" />
+                </svg>
+              </button>
+              
+              {/* Dropdown Menu */}
+              {showMobileMenu && (
+                <div 
+                  className="absolute right-0 top-full mt-1 w-48 bg-popover border border-border rounded-md shadow-lg z-[60]"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="py-1">
+                    <button
+                      onClick={() => {
+                        handleNewChat();
+                        setShowMobileMenu(false);
+                      }}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-accent transition-colors flex items-center gap-2"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                      </svg>
+                      New chat
+                    </button>
+                    
+                    {(userRole === 'developer' || currentSessionId) && (
+                      <button
+                        onClick={async () => {
+                          if (currentSessionId && await confirm('Delete this chat?')) {
+                            handleDeleteChat(currentSessionId);
+                            setShowMobileMenu(false);
+                          }
+                        }}
+                        className="w-full px-4 py-2 text-left text-sm hover:bg-accent transition-colors flex items-center gap-2 text-destructive"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                        Delete chat
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Hamburger - Only for new chat (no active session) */}
+      {currentPage === "chat" && !currentSessionId && (
+        <button
+          onClick={() => {
+            const sidebar = document.querySelector('.sidebar-container');
+            sidebar?.classList.add('open');
+          }}
+          className="md:hidden fixed top-4 left-4 z-[50] p-2 hover:bg-accent rounded-md transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+      )}
+
+      {/* Floating Hamburger - For other pages (not chat) */}
+      {currentPage !== "chat" && (
+        <button
+          onClick={() => {
+            const sidebar = document.querySelector('.sidebar-container');
+            sidebar?.classList.add('open');
+          }}
+          className="md:hidden fixed top-4 left-4 z-[50] p-2 hover:bg-accent rounded-md transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+      )}
+
+      <div 
+        className="sidebar-container"
+        onClick={(e) => {
+          // Close sidebar when clicking outside (on overlay)
+          if (e.target === e.currentTarget) {
+            e.currentTarget.classList.remove('open');
+          }
+        }}
+      >
+        <ChatSidebar
+          sessions={sessions}
+          onNewChat={() => {
+            handleNewChat();
+            // Close sidebar on mobile after action
+            document.querySelector('.sidebar-container')?.classList.remove('open');
+          }}
+          onSelectChat={(id) => {
+            handleSelectChat(id);
+            document.querySelector('.sidebar-container')?.classList.remove('open');
+          }}
+          onDeleteChat={handleDeleteChat}
+          currentPage={currentPage}
+          onNavigate={(page) => {
+            setCurrentPage(page);
+            document.querySelector('.sidebar-container')?.classList.remove('open');
+          }}
+          onLogout={handleLogout}
+          userEmail={userEmail}
+          userRole={userRole}
+          canUploadFiles={canUploadFiles}
+          userOrganizations={userOrganizations}
+          currentOrganizationId={currentOrganizationId}
+          onOrganizationChange={handleOrganizationChange}
+        />
+      </div>
+
+      <div className="flex-1 flex flex-col overflow-hidden chat-container">
+        <div className="flex h-full">
+          {/* Main content area */}
+          <div className={webViewUrl && currentPage === "chat" ? "w-1/2 flex flex-col overflow-hidden" : "flex-1 flex flex-col overflow-hidden"}>
+            {currentPage === "chat" && (
+              <ChatArea
+                messages={messages}
+                onSendMessage={handleSendMessage}
+                isLoading={isLoading}
+                userEmail={userEmail}
+                userFullName={userFullName}
+                hasActiveSession={!!currentSessionId}
+                onWebViewOpen={setWebViewUrl}
+              />
+            )}
+            {currentPage === "files" && <FilesPage />}
+            {currentPage === "settings" && <SettingsPage />}
+            {currentPage === "api" && <ApiManagementPage />}
+            {currentPage === "provider-keys" && <ProviderKeysPage />}
+            {currentPage === "deleted-chats" && <DeletedChatsPage />}
+            {currentPage === "system-health" && <SystemHealthPage />}
+            {currentPage === "vector-browser" && <VectorBrowserPage />}
+            {currentPage === "mongo-browser" && <MongoBrowserPage />}
+            {currentPage === "organizations" && <OrganizationsPage />}
+            {currentPage === "audit-trail" && <AuditTrailPage />}
+            {currentPage === "users" && <UsersPage />}
+            {currentPage === "user-settings" && <UserSettingsPage />}
+            {currentPage === "embed-widgets" && <EmbedWidgetsPage />}
+          </div>
+          
+          {/* Web view panel */}
+          {webViewUrl && currentPage === "chat" && (
+            <div className="w-1/2">
+              <WebViewPanel url={webViewUrl} onClose={() => setWebViewUrl(null)} />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+    </>
+  );
+};
+
+export default Index;
