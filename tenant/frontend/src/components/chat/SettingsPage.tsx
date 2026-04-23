@@ -8,8 +8,6 @@ export const SettingsPage = () => {
   const [settings, setSettings] = useState<any>({});
   const [isSaving, setIsSaving] = useState(false);
   const [activeTab, setActiveTab] = useState("general");
-  const [ollamaLocalModels, setOllamaLocalModels] = useState<any[]>([]);
-  const [ollamaCloudModels, setOllamaCloudModels] = useState<any[]>([]);
   const [providerModels, setProviderModels] = useState<{id: string; name: string}[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   // Re-embed state
@@ -25,7 +23,7 @@ export const SettingsPage = () => {
   const MODEL_DIMS: Record<string, number> = { 'text-embedding-004': 768, 'gemini-embedding-001': 3072, 'text-embedding-3-small': 1536, 'text-embedding-3-large': 3072, 'nomic-embed-text-v2-moe': 768, 'nomic-embed-text': 768, 'mistral-embed': 1024 };
 
   const handleEmbeddingChange = (provider: string) => {
-    const defaults: Record<string,string> = { gemini: 'text-embedding-004', openai: 'text-embedding-3-small', mistral: 'mistral-embed', ollama: 'nomic-embed-text-v2-moe' };
+    const defaults: Record<string,string> = { gemini: 'text-embedding-004', openai: 'text-embedding-3-small', mistral: 'mistral-embed' };
     const newModel = defaults[provider] || '';
     const newDim = MODEL_DIMS[newModel] || 768;
     if (qdrantInfo?.exists && qdrantInfo.points > 0 && qdrantInfo.dimension !== newDim) {
@@ -35,7 +33,7 @@ export const SettingsPage = () => {
     }
   };
 
-  const confirmReembed = () => { if (!pendingProvider) return; const defaults: Record<string,string> = { gemini: 'text-embedding-004', openai: 'text-embedding-3-small', mistral: 'mistral-embed', ollama: 'nomic-embed-text-v2-moe' }; updateSettings({ embeddingProvider: pendingProvider, embeddingModel: defaults[pendingProvider] || '' }); setShowReembedModal(false); setPendingProvider(null); };
+  const confirmReembed = () => { if (!pendingProvider) return; const defaults: Record<string,string> = { gemini: 'text-embedding-004', openai: 'text-embedding-3-small', mistral: 'mistral-embed' }; updateSettings({ embeddingProvider: pendingProvider, embeddingModel: defaults[pendingProvider] || '' }); setShowReembedModal(false); setPendingProvider(null); };
 
   const startReembed = async () => {
     setReembedProgress({ step: 'starting', detail: 'Starting...', current: 0, total: 0 });
@@ -60,11 +58,9 @@ export const SettingsPage = () => {
     }
     loadQdrantInfo();
   };
-  const loadOllamaModels = async () => { try { setOllamaLocalModels(await api.getOllamaModels()); } catch {} };
-  const loadOllamaCloudModels = async () => { try { setOllamaCloudModels(await api.getOllamaCloudModels()); } catch {} };
   const loadProviderModels = async (provider?: string) => { 
     const p = provider || settings.chatLlmProvider; 
-    if (!p || p === 'ollama_local' || p === 'ollama_cloud') return; 
+    if (!p) return; 
     setLoadingModels(true); 
     try { setProviderModels(await api.getProviderModels(p)); } catch {} 
     setLoadingModels(false); 
@@ -83,6 +79,7 @@ export const SettingsPage = () => {
     { id: 'general', label: 'General' },
     { id: 'upload', label: 'Upload Processing' },
     { id: 'chat', label: 'Chat' },
+    { id: 'guardrail', label: 'Guardrail' },
     { id: 'voice', label: 'Voice' },
   ];
 
@@ -133,15 +130,12 @@ export const SettingsPage = () => {
               <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">Processing Mode</p></div>
               <div className="p-4">
                 <div className="flex gap-2">
-                  {['online', 'offline'].map(mode => (
-                    <button key={mode} onClick={() => updateSetting('uploadProcessingMode', mode)}
-                      className={`flex-1 px-4 py-2.5 rounded-lg text-xs font-medium border transition-colors ${settings.uploadProcessingMode === mode ? 'bg-foreground text-background border-foreground' : 'hover:bg-muted'}`}>
-                      {mode === 'online' ? 'Online (Cloud APIs)' : 'Offline (Self-hosted)'}
-                    </button>
-                  ))}
+                  <div className="flex-1 px-4 py-2.5 rounded-lg text-xs font-medium border bg-foreground text-background border-foreground">
+                    Online (Cloud APIs)
+                  </div>
                 </div>
                 <p className="text-[10px] text-muted-foreground mt-2">
-                  {settings.uploadProcessingMode === 'online' ? 'Uses cloud APIs for OCR, embedding, and vector storage. Requires API keys.' : 'Uses local containers for all processing. No external API calls.'}
+                  Uses cloud APIs for OCR, embedding, and vector storage. Requires API keys.
                 </p>
               </div>
             </div>
@@ -218,24 +212,14 @@ export const SettingsPage = () => {
                   <div className="p-4 space-y-4">
                     <div>
                       <label className="text-[11px] text-muted-foreground">Provider</label>
-                      <select value={settings.embeddingProvider || 'ollama'} onChange={(e) => handleEmbeddingChange(e.target.value)}
+                      <select value={settings.embeddingProvider || 'gemini'} onChange={(e) => handleEmbeddingChange(e.target.value)}
                         className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
                         <option value="gemini">Gemini — 3072d — $0.15/1M tokens</option>
                         <option value="mistral">Mistral — 1024d — $0.01/1M tokens</option>
                         <option value="openai">OpenAI — 1536d — $0.02/1M tokens</option>
-                        <option value="ollama">Ollama (Self-hosted) — 768d — Free</option>
                       </select>
                     </div>
-                    {settings.embeddingProvider && settings.embeddingProvider !== 'ollama' && (
-                      <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys.</p>
-                    )}
-                    {settings.embeddingProvider === 'ollama' && (
-                      <div>
-                        <label className="text-[11px] text-muted-foreground">Ollama URL</label>
-                        <input value={settings.offlineOllamaUrl || 'http://ollama:11434'} onChange={(e) => updateSetting('offlineOllamaUrl', e.target.value)}
-                          className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                      </div>
-                    )}
+                    <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys.</p>
                     <div>
                       <label className="text-[11px] text-muted-foreground">Embedding Model</label>
                       <select value={settings.embeddingModel || ''} onChange={(e) => { const m = e.target.value; const newDim = MODEL_DIMS[m] || 768; if (qdrantInfo?.exists && qdrantInfo.points > 0 && qdrantInfo.dimension !== newDim) { setPendingProvider(null); setShowReembedModal(true); updateSetting('embeddingModel', m); } else { updateSetting('embeddingModel', m); } }}
@@ -247,10 +231,6 @@ export const SettingsPage = () => {
                         {settings.embeddingProvider === 'openai' && <>
                           <option value="text-embedding-3-small">text-embedding-3-small (1536d) — $0.02/1M</option>
                           <option value="text-embedding-3-large">text-embedding-3-large (3072d) — $0.13/1M</option>
-                        </>}
-                        {settings.embeddingProvider === 'ollama' && <>
-                          <option value="nomic-embed-text-v2-moe">nomic-embed-text-v2-moe (768d)</option>
-                          <option value="nomic-embed-text">nomic-embed-text (768d)</option>
                         </>}
                         {settings.embeddingProvider === 'mistral' && <>
                           <option value="mistral-embed">mistral-embed (1024d)</option>
@@ -305,44 +285,6 @@ export const SettingsPage = () => {
               </>
             )}
 
-            {/* ── OFFLINE MODE ── */}
-            {settings.uploadProcessingMode === 'offline' && (
-              <div className="border rounded-lg overflow-hidden">
-                <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">Local Services</p></div>
-                <div className="p-4 space-y-4">
-                  <div>
-                    <label className="text-[11px] text-muted-foreground">OCR Service URL</label>
-                    <input value={settings.offlineOcrUrl || 'http://ocr-service:5002'} onChange={(e) => updateSetting('offlineOcrUrl', e.target.value)}
-                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                    <p className="text-[10px] text-muted-foreground mt-1">Offline OCR service URL</p>
-                  </div>
-                  <div>
-                    <label className="text-[11px] text-muted-foreground">Ollama URL</label>
-                    <input value={settings.offlineOllamaUrl || 'http://ollama:11434'} onChange={(e) => updateSetting('offlineOllamaUrl', e.target.value)}
-                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                  </div>
-                  <div>
-                    <label className="text-[11px] text-muted-foreground">Embedding Model</label>
-                    <select value={settings.offlineEmbeddingModel || 'nomic-embed-text-v2-moe'} onChange={(e) => updateSetting('offlineEmbeddingModel', e.target.value)}
-                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
-                      <option value="nomic-embed-text-v2-moe">nomic-embed-text-v2-moe (768d, multilingual)</option>
-                      <option value="nomic-embed-text">nomic-embed-text (768d)</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-[11px] text-muted-foreground">Qdrant Host</label>
-                    <input value={settings.offlineQdrantHost || 'qdrant'} onChange={(e) => updateSetting('offlineQdrantHost', e.target.value)}
-                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                  </div>
-                  <div>
-                    <label className="text-[11px] text-muted-foreground">Qdrant Port</label>
-                    <input type="number" value={settings.offlineQdrantPort || 6333} onChange={(e) => updateSetting('offlineQdrantPort', parseInt(e.target.value))}
-                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                  </div>
-                </div>
-              </div>
-            )}
-
             {/* Chunking Settings */}
               <div className="border rounded-lg overflow-hidden">
               <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">Chunking Settings</p></div>
@@ -389,43 +331,16 @@ export const SettingsPage = () => {
               <div className="p-4 space-y-4">
                 <div>
                   <label className="text-[11px] text-muted-foreground">Provider</label>
-                  <select value={settings.chatLlmProvider || 'gemini'} onChange={(e) => { const p = e.target.value; const defaults: Record<string,string> = {gemini:'gemini-2.5-flash',openai:'gpt-4o-mini',groq:'llama-3.3-70b-versatile',ollama_cloud:'',ollama_local:''}; updateSettings({chatLlmProvider: p, chatLlmModel: defaults[p] || '', chatLlmApiKey: settings[`chatLlmApiKey_${p}`] || ''}); if (p === 'ollama_local') loadOllamaModels(); else if (p === 'ollama_cloud') loadOllamaCloudModels(); else loadProviderModels(p); }}
+                  <select value={settings.chatLlmProvider || 'gemini'} onChange={(e) => { const p = e.target.value; const defaults: Record<string,string> = {gemini:'gemini-2.5-flash',openai:'gpt-4o-mini',groq:'llama-3.3-70b-versatile'}; updateSettings({chatLlmProvider: p, chatLlmModel: defaults[p] || '', chatLlmApiKey: settings[`chatLlmApiKey_${p}`] || ''}); loadProviderModels(p); }}
                     className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
                     <option value="gemini">Gemini</option>
                     <option value="openai">OpenAI</option>
                     <option value="groq">Groq</option>
-                    <option value="ollama_cloud">Ollama Cloud</option>
-                    <option value="ollama_local">Ollama Local</option>
                   </select>
                 </div>
-                {!['ollama_local'].includes(settings.chatLlmProvider) && (
-                  <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys.</p>
-                )}
-                {settings.chatLlmProvider === 'ollama_local' && (
-                  <div>
-                    <label className="text-[11px] text-muted-foreground">Ollama URL</label>
-                    <div className="flex gap-2 mt-1">
-                      <input value={settings.chatLlmOllamaUrl || 'http://ollama:11434'} onChange={(e) => updateSetting('chatLlmOllamaUrl', e.target.value)}
-                        className="flex-1 h-9 px-3 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
-                      <button onClick={loadOllamaModels} className="px-3 h-9 text-xs border rounded-lg hover:bg-muted">Refresh</button>
-                    </div>
-                  </div>
-                )}
+                <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys.</p>
                 <div>
                   <label className="text-[11px] text-muted-foreground">Model</label>
-                  {settings.chatLlmProvider === 'ollama_local' ? (
-                    <select value={settings.chatLlmModel || ''} onChange={(e) => updateSetting('chatLlmModel', e.target.value)}
-                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
-                      <option value="">Select model...</option>
-                      {ollamaLocalModels.map((m: any) => <option key={m.name} value={m.name}>{m.name} ({(m.size / 1e9).toFixed(1)}GB)</option>)}
-                    </select>
-                  ) : settings.chatLlmProvider === 'ollama_cloud' ? (
-                    <select value={settings.chatLlmModel || ''} onChange={(e) => updateSetting('chatLlmModel', e.target.value)}
-                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
-                      <option value="">Select model...</option>
-                      {ollamaCloudModels.map((m: any) => <option key={m.name} value={m.name}>{m.name}</option>)}
-                    </select>
-                  ) : (
                     <select value={settings.chatLlmModel || ''} onChange={(e) => updateSetting('chatLlmModel', e.target.value)}
                       className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
                       {providerModels.length > 0 ? (
@@ -438,12 +353,9 @@ export const SettingsPage = () => {
                         </>
                       )}
                     </select>
-                  )}
-                  {!['ollama_local','ollama_cloud'].includes(settings.chatLlmProvider) && (
-                    <button onClick={() => loadProviderModels()} disabled={loadingModels} className="text-[10px] text-muted-foreground hover:text-foreground mt-1 underline">
-                      {loadingModels ? 'Loading...' : 'Refresh model list'}
-                    </button>
-                  )}
+                  <button onClick={() => loadProviderModels()} disabled={loadingModels} className="text-[10px] text-muted-foreground hover:text-foreground mt-1 underline">
+                    {loadingModels ? 'Loading...' : 'Refresh model list'}
+                  </button>
                 </div>
               </div>
             </div>
@@ -454,21 +366,18 @@ export const SettingsPage = () => {
               <div className="p-4 space-y-4">
                 <div>
                   <label className="text-[11px] text-muted-foreground">Provider</label>
-                  <select value={settings.chatEmbeddingProvider || 'ollama'} onChange={(e) => {
+                  <select value={settings.chatEmbeddingProvider || 'gemini'} onChange={(e) => {
                     const p = e.target.value;
-                    const defaults: Record<string,string> = { gemini: 'gemini-embedding-001', openai: 'text-embedding-3-small', mistral: 'mistral-embed', ollama: 'nomic-embed-text-v2-moe' };
+                    const defaults: Record<string,string> = { gemini: 'gemini-embedding-001', openai: 'text-embedding-3-small', mistral: 'mistral-embed' };
                     updateSettings({ chatEmbeddingProvider: p, chatEmbeddingModel: defaults[p] || '' });
                   }}
                     className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
                     <option value="gemini">Gemini — 3072d — $0.15/1M tokens</option>
                     <option value="mistral">Mistral — 1024d — $0.01/1M tokens</option>
                     <option value="openai">OpenAI — 1536d — $0.02/1M tokens</option>
-                    <option value="ollama">Ollama (Self-hosted) — 768d — Free</option>
                   </select>
                 </div>
-                {settings.chatEmbeddingProvider && settings.chatEmbeddingProvider !== 'ollama' && (
-                  <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys.</p>
-                )}
+                <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys.</p>
                 <p className="text-[10px] text-amber-500">⚠️ Must match Upload Embedding provider to work correctly.</p>
               </div>
             </div>
@@ -483,6 +392,54 @@ export const SettingsPage = () => {
                     className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
                   <p className="text-[10px] text-muted-foreground mt-1">Number of document chunks to include as context for each chat message.</p>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Guardrail Tab */}
+        {activeTab === 'guardrail' && (
+          <div className="space-y-5">
+            {/* Enable/Disable */}
+            <div className="border rounded-lg overflow-hidden">
+              <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">AI Guardrail</p></div>
+              <div className="p-4 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium">Enable Guardrail</p>
+                    <p className="text-[10px] text-muted-foreground">Check user inputs and AI outputs for safety violations before processing.</p>
+                  </div>
+                  <button onClick={() => updateSetting('guardrailEnabled', !settings.guardrailEnabled)}
+                    className={`w-10 h-5 rounded-full transition-colors ${settings.guardrailEnabled ? 'bg-green-500' : 'bg-muted'}`}>
+                    <div className={`w-4 h-4 rounded-full bg-white transition-transform ${settings.guardrailEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                  </button>
+                </div>
+                <div>
+                  <label className="text-[11px] text-muted-foreground">Guardrail Model</label>
+                  <input value={settings.guardrailModel || 'gemini-2.5-flash-lite'} onChange={(e) => updateSetting('guardrailModel', e.target.value)}
+                    className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+                  <p className="text-[10px] text-muted-foreground mt-1">Lightweight model for safety classification. Uses Gemini API key from Provider Keys.</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Input Guard Prompt */}
+            <div className="border rounded-lg overflow-hidden">
+              <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">Input Guard Prompt</p></div>
+              <div className="p-4">
+                <textarea value={settings.guardrailInputPrompt || ''} onChange={(e) => updateSetting('guardrailInputPrompt', e.target.value)} rows={12}
+                  className="w-full px-3 py-2 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring font-mono" />
+                <p className="text-[10px] text-muted-foreground mt-1">Checks user messages BEFORE sending to LLM. Must output JSON: {`{"safe": true/false, "reason": "..."}`}</p>
+              </div>
+            </div>
+
+            {/* Output Guard Prompt */}
+            <div className="border rounded-lg overflow-hidden">
+              <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">Output Guard Prompt</p></div>
+              <div className="p-4">
+                <textarea value={settings.guardrailOutputPrompt || ''} onChange={(e) => updateSetting('guardrailOutputPrompt', e.target.value)} rows={12}
+                  className="w-full px-3 py-2 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring font-mono" />
+                <p className="text-[10px] text-muted-foreground mt-1">Checks AI responses BEFORE showing to user. Must output JSON: {`{"safe": true/false, "reason": "..."}`}</p>
               </div>
             </div>
           </div>

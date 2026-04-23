@@ -9,11 +9,63 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
+app.set('trust proxy', true);
 app.use((req, res, next) => {
   if ((req.headers['content-type'] || '').includes('multipart')) return next();
   express.json()(req, res, next);
 });
 app.use(cookieParser());
+
+// HTTPS enforcement (production)
+app.use((req, res, next) => {
+  if (process.env.NODE_ENV === 'production' && req.headers['x-forwarded-proto'] === 'http') {
+    return res.redirect(301, `https://${req.headers.host}${req.url}`);
+  }
+  next();
+});
+
+// Security headers
+app.use((req, res, next) => {
+  res.removeHeader('X-Powered-By');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  next();
+});
+
+// Input sanitization
+function sanitizeInput(obj) {
+  if (typeof obj === 'string') return obj;
+  if (typeof obj !== 'object' || obj === null) return obj;
+  const clean = Array.isArray(obj) ? [] : {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (k.startsWith('$')) continue;
+    clean[k] = sanitizeInput(v);
+  }
+  return clean;
+}
+app.use((req, res, next) => { if (req.body && typeof req.body === 'object') req.body = sanitizeInput(req.body); next(); });
+
+// Login rate limit (5 attempts / 5 min lock)
+const loginAttempts = new Map();
+function loginRateLimit(req, res, next) {
+  const ip = req.ip;
+  const entry = loginAttempts.get(ip);
+  if (entry?.lockedUntil > Date.now()) {
+    const sec = Math.ceil((entry.lockedUntil - Date.now()) / 1000);
+    return res.status(429).json({ error: `Too many login attempts. Try again in ${sec} seconds.` });
+  }
+  req._loginIp = ip;
+  next();
+}
+function recordLoginFail(ip) {
+  const entry = loginAttempts.get(ip) || { count: 0, lockedUntil: 0 };
+  entry.count++;
+  if (entry.count >= 5) { entry.lockedUntil = Date.now() + 5 * 60 * 1000; entry.count = 0; }
+  loginAttempts.set(ip, entry);
+}
+function recordLoginSuccess(ip) { loginAttempts.delete(ip); }
+setInterval(() => { const now = Date.now(); for (const [k, v] of loginAttempts) { if (v.lockedUntil < now && v.count === 0) loginAttempts.delete(k); } }, 600000);
 // Serve gateway static files only if NOT a tenant session
 app.use((req, res, next) => {
   if (req.cookies?.__gw_server) return next();
@@ -21,7 +73,7 @@ app.use((req, res, next) => {
 });
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://mongodb:27017/gateway';
-const JWT_SECRET = process.env.JWT_SECRET || 'gateway-secret';
+const JWT_SECRET = process.env.JWT_SECRET || (() => { throw new Error('JWT_SECRET environment variable is required'); })();
 const PORT = process.env.PORT || 4000;
 
 let db;
@@ -37,12 +89,16 @@ function auth(req, res, next) {
 }
 
 // ─── Developer Login ───────────────────────────────────────────
-app.post('/api/gateway/login', async (req, res) => {
+app.post('/api/gateway/login', loginRateLimit, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Missing fields' });
     const dev = await db.collection('developers').findOne({ email });
-    if (!dev || !await bcrypt.compare(password, dev.password)) return res.status(401).json({ error: 'Invalid credentials' });
+    if (!dev || !await bcrypt.compare(password, dev.password)) {
+      recordLoginFail(req._loginIp);
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    recordLoginSuccess(req._loginIp);
     const token = jwt.sign({ id: dev._id, email: dev.email, name: dev.name }, JWT_SECRET, { expiresIn: '24h' });
     res.json({ token, user: { email: dev.email, name: dev.name } });
   } catch (error) { res.status(500).json({ error: 'Login failed' }); }
@@ -254,7 +310,7 @@ app.delete('/api/gateway/packages/:id', auth, async (req, res) => {
 });
 
 // ─── User Login Routing (proxy to tenant server) ──────────────
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', loginRateLimit, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: 'Email required' });

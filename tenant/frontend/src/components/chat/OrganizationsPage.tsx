@@ -9,7 +9,7 @@ export const OrganizationsPage = () => {
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editingOrg, setEditingOrg] = useState<any>(null);
-  const [formData, setFormData] = useState({ name: "", type: "department" as "organization" | "entity" | "department", parentId: null as string | null, publicEnabled: false });
+  const [formData, setFormData] = useState({ name: "", type: "department" as "organization" | "entity" | "department", parentId: null as string | null, publicEnabled: false, systemPrompt: "" });
   const userRole = localStorage.getItem('userRole') || 'user';
   const isDeveloper = userRole === 'developer';
   const confirm = useConfirm();
@@ -18,14 +18,14 @@ export const OrganizationsPage = () => {
 
   const loadData = async () => { try { const data = await api.getAllOrganizations(); setOrganizations(data.organizations || []); } catch (e) { console.error(e); } };
 
-  const handleEdit = (org: any) => { setEditingOrg(org); setFormData({ name: org.name, type: org.type, parentId: org.parentId, publicEnabled: org.publicEnabled || false }); setShowForm(true); };
+  const handleEdit = (org: any) => { setEditingOrg(org); setFormData({ name: org.name, type: org.type, parentId: org.parentId, publicEnabled: org.publicEnabled || false, systemPrompt: org.systemPrompt || "" }); setShowForm(true); };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      if (editingOrg) await api.updateOrganization(editingOrg._id, formData.name, formData.type, formData.parentId, formData.publicEnabled);
-      else await api.createOrganization(formData.name, formData.type, formData.parentId, formData.publicEnabled);
-      setShowForm(false); setEditingOrg(null); setFormData({ name: "", type: "organization", parentId: null, publicEnabled: false }); loadData();
+      if (editingOrg) await api.updateOrganization(editingOrg._id, formData.name, formData.type, formData.parentId, formData.publicEnabled, formData.systemPrompt);
+      else await api.createOrganization(formData.name, formData.type, formData.parentId, formData.publicEnabled, formData.systemPrompt);
+      setShowForm(false); setEditingOrg(null); setFormData({ name: "", type: "organization", parentId: null, publicEnabled: false, systemPrompt: "" }); loadData();
     } catch (e: any) { toast.error(e.message); }
   };
 
@@ -85,7 +85,7 @@ export const OrganizationsPage = () => {
             <h1 className="text-xl font-semibold">{isDeveloper ? 'Organizations' : 'Departments'}</h1>
             <p className="text-xs text-muted-foreground mt-0.5">{isDeveloper ? 'Manage organizational hierarchy.' : 'Manage departments under your organization.'}</p>
           </div>
-          <Button size="sm" onClick={() => { setShowForm(true); setEditingOrg(null); setFormData({ name: "", type: isDeveloper ? "organization" : "department", parentId: null, publicEnabled: false }); }} className="text-xs h-8 rounded-lg">
+          <Button size="sm" onClick={() => { setShowForm(true); setEditingOrg(null); setFormData({ name: "", type: isDeveloper ? "organization" : "department", parentId: null, publicEnabled: false, systemPrompt: "" }); }} className="text-xs h-8 rounded-lg">
             <Plus className="w-3.5 h-3.5 mr-1.5" /> {isDeveloper ? 'Create' : 'Add Department'}
           </Button>
         </div>
@@ -157,6 +157,12 @@ export const OrganizationsPage = () => {
                   <input type="checkbox" checked={formData.publicEnabled} onChange={e => setFormData({ ...formData, publicEnabled: e.target.checked })} className="rounded" />
                   <span className="text-xs flex items-center gap-1.5"><Globe className="w-3.5 h-3.5" />Enable public access (embed widget for external visitors)</span>
                 </label>
+              )}
+              {formData.type === 'organization' && (
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">AI System Prompt <span className="text-[10px] font-normal">(leave empty to use global default)</span></label>
+                  <textarea value={formData.systemPrompt} onChange={e => setFormData({ ...formData, systemPrompt: e.target.value })} rows={4} placeholder="Custom AI instructions for this organization..." className="w-full mt-1 px-3 py-2 text-xs border rounded-lg bg-background resize-none" />
+                </div>
               )}
               <div className="flex gap-2 pt-2">
                 <Button type="submit" size="sm" className="text-xs h-8 flex-1">{editingOrg ? 'Update' : 'Create'}</Button>

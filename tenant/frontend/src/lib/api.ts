@@ -454,11 +454,11 @@ class API {
     return json
   }
 
-  async updateOrganization(orgId: string, name: string, type: string, parentId: string | null, publicEnabled?: boolean) {
+  async updateOrganization(orgId: string, name: string, type: string, parentId: string | null, publicEnabled?: boolean, systemPrompt?: string) {
     const res = await fetchWithAuth(`${API_BASE}/organizations/${orgId}`, {
       method: 'PUT',
       headers: this.getHeaders(),
-      body: JSON.stringify({ name, type, parentId, publicEnabled }),
+      body: JSON.stringify({ name, type, parentId, publicEnabled, systemPrompt }),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to update organization')
@@ -688,11 +688,11 @@ class API {
     return json
   }
 
-  async createOrganization(name: string, type: string, parentId: string | null, publicEnabled?: boolean) {
+  async createOrganization(name: string, type: string, parentId: string | null, publicEnabled?: boolean, systemPrompt?: string) {
     const res = await fetchWithAuth(`${API_BASE}/organizations`, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({ name, type, parentId, publicEnabled }),
+      body: JSON.stringify({ name, type, parentId, publicEnabled, systemPrompt }),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to create organization')
@@ -858,31 +858,11 @@ class API {
     return res.json()
   }
 
-  // Ollama models
+  // Provider models
   async getProviderModels(provider: string, apiKey?: string): Promise<{id: string; name: string}[]> {
     const params = apiKey ? `?apiKey=${encodeURIComponent(apiKey)}` : ''
     const res = await fetchWithAuth(`${API_BASE}/provider-models/${provider}${params}`, { headers: this.getHeaders() })
     if (!res.ok) return []
-    return res.json()
-  }
-
-  async getOllamaModels(): Promise<any[]> {
-    const res = await fetchWithAuth(`${API_BASE}/ollama-models`, { headers: this.getHeaders() })
-    if (!res.ok) return []
-    return res.json()
-  }
-
-  async getOllamaCloudModels(): Promise<any[]> {
-    const res = await fetchWithAuth(`${API_BASE}/ollama-cloud-models`, { headers: this.getHeaders() })
-    if (!res.ok) return []
-    return res.json()
-  }
-
-  async deleteOllamaModel(name: string) {
-    const res = await fetchWithAuth(`${API_BASE}/ollama-models/${encodeURIComponent(name)}`, {
-      method: 'DELETE', headers: this.getHeaders(),
-    })
-    if (!res.ok) throw new Error('Failed to delete model')
     return res.json()
   }
 }

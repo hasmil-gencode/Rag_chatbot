@@ -9,6 +9,31 @@ import OpenAI from 'openai';
 
 const QDRANT_COLLECTION = 'documents';
 
+// ─── Guardrail Check ───────────────────────────────────────────
+export async function checkGuardrail(text, prompt, settings) {
+  if (!settings.guardrailEnabled) return { safe: true, reason: 'guardrail disabled' };
+  const model = settings.guardrailModel || 'gemini-2.5-flash-lite';
+  const apiKey = settings[`chatLlmApiKey_gemini`] || settings.chatLlmApiKey || settings.chatEmbeddingApiKey;
+  if (!apiKey) return { safe: true, reason: 'no API key for guardrail' };
+  try {
+    const res = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      {
+        contents: [{ role: 'user', parts: [{ text }] }],
+        systemInstruction: { parts: [{ text: prompt }] },
+        generationConfig: { temperature: 0, responseMimeType: 'application/json' },
+      },
+      { timeout: 10000 }
+    );
+    const raw = res.data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+    const parsed = JSON.parse(raw);
+    return { safe: parsed.safe !== false, reason: parsed.reason || '' };
+  } catch (e) {
+    console.error('Guardrail check failed:', e.message);
+    return { safe: true, reason: 'guardrail error, allowing through' };
+  }
+}
+
 // ─── Org Hierarchy Filter ──────────────────────────────────────
 export async function getUserAccessibleOrgIds(db, userId) {
   const assignments = await db.collection('user_organization_assignments')
@@ -38,12 +63,6 @@ async function embedQuery(text, settings) {
   if (!provider) throw new Error('Chat Embedding Provider not configured. Go to Settings → Chat → Embedding.');
   if (!model) throw new Error('Chat Embedding Model not configured. Go to Settings → Chat → Embedding.');
 
-  if (provider === 'ollama') {
-    const url = settings.chatEmbeddingOllamaUrl;
-    if (!url) throw new Error('Chat Embedding Ollama URL not configured.');
-    const res = await axios.post(`${url}/api/embed`, { model, input: text });
-    return res.data.embeddings[0];
-  }
   if (provider === 'openai') {
     const key = settings[`chatEmbeddingApiKey_openai`] || settings.chatEmbeddingApiKey;
     if (!key) throw new Error('Chat Embedding API key not set for OpenAI. Check Settings or Provider Keys.');
@@ -159,10 +178,9 @@ export async function callLLM(messages, settings) {
   const apiKey = settings[`chatLlmApiKey_${provider}`] || settings.chatLlmApiKey;
   if (!provider) throw new Error('Chat LLM Provider not configured. Go to Settings → Chat → LLM.');
   if (!model) throw new Error('Chat LLM Model not configured. Go to Settings → Chat → LLM.');
-  if (!apiKey && provider !== 'ollama_local') throw new Error(`Chat LLM API key not set for ${provider}. Check Settings or Provider Keys.`);
+  if (!apiKey) throw new Error(`Chat LLM API key not set for ${provider}. Check Settings or Provider Keys.`);
 
   if (provider === 'gemini') {
-    // Gemini: system role goes in systemInstruction, not in contents
     const systemMsg = messages.find(m => m.role === 'system');
     const chatMsgs = messages.filter(m => m.role !== 'system');
     const body = {
@@ -183,30 +201,28 @@ export async function callLLM(messages, settings) {
     return res.choices[0]?.message?.content || '';
   }
 
-  if (provider === 'ollama_cloud') {
-    const res = await axios.post('https://ollama.com/api/chat', {
-      model, messages: messages.map(m => ({ role: m.role, content: m.content })), stream: false,
-    }, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      timeout: 60000,
-    });
-    return res.data.message?.content || '';
-  }
-
-  if (provider === 'ollama_local') {
-    const url = settings.chatLlmOllamaUrl;
-    if (!url) throw new Error('Chat LLM Ollama URL not configured. Go to Settings → Chat → LLM.');
-    const res = await axios.post(`${url}/api/chat`, {
-      model, messages: messages.map(m => ({ role: m.role, content: m.content })), stream: false,
-    }, { timeout: 120000 });
-    return res.data.message?.content || '';
+  if (provider === 'mistral') {
+    const res = await axios.post('https://api.mistral.ai/v1/chat/completions', { model, messages }, { headers: { 'Authorization': `Bearer ${apiKey}` }, timeout: 60000 });
+    return res.data.choices?.[0]?.message?.content || '';
   }
 
   throw new Error(`Unknown LLM provider: ${provider}`);
 }
 
 // ─── Main Chat Pipeline ────────────────────────────────────────
-export async function processBrowserChat(db, userId, message, sessionId, settings, fileId = null) {
+export async function processBrowserChat(db, userId, message, sessionId, settings, fileId = null, organizationId = null) {
+  // 0. Input guardrail check
+  if (settings.guardrailEnabled) {
+    const inputCheck = await checkGuardrail(message, settings.guardrailInputPrompt, settings);
+    if (!inputCheck.safe) {
+      // Log blocked attempt
+      await db.collection('guardrail_logs').insertOne({
+        userId, sessionId, type: 'input', message, reason: inputCheck.reason, createdAt: new Date()
+      });
+      return { response: 'Sorry, I\'m unable to process this request.\n\nMaaf, saya tidak dapat memproses permintaan ini.\n\nமன்னிக்கவும், இந்தக் கோரிக்கையை செயல்படுத்த இயலவில்லை.\n\n抱歉，无法处理此请求。', sources: [], blocked: true, blockReason: inputCheck.reason };
+    }
+  }
+
   // 1. Get user's accessible org IDs
   const orgIds = await getUserAccessibleOrgIds(db, userId);
 
@@ -216,8 +232,12 @@ export async function processBrowserChat(db, userId, message, sessionId, setting
   // 3. Search vectors with org filter + optional file filter
   const chunks = await searchVectors(queryVector, orgIds, settings, fileId);
 
-  // 4. Build messages array
-  const systemPrompt = settings.chatSystemPrompt || 'You are a helpful AI assistant.';
+  // 4. Build messages array — org prompt overrides global
+  let systemPrompt = settings.chatSystemPrompt || 'You are a helpful AI assistant.';
+  if (organizationId) {
+    const org = await db.collection('organizations').findOne({ _id: new ObjectId(organizationId) });
+    if (org?.systemPrompt) systemPrompt = org.systemPrompt;
+  }
   let contextBlock = '';
   if (chunks.length > 0) {
     contextBlock = '\n\n## Context from documents:\n' +
@@ -255,15 +275,40 @@ export async function processBrowserChat(db, userId, message, sessionId, setting
     return true;
   });
 
+  // 7. Output guardrail check
+  if (settings.guardrailEnabled && response) {
+    const outputCheck = await checkGuardrail(response, settings.guardrailOutputPrompt, settings);
+    if (!outputCheck.safe) {
+      await db.collection('guardrail_logs').insertOne({
+        userId, sessionId, type: 'output', message: response.substring(0, 500), reason: outputCheck.reason, createdAt: new Date()
+      });
+      return { response: 'Sorry, I\'m unable to provide that information.\n\nMaaf, saya tidak dapat memberikan maklumat tersebut.\n\nமன்னிக்கவும், அந்தத் தகவலை வழங்க இயலவில்லை.\n\n抱歉，无法提供该信息。', sources: [], blocked: true, blockReason: outputCheck.reason };
+    }
+  }
+
   return { response, sources: uniqueSources };
 }
-
 // ─── Public Embed Chat (no user, only public docs) ─────────────
 export async function processPublicChat(db, message, sessionId, settings, orgIds) {
+  // Input guardrail
+  if (settings.guardrailEnabled) {
+    const inputCheck = await checkGuardrail(message, settings.guardrailInputPrompt, settings);
+    if (!inputCheck.safe) {
+      await db.collection('guardrail_logs').insertOne({ sessionId, type: 'input', source: 'widget', message, reason: inputCheck.reason, createdAt: new Date() });
+      return { response: 'Sorry, I\'m unable to process this request.\n\nMaaf, saya tidak dapat memproses permintaan ini.\n\nமன்னிக்கவும், இந்தக் கோரிக்கையை செயல்படுத்த இயலவில்லை.\n\n抱歉，无法处理此请求。', sources: [], blocked: true };
+    }
+  }
+
   const queryVector = await embedQuery(message, settings);
   const chunks = await searchPublicVectors(queryVector, orgIds, settings);
 
-  const systemPrompt = settings.chatSystemPrompt || 'You are a helpful AI assistant.';
+  const systemPrompt = await (async () => {
+    if (orgIds?.length) {
+      const org = await db.collection('organizations').findOne({ _id: orgIds[0], systemPrompt: { $exists: true, $ne: '' } });
+      if (org?.systemPrompt) return org.systemPrompt;
+    }
+    return settings.chatSystemPrompt || 'You are a helpful AI assistant.';
+  })();
   let contextBlock = '';
   if (chunks.length > 0) {
     contextBlock = '\n\n## Context from documents:\n' +
@@ -281,6 +326,16 @@ export async function processPublicChat(db, message, sessionId, settings, orgIds
   ];
 
   const response = await callLLM(messages, settings);
+
+  // Output guardrail
+  if (settings.guardrailEnabled && response) {
+    const outputCheck = await checkGuardrail(response, settings.guardrailOutputPrompt, settings);
+    if (!outputCheck.safe) {
+      await db.collection('guardrail_logs').insertOne({ sessionId, type: 'output', source: 'widget', message: response.substring(0, 500), reason: outputCheck.reason, createdAt: new Date() });
+      return { response: 'Sorry, I\'m unable to provide that information.\n\nMaaf, saya tidak dapat memberikan maklumat tersebut.\n\nமன்னிக்கவும், அந்தத் தகவலை வழங்க இயலவில்லை.\n\n抱歉，无法提供该信息。', sources: [], blocked: true };
+    }
+  }
+
   const seen = new Set();
   const sources = chunks.filter(c => c.file_name).map(c => ({ file_name: c.file_name, page_number: c.page_number, score: c.score })).filter(s => { const k = `${s.file_name}:${s.page_number}`; if (seen.has(k)) return false; seen.add(k); return true; });
   return { response, sources };

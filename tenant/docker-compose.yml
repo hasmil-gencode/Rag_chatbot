@@ -6,7 +6,7 @@ services:
       - "1223:3000"
     environment:
       - NODE_ENV=production
-      - MONGODB_URI=mongodb://mongodb:27017/ragchatbot
+      - MONGODB_URI=${MONGODB_URI}
       - JWT_SECRET=${JWT_SECRET}
       - INTERNAL_KEY=${INTERNAL_KEY}
     volumes:
@@ -22,6 +22,9 @@ services:
     image: mongo:7
     ports:
       - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_INITDB_ROOT_USERNAME:-}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_INITDB_ROOT_PASSWORD:-}
     volumes:
       - mongodb_data:/data/db
     healthcheck:
@@ -56,17 +59,7 @@ services:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
 
-  # ── Ollama (GLM-OCR + Embedding models) ───────
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    restart: unless-stopped
-
 volumes:
   mongodb_data:
   n8n_data:
   qdrant_data:
-  ollama_data:

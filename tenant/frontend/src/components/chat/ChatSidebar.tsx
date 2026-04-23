@@ -1,4 +1,4 @@
-import { Plus, FolderOpen, LogOut, Trash2, Users, Building2, Settings, Key, FileText, UserCog, Search, X, ChevronDown, Code, Activity, Database } from "lucide-react";
+import { Plus, FolderOpen, LogOut, Trash2, Users, Building2, Settings, Key, FileText, UserCog, Search, X, ChevronDown, Code, Activity, Database, Shield } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
@@ -18,8 +18,8 @@ interface ChatSidebarProps {
   onNewChat: () => void;
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
-  currentPage: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser";
-  onNavigate: (page: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser") => void;
+  currentPage: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs";
+  onNavigate: (page: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs") => void;
   onLogout: () => void;
   userEmail: string;
   userRole: string;
@@ -98,6 +98,7 @@ export const ChatSidebar = ({
         { id: "system-health" as const, label: "Health & Status", icon: Activity },
         { id: "vector-browser" as const, label: "Vector Browser", icon: Database },
         { id: "mongo-browser" as const, label: "MongoDB Browser", icon: Database },
+        { id: "guardrail-logs" as const, label: "Guardrail Logs", icon: Shield },
       ],
     }] : []),
   ];

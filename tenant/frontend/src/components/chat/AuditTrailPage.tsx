@@ -1,8 +1,13 @@
 import { useState, useEffect } from "react";
 import { api } from "@/lib/api";
-import { FileUp, Trash2, Download, Search, X } from "lucide-react";
+import { FileUp, Trash2, Download, Search, X, Users, Settings, Key, Building2, Lock } from "lucide-react";
 
-const ICONS: Record<string, any> = { file_upload: FileUp, file_delete: Trash2, file_download: Download };
+const ICONS: Record<string, any> = {
+  file_upload: FileUp, file_delete: Trash2, file_download: Download,
+  'settings.update': Settings, 'user.create': Users, 'user.update': Users, 'user.delete': Trash2,
+  'user.password_reset': Lock, 'org.create': Building2, 'org.update': Building2, 'org.delete': Trash2,
+  'apikey.create': Key, 'apikey.delete': Trash2,
+};
 const LABELS: Record<string, string> = { file_upload: 'Uploaded', file_delete: 'Deleted', file_download: 'Downloaded' };
 const COLORS: Record<string, string> = { file_upload: 'text-green-500', file_delete: 'text-red-500', file_download: 'text-blue-500' };
 
@@ -29,6 +34,8 @@ export const AuditTrailPage = () => {
     uploads: logs.filter(l => l.action === 'file_upload').length,
     deletes: logs.filter(l => l.action === 'file_delete').length,
     downloads: logs.filter(l => l.action === 'file_download').length,
+    settings: logs.filter(l => l.action === 'settings.update').length,
+    users: logs.filter(l => l.action?.startsWith('user.')).length,
   };
 
   return (
@@ -37,22 +44,26 @@ export const AuditTrailPage = () => {
         <div className="mb-5">
           <p className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">Activity</p>
           <h1 className="text-xl font-semibold">Audit Trail</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">Track file uploads, downloads, and deletions.</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Track all admin actions, file operations, and system changes.</p>
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-4 gap-3 mb-5">
+        <div className="grid grid-cols-5 gap-3 mb-5">
           <div className="border rounded-lg px-4 py-3">
             <p className="text-[11px] text-muted-foreground">Total</p>
             <p className="text-2xl font-semibold mt-0.5">{counts.total}</p>
           </div>
           <div className="border rounded-lg px-4 py-3">
-            <p className="text-[11px] text-muted-foreground flex items-center gap-1"><FileUp className="w-3 h-3 text-green-500" />Uploads</p>
-            <p className="text-2xl font-semibold mt-0.5">{counts.uploads}</p>
+            <p className="text-[11px] text-muted-foreground flex items-center gap-1"><FileUp className="w-3 h-3 text-green-500" />Files</p>
+            <p className="text-2xl font-semibold mt-0.5">{counts.uploads + counts.downloads + counts.deletes}</p>
           </div>
           <div className="border rounded-lg px-4 py-3">
-            <p className="text-[11px] text-muted-foreground flex items-center gap-1"><Download className="w-3 h-3 text-blue-500" />Downloads</p>
-            <p className="text-2xl font-semibold mt-0.5">{counts.downloads}</p>
+            <p className="text-[11px] text-muted-foreground flex items-center gap-1"><Users className="w-3 h-3 text-blue-500" />Users</p>
+            <p className="text-2xl font-semibold mt-0.5">{counts.users}</p>
+          </div>
+          <div className="border rounded-lg px-4 py-3">
+            <p className="text-[11px] text-muted-foreground flex items-center gap-1"><Settings className="w-3 h-3 text-orange-500" />Settings</p>
+            <p className="text-2xl font-semibold mt-0.5">{counts.settings}</p>
           </div>
           <div className="border rounded-lg px-4 py-3">
             <p className="text-[11px] text-muted-foreground flex items-center gap-1"><Trash2 className="w-3 h-3 text-red-500" />Deletes</p>
@@ -71,9 +82,19 @@ export const AuditTrailPage = () => {
           <select value={actionFilter} onChange={e => setActionFilter(e.target.value)}
             className="h-9 px-3 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
             <option value="all">All Actions</option>
-            <option value="file_upload">Uploads</option>
-            <option value="file_download">Downloads</option>
-            <option value="file_delete">Deletes</option>
+            <option value="file_upload">File Upload</option>
+            <option value="file_download">File Download</option>
+            <option value="file_delete">File Delete</option>
+            <option value="settings.update">Settings Update</option>
+            <option value="user.create">User Create</option>
+            <option value="user.update">User Update</option>
+            <option value="user.delete">User Delete</option>
+            <option value="user.password_reset">Password Reset</option>
+            <option value="org.create">Org Create</option>
+            <option value="org.update">Org Update</option>
+            <option value="org.delete">Org Delete</option>
+            <option value="apikey.create">API Key Create</option>
+            <option value="apikey.delete">API Key Delete</option>
           </select>
         </div>
 

@@ -1,13 +1,20 @@
 import { useState, useEffect } from "react";
-import { RefreshCw, Database, Server, Brain, Workflow, Users, FileText, MessageSquare, Clock } from "lucide-react";
+import { RefreshCw, Database, Server, Brain, Workflow, Users, FileText, MessageSquare, Clock, Shield } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface ServiceStatus { status: string; latency: number; dbSize?: number; collections?: number; vectors?: number; dimension?: number; }
 interface HealthData {
   uptime: number; memory: { rss: number; heapUsed: number; heapTotal: number };
   nodeVersion: string;
-  services: { mongodb: ServiceStatus; qdrant: ServiceStatus; ollama: ServiceStatus; n8n: ServiceStatus };
+  services: { mongodb: ServiceStatus; qdrant: ServiceStatus; n8n: ServiceStatus };
   stats: { users: number; files: number; sessions: number; messages: number };
+  models: Record<string, { status: string; latency: number; error?: string }>;
+  modelsCheckedAt: string | null;
+  security: {
+    jwtExpiry: string; loginRateLimit: string; accountLockout: string; apiRateLimit: string; passwordPolicy: string;
+    guardrailEnabled: boolean; guardrailBlocked: number; guardrailBlockedToday: number;
+    activeIpLocks: number; activeAccountLocks: number;
+  };
 }
 
 export const SystemHealthPage = () => {
@@ -81,7 +88,6 @@ export const SystemHealthPage = () => {
                 {([
                   { key: 'mongodb', label: 'MongoDB', icon: Database, extra: data.services.mongodb.dbSize ? `${formatBytes(data.services.mongodb.dbSize)} · ${data.services.mongodb.collections} collections` : '' },
                   { key: 'qdrant', label: 'Qdrant Vector DB', icon: Brain, extra: data.services.qdrant.vectors !== undefined ? `${data.services.qdrant.vectors?.toLocaleString()} vectors · ${data.services.qdrant.dimension}d` : '' },
-                  { key: 'ollama', label: 'Ollama', icon: Brain, extra: '' },
                   { key: 'n8n', label: 'n8n Workflows', icon: Workflow, extra: '' },
                 ] as const).map(svc => {
                   const s = data.services[svc.key as keyof typeof data.services];
@@ -109,6 +115,33 @@ export const SystemHealthPage = () => {
               </div>
             </div>
 
+            {/* AI Models */}
+            {data.models && Object.keys(data.models).length > 0 && (
+              <div className="border rounded-lg overflow-hidden">
+                <div className="px-4 py-2.5 border-b flex items-center justify-between">
+                  <p className="text-xs font-medium flex items-center gap-1.5"><Brain className="w-3.5 h-3.5" /> AI Models</p>
+                  <p className="text-[10px] text-muted-foreground">{data.modelsCheckedAt ? `Last checked: ${new Date(data.modelsCheckedAt).toLocaleString()}` : 'Checking...'}</p>
+                </div>
+                <div className="divide-y">
+                  {Object.entries(data.models).map(([name, info]) => (
+                    <div key={name} className="px-4 py-2 flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className={`inline-block w-2 h-2 rounded-full ${info.status === 'ok' ? 'bg-green-500' : 'bg-red-500'}`} />
+                        <span className="font-mono">{name}</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-muted-foreground">
+                        {info.status === 'ok' ? (
+                          <span>{info.latency}ms</span>
+                        ) : (
+                          <span className="text-red-500 text-[11px] max-w-[300px] truncate">{info.error || 'Unavailable'}</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* App Stats */}
             <div className="border rounded-lg overflow-hidden">
               <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">Application Stats</p></div>
@@ -127,6 +160,54 @@ export const SystemHealthPage = () => {
                 ))}
               </div>
             </div>
+
+            {/* Security */}
+            {data.security && (
+              <div className="border rounded-lg overflow-hidden">
+                <div className="px-4 py-2.5 border-b flex items-center gap-2">
+                  <Shield className="w-3.5 h-3.5" />
+                  <p className="text-xs font-medium">Security</p>
+                </div>
+                <div className="divide-y">
+                  <div className="grid grid-cols-4 divide-x">
+                    <div className="px-4 py-3 text-center">
+                      <p className="text-lg font-semibold">{data.security.guardrailBlockedToday}</p>
+                      <p className="text-[10px] text-muted-foreground">Blocked Today</p>
+                    </div>
+                    <div className="px-4 py-3 text-center">
+                      <p className="text-lg font-semibold">{data.security.guardrailBlocked}</p>
+                      <p className="text-[10px] text-muted-foreground">Total Blocked</p>
+                    </div>
+                    <div className="px-4 py-3 text-center">
+                      <p className="text-lg font-semibold">{data.security.activeIpLocks}</p>
+                      <p className="text-[10px] text-muted-foreground">IP Locks Active</p>
+                    </div>
+                    <div className="px-4 py-3 text-center">
+                      <p className="text-lg font-semibold">{data.security.activeAccountLocks}</p>
+                      <p className="text-[10px] text-muted-foreground">Account Locks Active</p>
+                    </div>
+                  </div>
+                  <div className="p-4 space-y-2">
+                    {[
+                      { label: 'AI Guardrail', value: data.security.guardrailEnabled ? 'Enabled' : 'Disabled', ok: data.security.guardrailEnabled },
+                      { label: 'JWT Expiry', value: data.security.jwtExpiry, ok: true },
+                      { label: 'Login Rate Limit', value: data.security.loginRateLimit, ok: true },
+                      { label: 'Account Lockout', value: data.security.accountLockout, ok: true },
+                      { label: 'API Rate Limit', value: data.security.apiRateLimit, ok: true },
+                      { label: 'Password Policy', value: data.security.passwordPolicy, ok: true },
+                    ].map(item => (
+                      <div key={item.label} className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">{item.label}</span>
+                        <div className="flex items-center gap-1.5">
+                          <span className={`inline-block w-1.5 h-1.5 rounded-full ${item.ok ? 'bg-green-500' : 'bg-red-500'}`} />
+                          <span>{item.value}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

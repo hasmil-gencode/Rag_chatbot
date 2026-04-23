@@ -14,6 +14,7 @@ import { DeletedChatsPage } from "@/components/chat/DeletedChatsPage";
 import { SystemHealthPage } from "@/components/chat/SystemHealthPage";
 import { VectorBrowserPage } from "@/components/chat/VectorBrowserPage";
 import { MongoBrowserPage } from "@/components/chat/MongoBrowserPage";
+import { GuardrailLogsPage } from "@/components/chat/GuardrailLogsPage";
 import { UserSettingsPage } from "@/components/chat/UserSettingsPage";
 import { WebViewPanel } from "@/components/chat/WebViewPanel";
 import { EmbedWidgetsPage } from "@/components/chat/EmbedWidgetsPage";
@@ -43,7 +44,7 @@ const Index = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const confirm = useConfirm();
   const [isLoading, setIsLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser">("chat");
+  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs">("chat");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
@@ -412,7 +413,16 @@ const Index = () => {
         const errorMessage: Message = {
           id: (Date.now() + 1).toString(),
           role: "assistant",
-          content: `⚠️ Your quota exceeded limit, please contact Admin.`,
+          content: error.message.includes('Rate limit') 
+            ? `⚠️ You're sending messages too fast. Please wait a moment and try again.`
+            : `⚠️ Your quota exceeded limit, please contact Admin.`,
+        };
+        setMessages(prev => [...prev, errorMessage]);
+      } else if (error.message.includes('Rate limit')) {
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: `⚠️ You're sending messages too fast. Please wait a moment and try again.`,
         };
         setMessages(prev => [...prev, errorMessage]);
       } else {
@@ -851,6 +861,7 @@ const Index = () => {
             {currentPage === "system-health" && <SystemHealthPage />}
             {currentPage === "vector-browser" && <VectorBrowserPage />}
             {currentPage === "mongo-browser" && <MongoBrowserPage />}
+            {currentPage === "guardrail-logs" && <GuardrailLogsPage />}
             {currentPage === "organizations" && <OrganizationsPage />}
             {currentPage === "audit-trail" && <AuditTrailPage />}
             {currentPage === "users" && <UsersPage />}
