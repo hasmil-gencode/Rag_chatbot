@@ -4,11 +4,9 @@ services:
     build: .
     ports:
       - "1223:3000"
+    env_file: .env
     environment:
       - NODE_ENV=production
-      - MONGODB_URI=${MONGODB_URI}
-      - JWT_SECRET=${JWT_SECRET}
-      - INTERNAL_KEY=${INTERNAL_KEY}
     volumes:
       - ./uploads:/app/uploads
       - ./public/logos:/app/public/logos
@@ -20,8 +18,6 @@ services:
   # ── MongoDB Local ─────────────────────────────
   mongodb:
     image: mongo:7
-    ports:
-      - "27017:27017"
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_INITDB_ROOT_USERNAME:-}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_INITDB_ROOT_PASSWORD:-}
@@ -38,7 +34,7 @@ services:
   n8n:
     image: n8nio/n8n:latest
     ports:
-      - "5678:5678"
+      - "127.0.0.1:5678:5678"
     environment:
       - DB_TYPE=default
       - N8N_BASIC_AUTH_ACTIVE=true
@@ -49,12 +45,18 @@ services:
       - n8n_data:/home/node/.n8n
     restart: unless-stopped
 
+  # ── Node-RED ──────────────────────────────────
+  node-red:
+    image: nodered/node-red:latest
+    ports:
+      - "127.0.0.1:1880:1880"
+    volumes:
+      - ./node-red-data:/data
+    restart: unless-stopped
+
   # ── Qdrant Vector DB ──────────────────────────
   qdrant:
     image: qdrant/qdrant:latest
-    ports:
-      - "6333:6333"
-      - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped

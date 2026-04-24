@@ -4837,6 +4837,153 @@ app.get('/api/internal/list-tenants', authenticateInternal, async (req, res) => 
   } catch (error) { res.status(500).json({ error: 'Failed to list tenants' }); }
 });
 
+// ─── External Knowledge Collections ───────────────────────────
+app.get('/api/external-collections', auth, async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  const cols = await db.collection('external_collections').find().sort({ createdAt: -1 }).toArray();
+  res.json(cols);
+});
+
+app.post('/api/external-collections', auth, async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  const { name, description, organizationIds } = req.body;
+  if (!name) return res.status(400).json({ error: 'Name required' });
+  const result = await db.collection('external_collections').insertOne({
+    name, description: description || '', organizationIds: (organizationIds || []).map(id => new ObjectId(id)),
+    recordCount: 0, createdAt: new Date()
+  });
+  await logAudit(req.user.id, 'collection.create', `Created external collection: ${name}`);
+  res.json({ success: true, collectionId: result.insertedId });
+});
+
+app.put('/api/external-collections/:id', auth, async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  const { name, description, organizationIds } = req.body;
+  await db.collection('external_collections').updateOne({ _id: new ObjectId(req.params.id) }, { $set: {
+    name, description: description || '', organizationIds: (organizationIds || []).map(id => new ObjectId(id)), updatedAt: new Date()
+  }});
+  // Update Qdrant vectors org access
+  const col = await db.collection('external_collections').findOne({ _id: new ObjectId(req.params.id) });
+  if (col) {
+    try {
+      const qdrant = new QdrantClient({ host: 'qdrant', port: 6333 });
+      const orgStrIds = col.organizationIds.map(id => id.toString());
+      const pts = await qdrant.scroll('documents', { filter: { must: [{ key: 'collection_id', match: { value: req.params.id } }] }, limit: 10000 });
+      if (pts.points?.length) {
+        await qdrant.setPayload('documents', { organization_ids: orgStrIds, shared_with: orgStrIds }, { filter: { must: [{ key: 'collection_id', match: { value: req.params.id } }] } });
+      }
+    } catch {}
+  }
+  await logAudit(req.user.id, 'collection.update', `Updated external collection: ${name}`);
+  res.json({ success: true });
+});
+
+app.delete('/api/external-collections/:id', auth, async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  const col = await db.collection('external_collections').findOne({ _id: new ObjectId(req.params.id) });
+  // Delete vectors from Qdrant
+  try {
+    const qdrant = new QdrantClient({ host: 'qdrant', port: 6333 });
+    await qdrant.delete('documents', { filter: { must: [{ key: 'collection_id', match: { value: req.params.id } }] } });
+  } catch {}
+  await db.collection('external_collections').deleteOne({ _id: new ObjectId(req.params.id) });
+  await logAudit(req.user.id, 'collection.delete', `Deleted external collection: ${col?.name || req.params.id}`);
+  res.json({ success: true });
+});
+
+// Ingest API — Node-RED calls this
+app.post('/api/ingest', async (req, res) => {
+  try {
+    const internalKey = req.headers['x-internal-key'];
+    const apiKey = req.headers['x-api-key'];
+    // Auth: internal key OR API key OR JWT developer
+    let authed = false;
+    if (internalKey && internalKey === process.env.INTERNAL_KEY) authed = true;
+    if (!authed && apiKey) {
+      const key = await db.collection('api_keys').findOne({ $or: [{ key: apiKey }, { shortKey: apiKey }], isActive: true });
+      if (key) authed = true;
+    }
+    if (!authed) {
+      const token = req.headers.authorization?.replace('Bearer ', '');
+      if (token) { try { const u = jwt.verify(token, process.env.JWT_SECRET || 'secret'); if (u.role === 'developer') authed = true; } catch {} }
+    }
+    if (!authed) return res.status(401).json({ error: 'Unauthorized' });
+
+    const { collectionId, records } = req.body;
+    if (!collectionId || !records?.length) return res.status(400).json({ error: 'collectionId and records required' });
+
+    const col = await db.collection('external_collections').findOne({ _id: new ObjectId(collectionId) });
+    if (!col) return res.status(404).json({ error: 'Collection not found' });
+
+    const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+    const pk = await resolveProviderKeys(null);
+    const embProvider = settings.embeddingProvider || settings.chatEmbeddingProvider || 'gemini';
+    const embModel = settings.embeddingModel || settings.chatEmbeddingModel || 'gemini-embedding-001';
+    const embKey = settings[`embeddingApiKey_${embProvider}`] || settings.embeddingApiKey || pk[embProvider] || '';
+    const orgIds = col.organizationIds.map(id => id.toString());
+
+    const qdrant = new QdrantClient({ host: 'qdrant', port: 6333 });
+    // Ensure collection exists
+    try { await qdrant.getCollection('documents'); } catch {
+      const dim = embModel.includes('3072') || embModel === 'gemini-embedding-001' ? 3072 : embModel.includes('1536') ? 1536 : 1024;
+      await qdrant.createCollection('documents', { vectors: { size: dim, distance: 'Cosine' } });
+    }
+
+    let ingested = 0;
+    // Process in batches of 20
+    for (let i = 0; i < records.length; i += 20) {
+      const batch = records.slice(i, i + 20);
+      const texts = batch.map(r => typeof r === 'string' ? r : Object.entries(r).map(([k, v]) => `${k}: ${v}`).join(', '));
+
+      // Embed batch
+      let vectors;
+      if (embProvider === 'gemini') {
+        // Embed one by one for reliability
+        vectors = [];
+        for (const t of texts) {
+          const resp = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${embModel}:embedContent?key=${embKey}`, {
+            content: { parts: [{ text: t }] }, taskType: 'RETRIEVAL_DOCUMENT'
+          });
+          vectors.push(resp.data.embedding.values);
+        }
+      } else if (embProvider === 'openai') {
+        const oai = new OpenAI({ apiKey: embKey });
+        const resp = await oai.embeddings.create({ model: embModel, input: texts });
+        vectors = resp.data.map(d => d.embedding);
+      } else if (embProvider === 'mistral') {
+        const resp = await axios.post('https://api.mistral.ai/v1/embeddings', { model: embModel, input: texts }, { headers: { Authorization: `Bearer ${embKey}` } });
+        vectors = resp.data.data.map(d => d.embedding);
+      }
+
+      // Upsert to Qdrant
+      const points = vectors.map((vec, j) => ({
+        id: Date.now() + i + j + Math.floor(Math.random() * 1000000),
+        vector: vec,
+        payload: {
+          content: texts[j],
+          collection_id: collectionId,
+          collection_name: col.name,
+          file_name: col.name,
+          file_id: `ext_${collectionId}`,
+          page_number: i + j + 1,
+          organization_ids: orgIds,
+          shared_with: orgIds,
+          source: 'external',
+        }
+      }));
+      await qdrant.upsert('documents', { points });
+      ingested += batch.length;
+    }
+
+    // Update record count
+    await db.collection('external_collections').updateOne({ _id: new ObjectId(collectionId) }, { $set: { recordCount: ingested, lastIngestAt: new Date() } });
+
+    res.json({ success: true, ingested });
+  } catch (error) {
+    res.status(500).json({ error: 'Ingest failed: ' + error.message });
+  }
+});
+
 // Serve React app for all other routes
 app.get('*', (req, res) => {
   res.sendFile(join(__dirname, 'frontend/dist/index.html'));

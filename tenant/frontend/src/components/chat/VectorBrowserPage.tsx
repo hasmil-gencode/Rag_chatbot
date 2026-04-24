@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { RefreshCw, ChevronRight, X, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-interface VectorPoint { id: string; payload: { file_name?: string; page_number?: number; chunk_index?: number; content?: string; shared_with?: string[]; file_id?: string; is_public?: boolean }; }
+interface VectorPoint { id: string; payload: Record<string, any>; }
 
 export const VectorBrowserPage = () => {
   const [points, setPoints] = useState<VectorPoint[]>([]);
@@ -118,15 +118,12 @@ export const VectorBrowserPage = () => {
             </div>
             <div className="space-y-2 text-xs">
               <div><span className="text-muted-foreground">ID:</span> <span className="font-mono">{selectedPoint.id}</span></div>
-              <div><span className="text-muted-foreground">File:</span> {selectedPoint.payload?.file_name}</div>
-              <div><span className="text-muted-foreground">Page:</span> {selectedPoint.payload?.page_number}</div>
-              <div><span className="text-muted-foreground">Chunk:</span> {selectedPoint.payload?.chunk_index}</div>
-              {selectedPoint.payload?.shared_with && (
-                <div><span className="text-muted-foreground">Shared with:</span> {JSON.stringify(selectedPoint.payload.shared_with)}</div>
-              )}
-              {selectedPoint.payload?.is_public !== undefined && (
-                <div><span className="text-muted-foreground">Public:</span> {selectedPoint.payload.is_public ? 'Yes' : 'No'}</div>
-              )}
+              {Object.entries(selectedPoint.payload || {}).filter(([k]) => k !== 'content').map(([key, value]) => (
+                <div key={key}>
+                  <span className="text-muted-foreground">{key}:</span>{' '}
+                  <span className="font-mono">{Array.isArray(value) ? value.join(', ') : typeof value === 'object' ? JSON.stringify(value) : String(value)}</span>
+                </div>
+              ))}
               <div className="pt-2">
                 <p className="text-muted-foreground mb-1">Content:</p>
                 <pre className="bg-muted rounded-lg p-3 text-[11px] whitespace-pre-wrap max-h-[400px] overflow-y-auto">{selectedPoint.payload?.content || 'No content'}</pre>

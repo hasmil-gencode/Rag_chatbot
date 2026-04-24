@@ -4,18 +4,13 @@ services:
     build: .
     ports:
       - "4000:4000"
-    environment:
-      - MONGODB_URI=mongodb://mongodb:27017/gateway
-      - JWT_SECRET=${JWT_SECRET:-change-this-gateway-secret}
-      - PORT=4000
+    env_file: .env
     depends_on:
       - mongodb
     restart: unless-stopped
 
   mongodb:
     image: mongo:7
-    ports:
-      - "27018:27017"
     volumes:
       - gateway_mongo_data:/data/db
     restart: unless-stopped

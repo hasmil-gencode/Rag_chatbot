@@ -865,6 +865,30 @@ class API {
     if (!res.ok) return []
     return res.json()
   }
+  // External Knowledge Collections
+  async getExternalCollections() {
+    const res = await fetchWithAuth(`${API_BASE}/external-collections`, { headers: this.getHeaders() })
+    if (!res.ok) throw new Error('Failed to get collections')
+    return res.json()
+  }
+  async createExternalCollection(data: { name: string; description?: string; organizationIds?: string[] }) {
+    const res = await fetchWithAuth(`${API_BASE}/external-collections`, { method: 'POST', headers: this.getHeaders(), body: JSON.stringify(data) })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed')
+    return json
+  }
+  async updateExternalCollection(id: string, data: { name: string; description?: string; organizationIds?: string[] }) {
+    const res = await fetchWithAuth(`${API_BASE}/external-collections/${id}`, { method: 'PUT', headers: this.getHeaders(), body: JSON.stringify(data) })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed')
+    return json
+  }
+  async deleteExternalCollection(id: string) {
+    const res = await fetchWithAuth(`${API_BASE}/external-collections/${id}`, { method: 'DELETE', headers: this.getHeaders() })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed')
+    return json
+  }
 }
 
 export const api = new API()

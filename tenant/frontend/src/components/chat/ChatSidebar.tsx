@@ -18,8 +18,8 @@ interface ChatSidebarProps {
   onNewChat: () => void;
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
-  currentPage: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs";
-  onNavigate: (page: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs") => void;
+  currentPage: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "external-knowledge";
+  onNavigate: (page: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "external-knowledge") => void;
   onLogout: () => void;
   userEmail: string;
   userRole: string;
@@ -79,6 +79,7 @@ export const ChatSidebar = ({
         { id: "settings" as const, label: "Settings", icon: Settings },
         { id: "api" as const, label: "API", icon: Key },
         { id: "embed-widgets" as const, label: "Embed Widgets", icon: Code },
+        { id: "external-knowledge" as const, label: "External Knowledge", icon: Database },
         { id: "deleted-chats" as const, label: "Deleted Chats", icon: Trash2 },
       ],
     }] : []),

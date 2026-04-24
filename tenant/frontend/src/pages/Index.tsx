@@ -15,6 +15,7 @@ import { SystemHealthPage } from "@/components/chat/SystemHealthPage";
 import { VectorBrowserPage } from "@/components/chat/VectorBrowserPage";
 import { MongoBrowserPage } from "@/components/chat/MongoBrowserPage";
 import { GuardrailLogsPage } from "@/components/chat/GuardrailLogsPage";
+import { ExternalKnowledgePage } from "@/components/chat/ExternalKnowledgePage";
 import { UserSettingsPage } from "@/components/chat/UserSettingsPage";
 import { WebViewPanel } from "@/components/chat/WebViewPanel";
 import { EmbedWidgetsPage } from "@/components/chat/EmbedWidgetsPage";
@@ -44,7 +45,7 @@ const Index = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const confirm = useConfirm();
   const [isLoading, setIsLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs">("chat");
+  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "external-knowledge">("chat");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
@@ -862,6 +863,7 @@ const Index = () => {
             {currentPage === "vector-browser" && <VectorBrowserPage />}
             {currentPage === "mongo-browser" && <MongoBrowserPage />}
             {currentPage === "guardrail-logs" && <GuardrailLogsPage />}
+            {currentPage === "external-knowledge" && <ExternalKnowledgePage />}
             {currentPage === "organizations" && <OrganizationsPage />}
             {currentPage === "audit-trail" && <AuditTrailPage />}
             {currentPage === "users" && <UsersPage />}
