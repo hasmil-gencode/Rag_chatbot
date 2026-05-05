@@ -1,5 +1,0 @@
-glmocr[selfhosted]
-glmocr[server]
-flask
-pdf2image
-Pillow

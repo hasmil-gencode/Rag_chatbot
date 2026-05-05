@@ -132,9 +132,39 @@ SAFE if:
 - Business information (product specs, company policies, procedures)
 - Aggregated or anonymized data
 
-Output JSON only: {"safe": true, "reason": "brief reason"} or {"safe": false, "reason": "brief reason"}`
+Output JSON only: {"safe": true, "reason": "brief reason"} or {"safe": false, "reason": "brief reason"}`,
+    // Notification settings
+    notificationsEnabled: true,
+    notifyEmail: true,
+    notifyThresholds: [50, 60, 70, 80, 90, 100],
+    notifyRoles: ['admin', 'developer'],
+    smtpHost: 'smtp.office365.com',
+    smtpPort: 587,
+    smtpUser: '',
+    smtpPassword: '',
+    smtpFrom: 'Genia System',
+    smtpTls: true,
+    notifyEmailSubject: '⚠️ Genia Alert: {{type}} {{threshold}}% used — {{orgName}}',
+    notifyEmailBody: `Hi {{adminName}},
+
+Your organization "{{orgName}}" has used {{threshold}}% of the {{type}}.
+
+Used: {{used}} / {{limit}}
+Remaining: {{remaining}}
+
+Please contact your administrator to upgrade.
+
+— Genia System`,
   });
   console.log('Default settings initialized');
+}
+
+// Seed developer account if none exists
+const devCount = await db.collection('users').countDocuments({ role: 'developer' });
+if (devCount === 0) {
+  const hash = await bcrypt.hash('Developer@123', 10);
+  await db.collection('users').insertOne({ email: 'developer@gencode.com.my', password: hash, fullName: 'Developer', role: 'developer', status: 'active', mustChangePassword: true, createdAt: new Date() });
+  console.log('[SEED] Developer: developer@gencode.com.my / Developer@123');
 }
 
 // Helper to get S3 client
@@ -173,18 +203,17 @@ async function logAudit(userId, action, detail = '') {
   } catch {}
 }
 
+// ─── AI Usage Logger ───────────────────────────────────────────
+async function logAiCall(provider, model, type, source, latency, status = 'ok') {
+  try { await db.collection('ai_api_logs').insertOne({ provider, model, type, source, latency, status, createdAt: new Date() }); } catch {}
+}
+
 // Middleware
 app.set('trust proxy', true); // Trust Cloudflare/reverse proxy headers
 app.use(express.json());
 app.use(express.static('public'));
 
-// HTTPS enforcement (production only — redirect HTTP to HTTPS)
-app.use((req, res, next) => {
-  if (process.env.NODE_ENV === 'production' && req.headers['x-forwarded-proto'] === 'http') {
-    return res.redirect(301, `https://${req.headers.host}${req.url}`);
-  }
-  next();
-});
+// HTTPS enforcement handled by Cloudflare — no redirect needed at app level
 
 // Security Headers Middleware
 app.use((req, res, next) => {
@@ -1310,7 +1339,7 @@ async function authenticateApiKey(req, res, next) {
 // Public chat API endpoint (uses API key)
 app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req, res) => {
   try {
-    const { message, sessionId, organizationId } = req.body;
+    const { message, sessionId, organizationId, filter } = req.body;
 
     if (!message) {
       return res.status(400).json({ error: 'Message is required' });
@@ -1368,7 +1397,7 @@ app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req
     // Input guardrail check
     const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
     if (settings.guardrailEnabled) {
-      const inputCheck = await checkGuardrail(message, settings.guardrailInputPrompt, settings);
+      const inputCheck = await checkGuardrail(message, settings.guardrailInputPrompt, settings, db);
       if (!inputCheck.safe) {
         await db.collection('guardrail_logs').insertOne({ userId: req.user.id, sessionId: chatSessionId, type: 'input', source: 'api', message, reason: inputCheck.reason, createdAt: new Date() });
         return res.json({ response: { text: 'Sorry, I\'m unable to process this request.\n\nMaaf, saya tidak dapat memproses permintaan ini.\n\nமன்னிக்கவும், இந்தக் கோரிக்கையை செயல்படுத்த இயலவில்லை.\n\n抱歉，无法处理此请求。', speak: '' }, sessionId: chatSessionId, blocked: true });
@@ -1385,6 +1414,7 @@ app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req
       const embModel = settings.embeddingModel || 'gemini-embedding-001';
       const embKey = settings.embeddingApiKey || pk[embProvider] || '';
       let queryVector;
+      const embStart = Date.now();
 
       if (embProvider === 'gemini') {
         const r = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${embModel}:embedContent?key=${embKey}`, { content: { parts: [{ text: message }] }, taskType: 'RETRIEVAL_QUERY' });
@@ -1397,6 +1427,7 @@ app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req
         const r = await axios.post('https://api.mistral.ai/v1/embeddings', { model: embModel, input: [message] }, { headers: { 'Authorization': `Bearer ${embKey}` } });
         queryVector = r.data.data[0].embedding;
       }
+      await logAiCall(embProvider, embModel, 'embedding', 'api_v1', Date.now() - embStart);
 
       // 2. Search Qdrant
       const qdrantHost = settings.qdrantHost || settings.offlineQdrantHost || 'qdrant';
@@ -1405,11 +1436,24 @@ app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req
       const maxChunks = settings.chatMaxChunks || 5;
       let context = '';
       try {
-        const results = await qdrant.search('documents', { vector: queryVector, limit: maxChunks, with_payload: true });
+        // Build Qdrant filter from request filter object
+        const must = [];
+        if (filter && typeof filter === 'object') {
+          for (const [key, value] of Object.entries(filter)) {
+            if (key === 'externalUserId') {
+              must.push({ key: 'shared_with', match: { value: `ext_${value}` } });
+            } else {
+              must.push({ key, match: { value } });
+            }
+          }
+        }
+        const searchFilter = must.length > 0 ? { must } : undefined;
+        const results = await qdrant.search('documents', { vector: queryVector, limit: maxChunks, with_payload: true, filter: searchFilter });
         context = results.map(r => r.payload?.content || '').filter(Boolean).join('\n\n---\n\n');
       } catch (e) { console.error('Qdrant search error:', e.message); }
 
       // 3. Build prompt and call LLM — API key prompt → org prompt → global prompt
+      const llmStartTime = Date.now();
       let systemPrompt = req.apiKey.systemPrompt || settings.chatSystemPrompt || 'You are a helpful AI assistant.';
       if (!req.apiKey.systemPrompt && req.apiKey.organizationId) {
         const org = await db.collection('organizations').findOne({ _id: new ObjectId(req.apiKey.organizationId) });
@@ -1434,6 +1478,7 @@ app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req
         const r = await axios.post('https://api.mistral.ai/v1/chat/completions', { model: llmModel, messages: [{ role: 'system', content: systemPrompt }, ...(context ? [{ role: 'user', content: `Context:\n${context}` }] : []), { role: 'user', content: message }] }, { headers: { 'Authorization': `Bearer ${llmKey}` } });
         botContent = r.data.choices?.[0]?.message?.content || '';
       }
+      await logAiCall(llmProvider, llmModel, 'chat', 'api_v1', Date.now() - llmStartTime);
     } else {
       // ─── Webhook mode: forward to n8n ───
       const webhookUrl = req.apiKey.webhookUrl;
@@ -1463,7 +1508,7 @@ app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req
 
     // Output guardrail check
     if (settings.guardrailEnabled && botContent) {
-      const outputCheck = await checkGuardrail(botContent, settings.guardrailOutputPrompt, settings);
+      const outputCheck = await checkGuardrail(botContent, settings.guardrailOutputPrompt, settings, db);
       if (!outputCheck.safe) {
         await db.collection('guardrail_logs').insertOne({ userId: req.user.id, sessionId: chatSessionId, type: 'output', source: 'api', message: botContent.substring(0, 500), reason: outputCheck.reason, createdAt: new Date() });
         return res.json({ response: { text: 'Sorry, I\'m unable to provide that information.\n\nMaaf, saya tidak dapat memberikan maklumat tersebut.\n\nமன்னிக்கவும், அந்தத் தகவலை வழங்க இயலவில்லை.\n\n抱歉，无法提供该信息。', speak: '' }, sessionId: chatSessionId, blocked: true });
@@ -1480,7 +1525,18 @@ app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req
 
   } catch (error) {
     console.error('API chat error:', error.message);
-    res.status(500).json({ error: error.message });
+    // Differentiate LLM provider errors from app errors
+    const msg = error.message || '';
+    if (msg.includes('429') || msg.includes('quota') || msg.includes('rate')) {
+      return res.status(503).json({ error: 'AI provider rate limit exceeded. Please try again shortly.', code: 'LLM_RATE_LIMIT' });
+    }
+    if (msg.includes('timeout') || msg.includes('ETIMEDOUT') || msg.includes('ECONNABORTED')) {
+      return res.status(504).json({ error: 'AI provider timeout. Please try again.', code: 'LLM_TIMEOUT' });
+    }
+    if (msg.includes('401') || msg.includes('403') || msg.includes('API key')) {
+      return res.status(502).json({ error: 'AI provider authentication error. Check provider keys.', code: 'LLM_AUTH_ERROR' });
+    }
+    res.status(500).json({ error: 'Internal server error', code: 'SERVER_ERROR' });
   }
 });
 
@@ -2098,7 +2154,14 @@ app.get('/api/forms', auth, async (req, res) => {
       }
       
       const userOrgIds = userAssignments.map(a => a.organizationId);
-      const allAccessibleOrgs = await getAllChildrenOrgs(userOrgIds);
+      // Get all children orgs for hierarchy access
+      const allOrgs = await db.collection('organizations').find({}).toArray();
+      const allAccessibleOrgs = [...userOrgIds.map(id => id.toString())];
+      const findChildren = (parentIds) => {
+        const children = allOrgs.filter(o => o.parentId && parentIds.includes(o.parentId.toString()));
+        if (children.length) { const childIds = children.map(c => c._id.toString()); allAccessibleOrgs.push(...childIds); findChildren(childIds); }
+      };
+      findChildren(allAccessibleOrgs);
       
       query.$or = [
         { sharedWith: { $size: 0 } },
@@ -2801,6 +2864,19 @@ app.get('/api/settings', auth, hasPermission(), async (req, res) => {
     guardrailModel: settings.guardrailModel || 'gemini-2.5-flash-lite',
     guardrailInputPrompt: settings.guardrailInputPrompt || '',
     guardrailOutputPrompt: settings.guardrailOutputPrompt || '',
+    // Notifications
+    notificationsEnabled: settings.notificationsEnabled ?? true,
+    notifyEmail: settings.notifyEmail ?? true,
+    notifyThresholds: settings.notifyThresholds || [50, 60, 70, 80, 90, 100],
+    notifyRoles: settings.notifyRoles || ['admin', 'developer'],
+    smtpHost: settings.smtpHost || 'smtp.office365.com',
+    smtpPort: settings.smtpPort || 587,
+    smtpUser: settings.smtpUser || '',
+    smtpPassword: settings.smtpPassword || '',
+    smtpFrom: settings.smtpFrom || 'Genia System',
+    smtpTls: settings.smtpTls !== false,
+    notifyEmailSubject: settings.notifyEmailSubject || '',
+    notifyEmailBody: settings.notifyEmailBody || '',
   });
 });
 
@@ -2836,6 +2912,15 @@ async function resolveProviderKeys(orgId) {
   const merged = { ...global };
   for (const [k, v] of Object.entries(orgDoc)) { if (v) merged[k] = v; }
   return merged;
+}
+
+async function resolveSmtp(orgId) {
+  const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+  const global = { host: settings.smtpHost || 'smtp.office365.com', port: settings.smtpPort || 587, user: settings.smtpUser || '', password: settings.smtpPassword || '', from: settings.smtpFrom || 'Genia System', tls: settings.smtpTls !== false };
+  if (!orgId) return global;
+  const orgSmtp = await db.collection('org_smtp').findOne({ orgId }) || {};
+  if (orgSmtp.host) return { host: orgSmtp.host, port: orgSmtp.port || 587, user: orgSmtp.user || '', password: orgSmtp.password || '', from: orgSmtp.from || global.from, tls: orgSmtp.tls !== false };
+  return global;
 }
 
 async function getUserOrgId(userId) {
@@ -4837,6 +4922,99 @@ app.get('/api/internal/list-tenants', authenticateInternal, async (req, res) => 
   } catch (error) { res.status(500).json({ error: 'Failed to list tenants' }); }
 });
 
+// ─── Org SMTP Settings ────────────────────────────────────────
+app.post('/api/org-smtp/test', auth, async (req, res) => {
+  if (!['admin', 'developer'].includes(req.user.role)) return res.status(403).json({ error: 'Admin only' });
+  const { host, port, user, password, from, tls, testEmail } = req.body;
+  if (!host || !user || !password) return res.status(400).json({ error: 'Host, user and password required' });
+  const to = testEmail || req.user.email;
+  try {
+    const transport = nodemailer.createTransport({ host, port: port || 587, secure: false, auth: { user, pass: password }, tls: tls !== false ? { ciphers: 'SSLv3' } : undefined });
+    await transport.sendMail({ from: `"${from || 'Genia Test'}" <${user}>`, to, subject: '✅ Genia SMTP Test', text: `SMTP test successful!\n\nHost: ${host}:${port}\nUser: ${user}\n\nThis is a test email from Genia.` });
+    res.json({ success: true, message: `Test email sent to ${to}` });
+  } catch (e) { res.status(400).json({ error: `SMTP test failed: ${e.message}` }); }
+});
+app.get('/api/org-smtp', auth, async (req, res) => {
+  if (!['admin', 'developer'].includes(req.user.role)) return res.status(403).json({ error: 'Admin only' });
+  if (req.user.role === 'developer') {
+    const all = await db.collection('org_smtp').find().toArray();
+    return res.json(all);
+  }
+  const orgId = await getUserOrgId(req.user.id);
+  if (!orgId) return res.json([]);
+  const doc = await db.collection('org_smtp').findOne({ orgId });
+  res.json(doc ? [doc] : []);
+});
+
+app.post('/api/org-smtp', auth, async (req, res) => {
+  if (!['admin', 'developer'].includes(req.user.role)) return res.status(403).json({ error: 'Admin only' });
+  const { orgId, host, port, user, password, from, tls } = req.body;
+  if (!orgId || !host) return res.status(400).json({ error: 'orgId and host required' });
+  await db.collection('org_smtp').updateOne({ orgId }, { $set: { orgId, host, port: port || 587, user: user || '', password: password || '', from: from || '', tls: tls !== false, updatedAt: new Date() } }, { upsert: true });
+  await logAudit(req.user.id, 'smtp.update', `Updated SMTP for org ${orgId}`);
+  res.json({ success: true });
+});
+
+app.delete('/api/org-smtp/:orgId', auth, async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  await db.collection('org_smtp').deleteOne({ orgId: req.params.orgId });
+  await logAudit(req.user.id, 'smtp.delete', `Deleted SMTP for org ${req.params.orgId}`);
+  res.json({ success: true });
+});
+
+// ─── Notifications ────────────────────────────────────────────
+app.get('/api/notifications', auth, async (req, res) => {
+  const role = req.user.role;
+  if (role === 'user') return res.json([]);
+  const query = role === 'developer' ? {} : { orgId: { $in: (await db.collection('user_organization_assignments').find({ userId: new ObjectId(req.user.id) }).toArray()).map(a => a.organizationId.toString()) } };
+  const notifs = await db.collection('notifications').find(query).sort({ createdAt: -1 }).limit(50).toArray();
+  res.json(notifs);
+});
+
+app.post('/api/notifications/read', auth, async (req, res) => {
+  const { ids } = req.body;
+  if (ids) await db.collection('notifications').updateMany({ _id: { $in: ids.map(id => new ObjectId(id)) } }, { $set: { read: true } });
+  else await db.collection('notifications').updateMany({}, { $set: { read: true } });
+  res.json({ success: true });
+});
+
+app.get('/api/notifications/unread-count', auth, async (req, res) => {
+  if (req.user.role === 'user') return res.json({ count: 0 });
+  const query = req.user.role === 'developer' ? { read: false } : { read: false, orgId: { $in: (await db.collection('user_organization_assignments').find({ userId: new ObjectId(req.user.id) }).toArray()).map(a => a.organizationId.toString()) } };
+  res.json({ count: await db.collection('notifications').countDocuments(query) });
+});
+
+// ─── AI Usage Analytics ───────────────────────────────────────
+app.get('/api/ai-usage', auth, async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  const { days = 7 } = req.query;
+  const since = new Date(Date.now() - parseInt(days) * 86400000);
+
+  const [byHour, byProvider, byType, total] = await Promise.all([
+    db.collection('ai_api_logs').aggregate([
+      { $match: { createdAt: { $gte: since } } },
+      { $group: { _id: { time: { $dateToString: { format: '%Y-%m-%dT%H:%M', date: '$createdAt', timezone: '+08:00' } }, type: '$type' }, count: { $sum: 1 } } },
+      { $sort: { '_id.time': 1 } }
+    ]).toArray(),
+    db.collection('ai_api_logs').aggregate([
+      { $match: { createdAt: { $gte: since } } },
+      { $group: { _id: '$provider', count: { $sum: 1 }, avgLatency: { $avg: '$latency' } } },
+      { $sort: { count: -1 } }
+    ]).toArray(),
+    db.collection('ai_api_logs').aggregate([
+      { $match: { createdAt: { $gte: since } } },
+      { $group: { _id: '$type', count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]).toArray(),
+    db.collection('ai_api_logs').countDocuments({ createdAt: { $gte: since } }),
+  ]);
+
+  const errors = await db.collection('ai_api_logs').countDocuments({ createdAt: { $gte: since }, status: 'error' });
+  const recent = await db.collection('ai_api_logs').find({ createdAt: { $gte: since } }).sort({ createdAt: -1 }).limit(50).toArray();
+
+  res.json({ byHour, byProvider, byType, total, errors, recent, days: parseInt(days) });
+});
+
 // ─── External Knowledge Collections ───────────────────────────
 app.get('/api/external-collections', auth, async (req, res) => {
   if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
@@ -4933,12 +5111,18 @@ app.post('/api/ingest', async (req, res) => {
     // Process in batches of 20
     for (let i = 0; i < records.length; i += 20) {
       const batch = records.slice(i, i + 20);
-      const texts = batch.map(r => typeof r === 'string' ? r : Object.entries(r).map(([k, v]) => `${k}: ${v}`).join(', '));
+      const texts = batch.map(r => {
+        if (typeof r === 'string') return r;
+        // Build text from content field or all fields (excluding metadata/externalUserId)
+        if (r.content) return r.content;
+        const { metadata, externalUserId, ...fields } = r;
+        return Object.entries(fields).map(([k, v]) => `${k}: ${v}`).join(', ');
+      });
 
       // Embed batch
       let vectors;
+      const ingestEmbStart = Date.now();
       if (embProvider === 'gemini') {
-        // Embed one by one for reliability
         vectors = [];
         for (const t of texts) {
           const resp = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${embModel}:embedContent?key=${embKey}`, {
@@ -4954,23 +5138,33 @@ app.post('/api/ingest', async (req, res) => {
         const resp = await axios.post('https://api.mistral.ai/v1/embeddings', { model: embModel, input: texts }, { headers: { Authorization: `Bearer ${embKey}` } });
         vectors = resp.data.data.map(d => d.embedding);
       }
+      await logAiCall(embProvider, embModel, 'embedding', 'ingest', Date.now() - ingestEmbStart);
 
       // Upsert to Qdrant
-      const points = vectors.map((vec, j) => ({
-        id: Date.now() + i + j + Math.floor(Math.random() * 1000000),
-        vector: vec,
-        payload: {
-          content: texts[j],
-          collection_id: collectionId,
-          collection_name: col.name,
-          file_name: col.name,
-          file_id: `ext_${collectionId}`,
-          page_number: i + j + 1,
-          organization_ids: orgIds,
-          shared_with: orgIds,
-          source: 'external',
-        }
-      }));
+      const points = vectors.map((vec, j) => {
+        const record = batch[j];
+        const meta = (typeof record === 'object' && record.metadata) ? record.metadata : {};
+        const extUserId = meta.externalUserId || (typeof record === 'object' ? record.externalUserId : null);
+        const sharedWith = [...orgIds];
+        if (extUserId) sharedWith.push(`ext_${extUserId}`);
+        // Merge custom metadata into payload
+        return {
+          id: Date.now() + i + j + Math.floor(Math.random() * 1000000),
+          vector: vec,
+          payload: {
+            ...meta,
+            content: texts[j],
+            collection_id: collectionId,
+            collection_name: col.name,
+            file_name: col.name,
+            file_id: `ext_${collectionId}`,
+            page_number: i + j + 1,
+            organization_ids: orgIds,
+            shared_with: sharedWith,
+            source: 'external',
+          }
+        };
+      });
       await qdrant.upsert('documents', { points });
       ingested += batch.length;
     }
@@ -5014,5 +5208,101 @@ async function checkModelHealth() {
 // Run on startup + schedule daily at 10am
 checkModelHealth();
 setInterval(() => { const now = new Date(); if (now.getHours() === 10 && now.getMinutes() === 0) checkModelHealth(); }, 60000);
+
+// ─── Daily Quota/Storage Check (2am) ─────────────────────────
+import nodemailer from 'nodemailer';
+
+async function sendNotificationEmail(to, subject, body, settings, orgId = null) {
+  const smtp = await resolveSmtp(orgId);
+  if (!smtp.user || !smtp.password) return;
+  try {
+    const transport = nodemailer.createTransport({
+      host: smtp.host, port: smtp.port, secure: false,
+      auth: { user: smtp.user, pass: smtp.password },
+      tls: smtp.tls ? { ciphers: 'SSLv3' } : undefined,
+    });
+    await transport.sendMail({ from: `"${smtp.from || 'Genia System'}" <${smtp.user}>`, to, subject, text: body });
+  } catch {}
+}
+
+function renderTemplate(template, vars) {
+  return template.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? '');
+}
+
+async function checkQuotaAndNotify() {
+  try {
+    const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+    if (!settings.notificationsEnabled) return;
+    const thresholds = settings.notifyThresholds || [50, 60, 70, 80, 90, 100];
+    const roles = settings.notifyRoles || ['admin', 'developer'];
+
+    const groups = await db.collection('groups').find({}).toArray();
+    for (const group of groups) {
+      if (!group.storageLimitGB && !group.chatQuota) continue;
+      const orgs = await db.collection('organizations').find({ groupId: group._id }).toArray();
+      if (!orgs.length) continue;
+      const orgIds = orgs.map(o => o._id);
+      const orgName = orgs[0]?.name || 'Unknown';
+
+      // Check storage
+      if (group.storageLimitGB > 0) {
+        const files = await db.collection('files').find({ organizationId: { $in: orgIds } }).toArray();
+        const usedBytes = files.reduce((s, f) => s + (f.size || 0), 0);
+        const pct = Math.round(usedBytes / (group.storageLimitGB * 1024 * 1024 * 1024) * 100);
+        const lastT = group.lastNotifiedStorageThreshold || 0;
+        const nextT = thresholds.find(t => t > lastT && pct >= t);
+        if (nextT) {
+          const vars = { orgName, type: 'storage', threshold: nextT, used: `${(usedBytes / 1024 / 1024 / 1024).toFixed(2)} GB`, limit: `${group.storageLimitGB} GB`, remaining: `${(group.storageLimitGB - usedBytes / 1024 / 1024 / 1024).toFixed(2)} GB`, adminName: 'Admin' };
+          await db.collection('notifications').insertOne({ orgId: orgs[0]._id.toString(), type: 'storage', threshold: nextT, message: `Storage ${nextT}% used (${vars.used} / ${vars.limit})`, read: false, createdAt: new Date() });
+          await db.collection('groups').updateOne({ _id: group._id }, { $set: { lastNotifiedStorageThreshold: nextT } });
+          if (settings.notifyEmail) {
+            const admins = await db.collection('users').find({ role: { $in: roles }, status: 'active' }).toArray();
+            const assignedAdmins = [];
+            for (const a of admins) {
+              if (a.role === 'developer') { assignedAdmins.push(a); continue; }
+              const assigned = await db.collection('user_organization_assignments').findOne({ userId: a._id, organizationId: { $in: orgIds } });
+              if (assigned) assignedAdmins.push(a);
+            }
+            for (const admin of assignedAdmins) {
+              vars.adminName = admin.fullName || 'Admin';
+              await sendNotificationEmail(admin.email, renderTemplate(settings.notifyEmailSubject || '⚠️ Storage {{threshold}}% — {{orgName}}', vars), renderTemplate(settings.notifyEmailBody || 'Storage {{threshold}}% used', vars), settings, orgs[0]._id.toString());
+            }
+          }
+        }
+      }
+
+      // Check chat quota
+      if (group.chatQuota > 0) {
+        const startOfMonth = new Date(); startOfMonth.setDate(group.renewDay || 1); startOfMonth.setHours(0, 0, 0, 0); if (startOfMonth > new Date()) startOfMonth.setMonth(startOfMonth.getMonth() - 1);
+        const chatCount = await db.collection('messages').countDocuments({ role: 'user', organizationId: { $in: orgIds }, createdAt: { $gte: startOfMonth } });
+        const pct = Math.round(chatCount / group.chatQuota * 100);
+        const lastT = group.lastNotifiedChatThreshold || 0;
+        // Reset threshold tracking if new billing cycle
+        const lastCheck = group.lastQuotaCheckDate;
+        if (lastCheck && lastCheck < startOfMonth) await db.collection('groups').updateOne({ _id: group._id }, { $set: { lastNotifiedChatThreshold: 0 } });
+        const nextT = thresholds.find(t => t > lastT && pct >= t);
+        if (nextT) {
+          const vars = { orgName, type: 'chat quota', threshold: nextT, used: `${chatCount}`, limit: `${group.chatQuota}`, remaining: `${group.chatQuota - chatCount}`, adminName: 'Admin' };
+          await db.collection('notifications').insertOne({ orgId: orgs[0]._id.toString(), type: 'chat_quota', threshold: nextT, message: `Chat quota ${nextT}% used (${chatCount} / ${group.chatQuota})`, read: false, createdAt: new Date() });
+          await db.collection('groups').updateOne({ _id: group._id }, { $set: { lastNotifiedChatThreshold: nextT, lastQuotaCheckDate: new Date() } });
+          if (settings.notifyEmail) {
+            const admins = await db.collection('users').find({ role: { $in: roles }, status: 'active' }).toArray();
+            const assignedAdmins = [];
+            for (const a of admins) {
+              if (a.role === 'developer') { assignedAdmins.push(a); continue; }
+              const assigned = await db.collection('user_organization_assignments').findOne({ userId: a._id, organizationId: { $in: orgIds } });
+              if (assigned) assignedAdmins.push(a);
+            }
+            for (const admin of assignedAdmins) {
+              vars.adminName = admin.fullName || 'Admin';
+              await sendNotificationEmail(admin.email, renderTemplate(settings.notifyEmailSubject || '⚠️ Chat quota {{threshold}}% — {{orgName}}', vars), renderTemplate(settings.notifyEmailBody || 'Chat quota {{threshold}}% used', vars), settings, orgs[0]._id.toString());
+            }
+          }
+        }
+      }
+    }
+  } catch {}
+}
+setInterval(() => { const now = new Date(); if (now.getHours() === 2 && now.getMinutes() === 0) checkQuotaAndNotify(); }, 60000);
 
 app.listen(3000, () => console.log('Server running on port 3000'));

@@ -6,11 +6,9 @@ import { api } from "@/lib/api";
 import { Plus, Copy, Power, Trash2, Eye, EyeOff, Key, X, Edit2 } from "lucide-react";
 
 interface ApiKey { _id: string; key: string; shortKey?: string; hasShortKey?: boolean; name: string; description?: string; userId: string; userEmail: string; chatMode?: string; webhookUrl?: string; systemPrompt?: string; isActive: boolean; createdAt: string; lastUsedAt: string | null; }
-interface ApiUsage { _id: string; endpoint: string; method: string; timestamp: string; responseStatus: number; ipAddress: string; }
 
 export const ApiManagementPage = () => {
   const [keys, setKeys] = useState<ApiKey[]>([]);
-  const [usage, setUsage] = useState<ApiUsage[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [editingKey, setEditingKey] = useState<ApiKey | null>(null);
@@ -18,10 +16,9 @@ export const ApiManagementPage = () => {
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
   const confirm = useConfirm();
 
-  useEffect(() => { loadKeys(); loadUsage(); loadUsers(); }, []);
+  useEffect(() => { loadKeys(); loadUsers(); }, []);
 
   const loadKeys = async () => { try { setKeys(await api.getApiKeys()); } catch (e: any) { toast.error(e.message); } };
-  const loadUsage = async () => { try { setUsage(await api.getApiUsage()); } catch (e: any) { toast.error(e.message); } };
   const loadUsers = async () => { try { setUsers(await api.getUsers()); } catch (e) { setUsers([]); } };
 
   const openCreate = () => { setEditingKey(null); setForm({ name: "", description: "", userId: "", chatMode: "native", webhookUrl: "", systemPrompt: "", generateShortKey: false }); setShowModal(true); };
@@ -62,7 +59,7 @@ export const ApiManagementPage = () => {
         <div className="grid grid-cols-3 gap-3 mb-5">
           <div className="border rounded-lg px-4 py-3"><p className="text-[11px] text-muted-foreground">Total Keys</p><p className="text-2xl font-semibold mt-0.5">{keys.length}</p></div>
           <div className="border rounded-lg px-4 py-3"><p className="text-[11px] text-muted-foreground">Active Keys</p><p className="text-2xl font-semibold mt-0.5">{keys.filter(k => k.isActive).length}</p></div>
-          <div className="border rounded-lg px-4 py-3"><p className="text-[11px] text-muted-foreground">API Calls (Recent)</p><p className="text-2xl font-semibold mt-0.5">{usage.length}</p></div>
+          <div className="border rounded-lg px-4 py-3"><p className="text-[11px] text-muted-foreground">Active Keys</p><p className="text-2xl font-semibold mt-0.5">{keys.filter(k => k.isActive).length}</p></div>
         </div>
 
         {/* Keys List */}
@@ -107,35 +104,37 @@ export const ApiManagementPage = () => {
           )}
         </div>
 
-        {/* Recent Usage */}
-        <div className="border rounded-lg overflow-hidden mb-5">
-          <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">Recent API Usage</p></div>
-          {usage.length === 0 ? (
-            <div className="px-4 py-10 text-center text-sm text-muted-foreground">No API usage yet</div>
-          ) : (
-            <table className="w-full text-[13px]">
-              <thead><tr className="border-b">
-                <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">Timestamp</th>
-                <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">Endpoint</th>
-                <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">Status</th>
-                <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">IP</th>
-              </tr></thead>
-              <tbody>{usage.map((log) => (
-                <tr key={log._id} className="border-t hover:bg-muted/30"><td className="px-4 py-2.5 text-muted-foreground">{new Date(log.timestamp).toLocaleString()}</td><td className="px-4 py-2.5">{log.endpoint}</td><td className="px-4 py-2.5 text-muted-foreground">{log.responseStatus || '-'}</td><td className="px-4 py-2.5 text-muted-foreground">{log.ipAddress}</td></tr>
-              ))}</tbody>
-            </table>
-          )}
-        </div>
-
         {/* API Docs */}
         <div className="border rounded-lg overflow-hidden">
           <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">API Usage Guide</p></div>
           <div className="p-4 space-y-3">
             <div><p className="text-[11px] text-muted-foreground mb-1">Endpoint</p><code className="block text-xs bg-muted px-3 py-2 rounded">POST /api/v1/chat</code></div>
             <div><p className="text-[11px] text-muted-foreground mb-1">Headers</p><code className="block text-xs bg-muted px-3 py-2 rounded">x-api-key: YOUR_API_KEY</code></div>
-            <div><p className="text-[11px] text-muted-foreground mb-1">Body</p><pre className="text-xs bg-muted px-3 py-2 rounded">{`{ "message": "Your question", "sessionId": "optional" }`}</pre></div>
+            <div><p className="text-[11px] text-muted-foreground mb-1">Basic Request</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`{
+  "message": "Your question",
+  "sessionId": "optional"
+}`}</pre></div>
+            <div><p className="text-[11px] text-muted-foreground mb-1">With Filter (for external data scoping)</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`{
+  "message": "show my purchase orders",
+  "filter": {
+    "externalUserId": "user_123",
+    "type": "purchase_order",
+    "company": "ABC Sdn Bhd"
+  }
+}`}</pre></div>
+            <div className="pt-1">
+              <p className="text-[11px] text-muted-foreground mb-1">Filter Notes</p>
+              <ul className="text-[11px] text-muted-foreground space-y-0.5 list-disc pl-4">
+                <li><code className="text-[10px]">filter</code> — optional object, any key/value pairs to filter Qdrant metadata</li>
+                <li><code className="text-[10px]">externalUserId</code> — auto-prefixed with <code className="text-[10px]">ext_</code> and matched against <code className="text-[10px]">shared_with</code></li>
+                <li>Other filter keys match exact values in vector payload metadata</li>
+                <li>Metadata set during ingest via <code className="text-[10px]">POST /api/ingest</code></li>
+              </ul>
+            </div>
           </div>
         </div>
+
+        {/* Ingest API Docs — moved to External Knowledge page */}
       </div>
 
       {/* Create/Edit Modal */}

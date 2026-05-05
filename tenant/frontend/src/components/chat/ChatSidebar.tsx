@@ -1,4 +1,5 @@
-import { Plus, FolderOpen, LogOut, Trash2, Users, Building2, Settings, Key, FileText, UserCog, Search, X, ChevronDown, Code, Activity, Database, Shield } from "lucide-react";
+import { Plus, FolderOpen, LogOut, Trash2, Users, Building2, Settings, Key, FileText, UserCog, Search, X, ChevronDown, Code, Activity, Database, Shield, Zap, Mail } from "lucide-react";
+import { NotificationBell } from "./NotificationBell";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
@@ -18,8 +19,8 @@ interface ChatSidebarProps {
   onNewChat: () => void;
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
-  currentPage: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "external-knowledge";
-  onNavigate: (page: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "external-knowledge") => void;
+  currentPage: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "external-knowledge" | "ai-usage" | "smtp-settings";
+  onNavigate: (page: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "external-knowledge" | "ai-usage" | "smtp-settings") => void;
   onLogout: () => void;
   userEmail: string;
   userRole: string;
@@ -90,6 +91,7 @@ export const ChatSidebar = ({
         ...(isDeveloper || isAdmin ? [{ id: "users" as const, label: "Users", icon: Users }] : []),
         ...(isDeveloper || isAdmin ? [{ id: "organizations" as const, label: "Organizations", icon: Building2 }] : []),
         ...(isDeveloper || isAdmin ? [{ id: "audit-trail" as const, label: "Audit Trail", icon: FileText }] : []),
+        ...(isDeveloper || isAdmin ? [{ id: "smtp-settings" as const, label: "SMTP Settings", icon: Mail }] : []),
       ],
     }] : []),
     ...(isDeveloper ? [{
@@ -100,6 +102,7 @@ export const ChatSidebar = ({
         { id: "vector-browser" as const, label: "Vector Browser", icon: Database },
         { id: "mongo-browser" as const, label: "MongoDB Browser", icon: Database },
         { id: "guardrail-logs" as const, label: "Guardrail Logs", icon: Shield },
+        { id: "ai-usage" as const, label: "AI Usage", icon: Zap },
       ],
     }] : []),
   ];
@@ -427,6 +430,7 @@ export const ChatSidebar = ({
                 </svg>
               )}
             </Button>
+            <NotificationBell />
             <Button
               variant="ghost"
               size="icon"

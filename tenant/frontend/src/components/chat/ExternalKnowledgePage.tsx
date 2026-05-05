@@ -105,6 +105,37 @@ export const ExternalKnowledgePage = () => {
           ))}
         </div>
 
+        {/* Ingest API Docs */}
+        <div className="border rounded-lg overflow-hidden mt-5">
+          <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">Ingest API</p></div>
+          <div className="p-4 space-y-3">
+            <div><p className="text-[11px] text-muted-foreground mb-1">Endpoint</p><code className="block text-xs bg-muted px-3 py-2 rounded">POST /api/ingest</code></div>
+            <div><p className="text-[11px] text-muted-foreground mb-1">Auth (any one)</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`x-internal-key: YOUR_INTERNAL_KEY\nx-api-key: YOUR_API_KEY\nAuthorization: Bearer JWT_TOKEN`}</pre></div>
+            <div><p className="text-[11px] text-muted-foreground mb-1">Body</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`{
+  "collectionId": "collection_id_here",
+  "records": [
+    {
+      "content": "PO-001, Customer: ABC, RM5000",
+      "metadata": {
+        "externalUserId": "ali_123",
+        "company": "ABC Sdn Bhd",
+        "type": "purchase_order"
+      }
+    }
+  ]
+}`}</pre></div>
+            <div className="pt-1">
+              <p className="text-[11px] text-muted-foreground mb-1">Notes</p>
+              <ul className="text-[11px] text-muted-foreground space-y-0.5 list-disc pl-4">
+                <li><code className="text-[10px]">content</code> — text to embed (or auto-generated from record fields)</li>
+                <li><code className="text-[10px]">metadata</code> — optional, stored in Qdrant payload for filtering</li>
+                <li><code className="text-[10px]">externalUserId</code> — restricts access to this external user only</li>
+                <li>Records without <code className="text-[10px]">externalUserId</code> are accessible to all users in assigned orgs</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
         {/* Form Modal */}
         {showForm && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowForm(false)}>

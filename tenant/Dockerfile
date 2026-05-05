@@ -8,7 +8,7 @@ COPY frontend/package*.json ./frontend/
 
 # Install dependencies
 RUN npm install --omit=dev
-RUN cd frontend && npm ci
+RUN cd frontend && npm install
 
 # Copy source
 COPY . .

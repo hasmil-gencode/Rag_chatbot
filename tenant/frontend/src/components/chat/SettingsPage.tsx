@@ -80,6 +80,7 @@ export const SettingsPage = () => {
     { id: 'upload', label: 'Upload Processing' },
     { id: 'chat', label: 'Chat' },
     { id: 'guardrail', label: 'Guardrail' },
+    { id: 'notifications', label: 'Notifications' },
     { id: 'voice', label: 'Voice' },
   ];
 
@@ -440,6 +441,117 @@ export const SettingsPage = () => {
                 <textarea value={settings.guardrailOutputPrompt || ''} onChange={(e) => updateSetting('guardrailOutputPrompt', e.target.value)} rows={12}
                   className="w-full px-3 py-2 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring font-mono" />
                 <p className="text-[10px] text-muted-foreground mt-1">Checks AI responses BEFORE showing to user. Must output JSON: {`{"safe": true/false, "reason": "..."}`}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Notifications Tab */}
+        {activeTab === 'notifications' && (
+          <div className="space-y-5">
+            {/* Toggle */}
+            <div className="border rounded-lg overflow-hidden">
+              <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">Quota Notifications</p></div>
+              <div className="p-4 space-y-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={settings.notificationsEnabled !== false} onChange={e => updateSetting('notificationsEnabled', e.target.checked)} className="rounded" />
+                  <span className="text-xs">Enable quota/storage notifications</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={settings.notifyEmail !== false} onChange={e => updateSetting('notifyEmail', e.target.checked)} className="rounded" />
+                  <span className="text-xs">Send email notifications</span>
+                </label>
+                <div>
+                  <label className="text-[11px] text-muted-foreground">Thresholds (%)</label>
+                  <input value={(settings.notifyThresholds || [50,60,70,80,90,100]).join(', ')} onChange={e => updateSetting('notifyThresholds', e.target.value.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n)))}
+                    className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" placeholder="50, 60, 70, 80, 90, 100" />
+                </div>
+                <div>
+                  <label className="text-[11px] text-muted-foreground">Notify Roles</label>
+                  <div className="flex gap-4 mt-1">
+                    {['developer', 'admin'].map(r => (
+                      <label key={r} className="flex items-center gap-1.5 cursor-pointer text-xs">
+                        <input type="checkbox" checked={(settings.notifyRoles || ['admin','developer']).includes(r)} onChange={e => {
+                          const roles = settings.notifyRoles || ['admin','developer'];
+                          updateSetting('notifyRoles', e.target.checked ? [...roles, r] : roles.filter((x: string) => x !== r));
+                        }} className="rounded" />
+                        <span className="capitalize">{r}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* SMTP */}
+            <div className="border rounded-lg overflow-hidden">
+              <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">SMTP Settings</p></div>
+              <div className="p-4 space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[11px] text-muted-foreground">SMTP Host</label>
+                    <input value={settings.smtpHost || 'smtp.office365.com'} onChange={e => updateSetting('smtpHost', e.target.value)}
+                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-muted-foreground">SMTP Port</label>
+                    <input type="number" value={settings.smtpPort || 587} onChange={e => updateSetting('smtpPort', parseInt(e.target.value))}
+                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[11px] text-muted-foreground">SMTP User (email)</label>
+                  <input value={settings.smtpUser || ''} onChange={e => updateSetting('smtpUser', e.target.value)}
+                    className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" placeholder="noreply@gencode.com.my" />
+                </div>
+                <div>
+                  <label className="text-[11px] text-muted-foreground">SMTP Password</label>
+                  <input type="password" value={settings.smtpPassword || ''} onChange={e => updateSetting('smtpPassword', e.target.value)}
+                    className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[11px] text-muted-foreground">From Name</label>
+                    <input value={settings.smtpFrom || 'Genia System'} onChange={e => updateSetting('smtpFrom', e.target.value)}
+                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+                  </div>
+                  <div className="flex items-end pb-1">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={settings.smtpTls !== false} onChange={e => updateSetting('smtpTls', e.target.checked)} className="rounded" />
+                      <span className="text-xs">Use TLS</span>
+                    </label>
+                  </div>
+                </div>
+                <button type="button" onClick={async () => {
+                  if (!settings.smtpHost || !settings.smtpUser || !settings.smtpPassword) { toast.error('Fill SMTP settings first'); return; }
+                  const testEmail = prompt('Send test email to:', localStorage.getItem('userEmail') || '');
+                  if (!testEmail) return;
+                  try {
+                    const res = await fetch('/api/org-smtp/test', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ host: settings.smtpHost, port: settings.smtpPort, user: settings.smtpUser, password: settings.smtpPassword, from: settings.smtpFrom, tls: settings.smtpTls, testEmail }) });
+                    const json = await res.json();
+                    if (!res.ok) throw new Error(json.error);
+                    toast.success(json.message);
+                  } catch (e: any) { toast.error(e.message); }
+                }} className="text-xs text-muted-foreground hover:text-foreground underline">Send test email</button>
+              </div>
+            </div>
+
+            {/* Email Template */}
+            <div className="border rounded-lg overflow-hidden">
+              <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">Email Template</p></div>
+              <div className="p-4 space-y-4">
+                <div>
+                  <label className="text-[11px] text-muted-foreground">Subject</label>
+                  <input value={settings.notifyEmailSubject || ''} onChange={e => updateSetting('notifyEmailSubject', e.target.value)}
+                    className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" placeholder="⚠️ Genia Alert: {{type}} {{threshold}}% used — {{orgName}}" />
+                </div>
+                <div>
+                  <label className="text-[11px] text-muted-foreground">Body</label>
+                  <textarea value={settings.notifyEmailBody || ''} onChange={e => updateSetting('notifyEmailBody', e.target.value)} rows={8}
+                    className="w-full px-3 py-2 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring resize-none font-mono"
+                    placeholder={'Hi {{adminName}},\n\nYour organization "{{orgName}}" has used {{threshold}}% of the {{type}}.\n\nUsed: {{used}} / {{limit}}\nRemaining: {{remaining}}\n\n— Genia System'} />
+                </div>
+                <p className="text-[10px] text-muted-foreground">Variables: {'{{orgName}}'}, {'{{adminName}}'}, {'{{type}}'}, {'{{threshold}}'}, {'{{used}}'}, {'{{limit}}'}, {'{{remaining}}'}</p>
               </div>
             </div>
           </div>

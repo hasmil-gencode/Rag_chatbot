@@ -9,12 +9,17 @@ import OpenAI from 'openai';
 
 const QDRANT_COLLECTION = 'documents';
 
+async function logAiCall(db, provider, model, type, source, latency, status = 'ok') {
+  try { await db.collection('ai_api_logs').insertOne({ provider, model, type, source, latency, status, createdAt: new Date() }); } catch {}
+}
+
 // ─── Guardrail Check ───────────────────────────────────────────
-export async function checkGuardrail(text, prompt, settings) {
+export async function checkGuardrail(text, prompt, settings, db = null) {
   if (!settings.guardrailEnabled) return { safe: true, reason: 'guardrail disabled' };
   const model = settings.guardrailModel || 'gemini-2.5-flash-lite';
   const apiKey = settings[`chatLlmApiKey_gemini`] || settings.chatLlmApiKey || settings.chatEmbeddingApiKey;
   if (!apiKey) return { safe: true, reason: 'no API key for guardrail' };
+  const t = Date.now();
   try {
     const res = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
@@ -25,10 +30,12 @@ export async function checkGuardrail(text, prompt, settings) {
       },
       { timeout: 10000 }
     );
+    if (db) logAiCall(db, 'gemini', model, 'guardrail', 'system', Date.now() - t);
     const raw = res.data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
     const parsed = JSON.parse(raw);
     return { safe: parsed.safe !== false, reason: parsed.reason || '' };
   } catch (e) {
+    if (db) logAiCall(db, 'gemini', model, 'guardrail', 'system', Date.now() - t, 'error');
     console.error('Guardrail check failed:', e.message);
     return { safe: true, reason: 'guardrail error, allowing through' };
   }
@@ -57,17 +64,19 @@ export async function getUserAccessibleOrgIds(db, userId) {
 }
 
 // ─── Embed Query ───────────────────────────────────────────────
-async function embedQuery(text, settings) {
+async function embedQuery(text, settings, db = null, source = 'chat') {
   const provider = settings.chatEmbeddingProvider;
   const model = settings.chatEmbeddingModel;
   if (!provider) throw new Error('Chat Embedding Provider not configured. Go to Settings → Chat → Embedding.');
   if (!model) throw new Error('Chat Embedding Model not configured. Go to Settings → Chat → Embedding.');
 
+  const t = Date.now();
   if (provider === 'openai') {
     const key = settings[`chatEmbeddingApiKey_openai`] || settings.chatEmbeddingApiKey;
     if (!key) throw new Error('Chat Embedding API key not set for OpenAI. Check Settings or Provider Keys.');
     const openai = new OpenAI({ apiKey: key });
     const res = await openai.embeddings.create({ model, input: [text] });
+    if (db) logAiCall(db, provider, model, 'embedding', source, Date.now() - t);
     return res.data[0].embedding;
   }
   if (provider === 'gemini') {
@@ -77,6 +86,7 @@ async function embedQuery(text, settings) {
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${key}`,
       { content: { parts: [{ text }] }, taskType: 'RETRIEVAL_QUERY' }
     );
+    if (db) logAiCall(db, provider, model, 'embedding', source, Date.now() - t);
     return res.data.embedding.values;
   }
   throw new Error(`Unknown chat embedding provider: ${provider}`);
@@ -172,7 +182,7 @@ async function searchPublicVectors(queryVector, orgIds, settings) {
 }
 
 // ─── Call LLM ──────────────────────────────────────────────────
-export async function callLLM(messages, settings) {
+export async function callLLM(messages, settings, db = null, source = 'chat') {
   const provider = settings.chatLlmProvider;
   const model = settings.chatLlmModel;
   const apiKey = settings[`chatLlmApiKey_${provider}`] || settings.chatLlmApiKey;
@@ -180,40 +190,45 @@ export async function callLLM(messages, settings) {
   if (!model) throw new Error('Chat LLM Model not configured. Go to Settings → Chat → LLM.');
   if (!apiKey) throw new Error(`Chat LLM API key not set for ${provider}. Check Settings or Provider Keys.`);
 
-  if (provider === 'gemini') {
-    const systemMsg = messages.find(m => m.role === 'system');
-    const chatMsgs = messages.filter(m => m.role !== 'system');
-    const body = {
-      contents: chatMsgs.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
-    };
-    if (systemMsg) body.systemInstruction = { parts: [{ text: systemMsg.content }] };
-    const res = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-      body, { timeout: 60000 }
-    );
-    return res.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const t = Date.now();
+  let result;
+  try {
+    if (provider === 'gemini') {
+      const systemMsg = messages.find(m => m.role === 'system');
+      const chatMsgs = messages.filter(m => m.role !== 'system');
+      const body = {
+        contents: chatMsgs.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
+      };
+      if (systemMsg) body.systemInstruction = { parts: [{ text: systemMsg.content }] };
+      const res = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        body, { timeout: 60000 }
+      );
+      result = res.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    } else if (provider === 'openai' || provider === 'groq') {
+      const baseURL = provider === 'groq' ? 'https://api.groq.com/openai/v1' : 'https://api.openai.com/v1';
+      const openai = new OpenAI({ apiKey, baseURL });
+      const res = await openai.chat.completions.create({ model, messages });
+      result = res.choices[0]?.message?.content || '';
+    } else if (provider === 'mistral') {
+      const res = await axios.post('https://api.mistral.ai/v1/chat/completions', { model, messages }, { headers: { 'Authorization': `Bearer ${apiKey}` }, timeout: 60000 });
+      result = res.data.choices?.[0]?.message?.content || '';
+    } else {
+      throw new Error(`Unknown LLM provider: ${provider}`);
+    }
+    if (db) logAiCall(db, provider, model, 'chat', source, Date.now() - t);
+    return result;
+  } catch (e) {
+    if (db) logAiCall(db, provider, model, 'chat', source, Date.now() - t, 'error');
+    throw e;
   }
-
-  if (provider === 'openai' || provider === 'groq') {
-    const baseURL = provider === 'groq' ? 'https://api.groq.com/openai/v1' : 'https://api.openai.com/v1';
-    const openai = new OpenAI({ apiKey, baseURL });
-    const res = await openai.chat.completions.create({ model, messages });
-    return res.choices[0]?.message?.content || '';
-  }
-
-  if (provider === 'mistral') {
-    const res = await axios.post('https://api.mistral.ai/v1/chat/completions', { model, messages }, { headers: { 'Authorization': `Bearer ${apiKey}` }, timeout: 60000 });
-    return res.data.choices?.[0]?.message?.content || '';
-  }
-
-  throw new Error(`Unknown LLM provider: ${provider}`);
 }
 
 // ─── Main Chat Pipeline ────────────────────────────────────────
 export async function processBrowserChat(db, userId, message, sessionId, settings, fileId = null, organizationId = null) {
   // 0. Input guardrail check
   if (settings.guardrailEnabled) {
-    const inputCheck = await checkGuardrail(message, settings.guardrailInputPrompt, settings);
+    const inputCheck = await checkGuardrail(message, settings.guardrailInputPrompt, settings, db);
     if (!inputCheck.safe) {
       // Log blocked attempt
       await db.collection('guardrail_logs').insertOne({
@@ -227,7 +242,7 @@ export async function processBrowserChat(db, userId, message, sessionId, setting
   const orgIds = await getUserAccessibleOrgIds(db, userId);
 
   // 2. Embed the user's query
-  const queryVector = await embedQuery(message, settings);
+  const queryVector = await embedQuery(message, settings, db, 'browser_chat');
 
   // 3. Search vectors with org filter + optional file filter
   const chunks = await searchVectors(queryVector, orgIds, settings, fileId);
@@ -258,7 +273,7 @@ export async function processBrowserChat(db, userId, message, sessionId, setting
   ];
 
   // 5. Call LLM
-  const response = await callLLM(messages, settings);
+  const response = await callLLM(messages, settings, db, 'browser_chat');
 
   // 6. Build sources
   const sources = chunks.filter(c => c.file_name).map(c => ({
@@ -277,7 +292,7 @@ export async function processBrowserChat(db, userId, message, sessionId, setting
 
   // 7. Output guardrail check
   if (settings.guardrailEnabled && response) {
-    const outputCheck = await checkGuardrail(response, settings.guardrailOutputPrompt, settings);
+    const outputCheck = await checkGuardrail(response, settings.guardrailOutputPrompt, settings, db);
     if (!outputCheck.safe) {
       await db.collection('guardrail_logs').insertOne({
         userId, sessionId, type: 'output', message: response.substring(0, 500), reason: outputCheck.reason, createdAt: new Date()
@@ -292,14 +307,14 @@ export async function processBrowserChat(db, userId, message, sessionId, setting
 export async function processPublicChat(db, message, sessionId, settings, orgIds) {
   // Input guardrail
   if (settings.guardrailEnabled) {
-    const inputCheck = await checkGuardrail(message, settings.guardrailInputPrompt, settings);
+    const inputCheck = await checkGuardrail(message, settings.guardrailInputPrompt, settings, db);
     if (!inputCheck.safe) {
       await db.collection('guardrail_logs').insertOne({ sessionId, type: 'input', source: 'widget', message, reason: inputCheck.reason, createdAt: new Date() });
       return { response: 'Sorry, I\'m unable to process this request.\n\nMaaf, saya tidak dapat memproses permintaan ini.\n\nமன்னிக்கவும், இந்தக் கோரிக்கையை செயல்படுத்த இயலவில்லை.\n\n抱歉，无法处理此请求。', sources: [], blocked: true };
     }
   }
 
-  const queryVector = await embedQuery(message, settings);
+  const queryVector = await embedQuery(message, settings, db, 'embed_widget');
   const chunks = await searchPublicVectors(queryVector, orgIds, settings);
 
   const systemPrompt = await (async () => {
@@ -325,11 +340,11 @@ export async function processPublicChat(db, message, sessionId, settings, orgIds
     { role: 'user', content: message },
   ];
 
-  const response = await callLLM(messages, settings);
+  const response = await callLLM(messages, settings, db, 'embed_widget');
 
   // Output guardrail
   if (settings.guardrailEnabled && response) {
-    const outputCheck = await checkGuardrail(response, settings.guardrailOutputPrompt, settings);
+    const outputCheck = await checkGuardrail(response, settings.guardrailOutputPrompt, settings, db);
     if (!outputCheck.safe) {
       await db.collection('guardrail_logs').insertOne({ sessionId, type: 'output', source: 'widget', message: response.substring(0, 500), reason: outputCheck.reason, createdAt: new Date() });
       return { response: 'Sorry, I\'m unable to provide that information.\n\nMaaf, saya tidak dapat memberikan maklumat tersebut.\n\nமன்னிக்கவும், அந்தத் தகவலை வழங்க இயலவில்லை.\n\n抱歉，无法提供该信息。', sources: [], blocked: true };

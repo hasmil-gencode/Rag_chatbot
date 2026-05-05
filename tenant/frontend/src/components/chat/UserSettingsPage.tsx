@@ -69,7 +69,7 @@ export function UserSettingsPage() {
         </div>
 
         {/* Stats cards */}
-        <div className="grid grid-cols-4 gap-3 mb-5">
+        <div className={`grid ${['admin','developer'].includes(localStorage.getItem('userRole') || '') ? 'grid-cols-4' : 'grid-cols-2'} gap-3 mb-5`}>
           <div className="border rounded-lg px-4 py-3">
             <p className="text-[11px] text-muted-foreground">Role</p>
             <p className="text-lg font-semibold mt-0.5 capitalize">{localStorage.getItem('userRole') || 'user'}</p>
@@ -78,7 +78,7 @@ export function UserSettingsPage() {
             <p className="text-[11px] text-muted-foreground">Organization</p>
             <p className="text-lg font-semibold mt-0.5 truncate">{settings.organizations.find(o => !o.parentId)?.name || settings.organizations[0]?.name || '—'}</p>
           </div>
-          {settings.storageUsage && (
+          {['admin','developer'].includes(localStorage.getItem('userRole') || '') && settings.storageUsage && (
             <div className="border rounded-lg px-4 py-3">
               <p className="text-[11px] text-muted-foreground">Storage</p>
               <p className="text-lg font-semibold mt-0.5">{(settings.storageUsage.used * 1024).toFixed(1)} MB</p>
@@ -88,6 +88,7 @@ export function UserSettingsPage() {
               <p className="text-[10px] text-muted-foreground mt-1">{settings.storageUsage.percentage.toFixed(1)}% of {settings.storageUsage.limit} GB</p>
             </div>
           )}
+          {['admin','developer'].includes(localStorage.getItem('userRole') || '') && (
           <div className="border rounded-lg px-4 py-3">
             <p className="text-[11px] text-muted-foreground">Chat Quota</p>
             {settings.chatUsage?.unlimited ? (
@@ -104,6 +105,7 @@ export function UserSettingsPage() {
               <p className="text-lg font-semibold mt-0.5">Unlimited</p>
             )}
           </div>
+          )}
         </div>
 
         {/* Profile section */}
