@@ -490,7 +490,7 @@ export const SettingsPage = () => {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="text-[11px] text-muted-foreground">SMTP Host</label>
-                    <input value={settings.smtpHost || 'smtp.office365.com'} onChange={e => updateSetting('smtpHost', e.target.value)}
+                    <input value={settings.smtpHost || ''} onChange={e => updateSetting('smtpHost', e.target.value)} placeholder="e.g. smtp.office365.com"
                       className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
                   </div>
                   <div>

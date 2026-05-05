@@ -138,11 +138,11 @@ Output JSON only: {"safe": true, "reason": "brief reason"} or {"safe": false, "r
     notifyEmail: true,
     notifyThresholds: [50, 60, 70, 80, 90, 100],
     notifyRoles: ['admin', 'developer'],
-    smtpHost: 'smtp.office365.com',
+    smtpHost: '',
     smtpPort: 587,
     smtpUser: '',
     smtpPassword: '',
-    smtpFrom: 'Genia System',
+    smtpFrom: '',
     smtpTls: true,
     notifyEmailSubject: '⚠️ Genia Alert: {{type}} {{threshold}}% used — {{orgName}}',
     notifyEmailBody: `Hi {{adminName}},
@@ -2869,11 +2869,11 @@ app.get('/api/settings', auth, hasPermission(), async (req, res) => {
     notifyEmail: settings.notifyEmail ?? true,
     notifyThresholds: settings.notifyThresholds || [50, 60, 70, 80, 90, 100],
     notifyRoles: settings.notifyRoles || ['admin', 'developer'],
-    smtpHost: settings.smtpHost || 'smtp.office365.com',
+    smtpHost: settings.smtpHost || '',
     smtpPort: settings.smtpPort || 587,
     smtpUser: settings.smtpUser || '',
     smtpPassword: settings.smtpPassword || '',
-    smtpFrom: settings.smtpFrom || 'Genia System',
+    smtpFrom: settings.smtpFrom || '',
     smtpTls: settings.smtpTls !== false,
     notifyEmailSubject: settings.notifyEmailSubject || '',
     notifyEmailBody: settings.notifyEmailBody || '',
@@ -2916,7 +2916,7 @@ async function resolveProviderKeys(orgId) {
 
 async function resolveSmtp(orgId) {
   const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
-  const global = { host: settings.smtpHost || 'smtp.office365.com', port: settings.smtpPort || 587, user: settings.smtpUser || '', password: settings.smtpPassword || '', from: settings.smtpFrom || 'Genia System', tls: settings.smtpTls !== false };
+  const global = { host: settings.smtpHost || '', port: settings.smtpPort || 587, user: settings.smtpUser || '', password: settings.smtpPassword || '', from: settings.smtpFrom || '', tls: settings.smtpTls !== false };
   if (!orgId) return global;
   const orgSmtp = await db.collection('org_smtp').findOne({ orgId }) || {};
   if (orgSmtp.host) return { host: orgSmtp.host, port: orgSmtp.port || 587, user: orgSmtp.user || '', password: orgSmtp.password || '', from: orgSmtp.from || global.from, tls: orgSmtp.tls !== false };
