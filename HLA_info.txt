@@ -1,0 +1,19 @@
+let say user ask, saya kerja kat site, apa issurence yang sesuai?
+
+aku akan masukkan 50 file berkenaan insurance HLA ni, so AI ni kena cukup pandai la untuk tau, so cemana eh?benda ni kena ubah promnt je kan, so untuk HLA aku boleh letak promnt dia lain siki la masa nak buat organization tu kan masukkan promnt lain, kan? 
+
+so ai ni kena cukup pandai untuk mintak info lain la, user need to feed important info 
+
+age
+gender
+race
+location
+what they want to do
+smoke /no smoke
+
+
+then will show option relate to this - ai will show best recommended
+
+
+ai can ask why they want to this
+list of scope try to filter

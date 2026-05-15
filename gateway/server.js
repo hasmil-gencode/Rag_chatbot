@@ -312,10 +312,19 @@ app.delete('/api/gateway/packages/:id', auth, async (req, res) => {
 // ─── User Login Routing (proxy to tenant server) ──────────────
 app.post('/api/login', loginRateLimit, async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email, password } = req.body;
     if (!email) return res.status(400).json({ error: 'Email required' });
 
-    // Find tenant by admin email or try all servers
+    // Check if this is a gateway developer login first
+    const dev = await db.collection('developers').findOne({ email });
+    if (dev && password && await bcrypt.compare(password, dev.password)) {
+      recordLoginSuccess(req._loginIp);
+      const token = jwt.sign({ id: dev._id, email: dev.email, name: dev.name }, JWT_SECRET, { expiresIn: '24h' });
+      // Don't set __gw_server cookie — stay on gateway UI
+      return res.json({ token, user: { email: dev.email, name: dev.name }, isGatewayDev: true });
+    }
+
+    // Not a gateway developer — proxy to tenant
     const tenant = await db.collection('tenants').findOne({ adminEmail: email });
     let serverUrl = null;
 
