@@ -30,8 +30,10 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   startedBy?: string;
-  sources?: { file_name: string; page_number: number }[];
+  sources?: { file_name: string; page_number: number; file_id?: string }[];
   responseTimeMs?: number;
+  actions?: { label: string; value: string }[];
+  debug?: any;
 }
 
 interface ChatSession {
@@ -386,8 +388,8 @@ const Index = () => {
     setIsLoading(true);
 
     try {
-      // Use ref for immediate session ID (avoids race condition)
       const sessionId = currentSessionIdRef.current;
+
       const response = await api.sendMessage(content, sessionId || undefined, fileId || undefined, currentOrganizationId);
       
       // Update session ID immediately if this was first message
@@ -402,6 +404,7 @@ const Index = () => {
         content: response.response,
         sources: response.sources || [],
         responseTimeMs: response.responseTimeMs,
+        debug: response.debug,
       };
 
       setMessages(prev => [...prev, botMessage]);

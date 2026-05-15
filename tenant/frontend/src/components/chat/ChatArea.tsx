@@ -8,8 +8,10 @@ interface Message {
   content: string;
   startedBy?: string;
   createdAt?: Date | string;
-  sources?: { file_name: string; page_number: number }[];
+  sources?: { file_name: string; page_number: number; file_id?: string }[];
   responseTimeMs?: number;
+  actions?: { label: string; value: string }[];
+  debug?: any;
 }
 
 interface ChatAreaProps {
@@ -106,17 +108,30 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, userFu
           <div className="flex-1 overflow-y-auto chat-scrollbar px-4 py-6">
             <div className="max-w-3xl mx-auto space-y-1">
               {messages.map((msg) => (
-                <ChatMessage 
-                  key={msg.id} 
-                  role={msg.role} 
-                  content={msg.content} 
-                  userName={getUserName()} 
-                  startedBy={msg.startedBy}
-                  timestamp={msg.createdAt}
-                  sources={msg.sources}
-                  responseTimeMs={msg.responseTimeMs}
-                  onWebViewOpen={onWebViewOpen}
-                />
+                <div key={msg.id}>
+                  <ChatMessage 
+                    key={msg.id} 
+                    role={msg.role} 
+                    content={msg.content} 
+                    userName={getUserName()} 
+                    startedBy={msg.startedBy}
+                    timestamp={msg.createdAt}
+                    sources={msg.sources}
+                    responseTimeMs={msg.responseTimeMs}
+                    onWebViewOpen={onWebViewOpen}
+                    debug={msg.debug}
+                  />
+                  {msg.actions && msg.actions.length > 0 && (
+                    <div className="flex flex-col gap-2 max-w-xs mt-3 ml-0">
+                      {msg.actions.map((action, i) => (
+                        <button key={i} onClick={() => onSendMessage(action.label)}
+                          className="px-4 py-2.5 text-xs font-medium border rounded-lg hover:bg-primary hover:text-primary-foreground transition-colors text-left">
+                          {action.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               ))}
               {isLoading && <ChatMessage role="assistant" content="" isTyping />}
               <div ref={messagesEndRef} />

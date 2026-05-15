@@ -1,7 +1,7 @@
+import { useState, useEffect } from "react";
 import { Volume2, Square, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { useState, useEffect } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { parseFileNamesFromMessage, checkDownloadableFiles } from "@/lib/fileHelper";
@@ -15,13 +15,15 @@ interface ChatMessageProps {
   userName?: string;
   startedBy?: string;
   timestamp?: Date | string;
-  sources?: { file_name: string; page_number: number }[];
+  sources?: { file_name: string; page_number: number; file_id?: string }[];
   responseTimeMs?: number;
   onWebViewOpen?: (url: string) => void;
+  debug?: any;
 }
 
-export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, sources, responseTimeMs, onWebViewOpen }: ChatMessageProps) => {
+export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, sources, responseTimeMs, onWebViewOpen, debug }: ChatMessageProps) => {
   const isUser = role === "user";
+  const [showDebug, setShowDebug] = useState(false);
   const userRole = localStorage.getItem('userRole') || 'user';
   const showStartedBy = (userRole.toLowerCase() === 'developer' || userRole === 'admin' || userRole === 'manager') && startedBy;
   
@@ -204,7 +206,7 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, s
                   remarkPlugins={[remarkGfm]}
                   components={{ a: LinkRenderer }}
                 >
-                  {content}
+                  {content.replace(/\[Download:\s*(.+?)\]/g, (_, filename) => `[📥 ${filename.trim()}](/api/files/download-by-name/${encodeURIComponent(filename.trim())}?token=${localStorage.getItem('token')})`)}
                 </ReactMarkdown>
                 {isStreaming && <span className="inline-block w-1.5 h-4 bg-current ml-0.5 animate-pulse">▊</span>}
               </div>
@@ -241,10 +243,34 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, s
         {!isUser && !isTyping && sources && sources.length > 0 && (
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {sources.map((s, i) => (
-              <span key={i} className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
-                {s.file_name}{s.page_number > 0 ? ` — p.${s.page_number}` : ''}
-              </span>
+              s.file_id ? (
+                <a key={i} href={`/api/files/${s.file_id}/download`} target="_blank" rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground hover:bg-primary/10 hover:text-primary cursor-pointer transition-colors">
+                  📄 {s.file_name}{s.page_number > 0 ? ` — p.${s.page_number}` : ''}
+                </a>
+              ) : (
+                <span key={i} className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                  {s.file_name}{s.page_number > 0 ? ` — p.${s.page_number}` : ''}
+                </span>
+              )
             ))}
+          </div>
+        )}
+        {/* Developer debug panel */}
+        {!isUser && debug && (
+          <div className="mt-2">
+            <button onClick={() => setShowDebug(!showDebug)} className="text-[9px] text-muted-foreground hover:text-foreground transition-colors">
+              {showDebug ? '▼' : '▶'} Debug
+            </button>
+            {showDebug && (
+              <div className="mt-1 p-2 rounded-md bg-muted/50 text-[10px] text-muted-foreground font-mono space-y-0.5">
+                <div>📚 Chunks: {debug.chunksRetrieved} / {debug.broadSearchChunks}</div>
+                <div>🔍 Broad Search: {debug.broadSearch ? '✅ YES' : '❌ No'}</div>
+                {debug.mandatoryFieldsCollected && <div>✅ Collected: {JSON.stringify(debug.mandatoryFieldsCollected)}</div>}
+                {debug.mandatoryFieldsMissing && <div>❓ Missing: {debug.mandatoryFieldsMissing.join(', ') || 'none'}</div>}
+                {debug.nextFieldAsked && <div>➡️ Asking: {debug.nextFieldAsked}</div>}
+              </div>
+            )}
           </div>
         )}
       </div>

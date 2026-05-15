@@ -258,7 +258,7 @@ const upload = multer({ storage });
 
 // Auth middleware
 const auth = async (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
+  const token = req.headers.authorization?.split(' ')[1] || req.query?.token;
   if (!token) return res.status(401).json({ error: 'No token' });
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
@@ -563,7 +563,7 @@ app.get('/api/user/me', auth, async (req, res) => {
 // User preferences
 app.get('/api/user/preferences', auth, async (req, res) => {
   const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
-  res.json({ showSources: user?.showSources !== undefined ? user.showSources : true, verboseMode: user?.verboseMode || false });
+  res.json({ showSources: user?.showSources !== undefined ? user.showSources : false, verboseMode: user?.verboseMode || false });
 });
 
 app.put('/api/user/preferences', auth, async (req, res) => {
@@ -742,6 +742,9 @@ app.post('/api/organizations', auth, hasPermission('org:manage'), async (req, re
     };
     if (type === 'organization' && req.body.publicEnabled !== undefined) orgDoc.publicEnabled = req.body.publicEnabled === true;
     if (req.body.systemPrompt !== undefined) orgDoc.systemPrompt = req.body.systemPrompt;
+    if (req.body.mandatoryFields !== undefined) orgDoc.mandatoryFields = req.body.mandatoryFields;
+    if (req.body.broadFirstSearch !== undefined) orgDoc.broadFirstSearch = req.body.broadFirstSearch;
+    if (req.body.broadFirstSearchChunks !== undefined) orgDoc.broadFirstSearchChunks = req.body.broadFirstSearchChunks;
     
     const result = await db.collection('organizations').insertOne(orgDoc);
     
@@ -973,6 +976,9 @@ app.put('/api/organizations/:id', auth, hasPermission(), async (req, res) => {
     const updateFields = { name, path, updatedAt: new Date() };
     if (req.body.publicEnabled !== undefined) updateFields.publicEnabled = req.body.publicEnabled === true;
     if (req.body.systemPrompt !== undefined) updateFields.systemPrompt = req.body.systemPrompt;
+    if (req.body.mandatoryFields !== undefined) updateFields.mandatoryFields = req.body.mandatoryFields;
+    if (req.body.broadFirstSearch !== undefined) updateFields.broadFirstSearch = req.body.broadFirstSearch;
+    if (req.body.broadFirstSearchChunks !== undefined) updateFields.broadFirstSearchChunks = req.body.broadFirstSearchChunks;
     
     await db.collection('organizations').updateOne(
       { _id: new ObjectId(req.params.id) },
@@ -1252,7 +1258,7 @@ app.post('/api/chat', auth, apiRateLimit(30, 60000), async (req, res) => {
     
     // Check user preferences
     const userPrefs = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
-    const showSources = userPrefs?.showSources !== undefined ? userPrefs.showSources : true;
+    const showSources = userPrefs?.showSources !== undefined ? userPrefs.showSources : false;
     const verboseMode = userPrefs?.verboseMode || false;
 
     await db.collection('messages').insertOne({
@@ -1284,7 +1290,8 @@ app.post('/api/chat', auth, apiRateLimit(30, 60000), async (req, res) => {
       );
     }
 
-    res.json({ response: botContent, sources: showSources ? result.sources : [], responseTimeMs: verboseMode ? responseTimeMs : undefined, sessionId: chatSessionId });
+    const isDev = req.user.role === 'developer';
+    res.json({ response: botContent, sources: showSources ? result.sources : [], responseTimeMs: verboseMode ? responseTimeMs : undefined, sessionId: chatSessionId, debug: isDev ? result.debug : undefined });
   } catch (error) {
     console.error('Chat error:', error.message);
     res.status(500).json({ 
@@ -2199,6 +2206,15 @@ app.get('/api/forms', auth, async (req, res) => {
 });
 
 // Download file endpoint with tracking
+// Download file by name (for AI-suggested downloads)
+app.get('/api/files/download-by-name/:filename', auth, async (req, res) => {
+  try {
+    const file = await db.collection('files').findOne({ name: decodeURIComponent(req.params.filename) });
+    if (!file) return res.status(404).json({ error: 'File not found' });
+    res.redirect(`/api/files/${file._id}/download?token=${req.query.token || ''}`);
+  } catch { res.status(500).json({ error: 'Download failed' }); }
+});
+
 app.get('/api/files/:id/download', auth, async (req, res) => {
   try {
     const file = await db.collection('files').findOne({ 

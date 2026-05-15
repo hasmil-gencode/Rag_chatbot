@@ -34,36 +34,38 @@ export const FilesPage = () => {
   const loadStorageInfo = async () => { try { setStorageInfo(await api.getStorageInfo()); } catch (e) { console.error(e); } };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
     setIsUploading(true);
-    setUploadStep("Uploading file...");
     setUploadPreviews([]);
-    try {
-      await api.uploadFile(file, selectedOrgs, (_step, detail) => {
-        if (_step === 'preview') {
-          setUploadPreviews(prev => [...prev, detail]);
-        } else {
-          setUploadStep(detail);
-        }
-      }, isPublicUpload);
-      await loadFiles();
-      await loadStorageInfo();
-      setSelectedOrgs([]);
-      setIsPublicUpload(false);
-      if (uploadPreviews.length > 0 || true) {
-        // Show preview for all users
-        setUploadStep("Done — review extracted text below");
-        setWaitingForConfirm(true);
-        await new Promise<void>(resolve => { confirmResolveRef.current = resolve; });
-        setWaitingForConfirm(false);
-      }
-      setShowUploadModal(false);
-      setUploadStep("");
-      setUploadPreviews([]);
-      toast.success("File uploaded successfully");
-    } catch (error: any) { toast.error(error.message); setUploadStep(""); setUploadPreviews([]); }
-    finally { setIsUploading(false); if (e.target) e.target.value = ''; }
+    const total = files.length;
+    for (let i = 0; i < total; i++) {
+      const file = files[i];
+      setUploadStep(`Uploading ${i + 1}/${total}: ${file.name}`);
+      try {
+        await api.uploadFile(file, selectedOrgs, (_step, detail) => {
+          if (_step === 'preview') {
+            setUploadPreviews(prev => [...prev, detail]);
+          } else {
+            setUploadStep(`[${i + 1}/${total}] ${detail}`);
+          }
+        }, isPublicUpload);
+      } catch (error: any) { toast.error(`Failed: ${file.name} — ${error.message}`); }
+    }
+    await loadFiles();
+    await loadStorageInfo();
+    setSelectedOrgs([]);
+    setIsPublicUpload(false);
+    setUploadStep(`Done — ${total} file(s) uploaded`);
+    setWaitingForConfirm(true);
+    await new Promise<void>(resolve => { confirmResolveRef.current = resolve; });
+    setWaitingForConfirm(false);
+    setShowUploadModal(false);
+    setUploadStep("");
+    setUploadPreviews([]);
+    toast.success(`${total} file(s) uploaded successfully`);
+    setIsUploading(false);
+    if (e.target) e.target.value = '';
   };
 
   const handleDelete = async (id: string) => {
@@ -345,7 +347,7 @@ export const FilesPage = () => {
               </label>
             )}
 
-            <input type="file" id="file-upload-modal" className="hidden" onChange={handleFileSelect} disabled={isUploading} accept=".pdf,.txt,.csv,.json,.docx,.html,.md,.xlsx,.xls,.png,.jpg,.jpeg,.tiff,.bmp,.webp,.pptx,.ppt" />
+            <input type="file" id="file-upload-modal" className="hidden" onChange={handleFileSelect} disabled={isUploading} multiple accept=".pdf,.txt,.csv,.json,.docx,.html,.md,.xlsx,.xls,.png,.jpg,.jpeg,.tiff,.bmp,.webp,.pptx,.ppt" />
             <div className="relative group">
               <Button disabled={isUploading || (!isDeveloper && selectedOrgs.length === 0)} onClick={() => document.getElementById('file-upload-modal')?.click()} className="w-full text-xs h-9 rounded-lg">
                 {isUploading ? "Processing..." : "Choose File & Upload"}

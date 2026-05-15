@@ -163,7 +163,7 @@ class API {
     return json
   }
 
-  async sendMessage(message: string, sessionId?: string, fileId?: string, currentOrganizationId?: string | null): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number }[]; responseTimeMs?: number }> {
+  async sendMessage(message: string, sessionId?: string, fileId?: string, currentOrganizationId?: string | null): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number }[]; responseTimeMs?: number; debug?: any }> {
     const res = await fetchWithAuth(`${API_BASE}/chat`, {
       method: 'POST',
       headers: this.getHeaders(),
@@ -454,11 +454,11 @@ class API {
     return json
   }
 
-  async updateOrganization(orgId: string, name: string, type: string, parentId: string | null, publicEnabled?: boolean, systemPrompt?: string) {
+  async updateOrganization(orgId: string, name: string, type: string, parentId: string | null, publicEnabled?: boolean, systemPrompt?: string, mandatoryFields?: any[], broadFirstSearch?: boolean, broadFirstSearchChunks?: number) {
     const res = await fetchWithAuth(`${API_BASE}/organizations/${orgId}`, {
       method: 'PUT',
       headers: this.getHeaders(),
-      body: JSON.stringify({ name, type, parentId, publicEnabled, systemPrompt }),
+      body: JSON.stringify({ name, type, parentId, publicEnabled, systemPrompt, mandatoryFields, broadFirstSearch, broadFirstSearchChunks }),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to update organization')
@@ -688,11 +688,11 @@ class API {
     return json
   }
 
-  async createOrganization(name: string, type: string, parentId: string | null, publicEnabled?: boolean, systemPrompt?: string) {
+  async createOrganization(name: string, type: string, parentId: string | null, publicEnabled?: boolean, systemPrompt?: string, mandatoryFields?: any[], broadFirstSearch?: boolean, broadFirstSearchChunks?: number) {
     const res = await fetchWithAuth(`${API_BASE}/organizations`, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({ name, type, parentId, publicEnabled, systemPrompt }),
+      body: JSON.stringify({ name, type, parentId, publicEnabled, systemPrompt, mandatoryFields, broadFirstSearch, broadFirstSearchChunks }),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to create organization')

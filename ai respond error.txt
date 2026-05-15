@@ -1,0 +1,63 @@
+hi
+
+Hello there! I'm your AI Insurance Advisor from Hong Leong Assurance.
+
+How may I assist you today? Are you looking for a new insurance plan, checking on an existing policy, or do you have a general question?
+
+
+new insurance plan
+
+That's a great decision! I can definitely help you find a suitable plan.
+
+To start, could you please tell me your occupation or industry? This helps me understand your risk profile and recommend the most appropriate options.
+
+
+civil engineering
+
+Thank you! Civil engineering is a significant industry.
+
+Next, could you please tell me your age?
+
+
+36
+
+Got it, age 36.
+
+One more important detail: are you a smoker or a non-smoker?
+
+
+nope
+
+Great, thank you for clarifying! Being a non-smoker at 36 in civil engineering puts you in a good position for various plans.
+
+Based on your profile, I've found a few investment-linked plans that could be suitable, combining protection with potential for wealth growth. These types of plans are popular as they offer flexibility and long-term benefits.
+
+Here are my recommendations:
+
+1. ⭐ HLA CompleteCover
+
+Key Coverage: This is an investment-linked policy designed to provide long-term protection and investment growth. It offers an initial coverage period up to age 100.
+Benefits: Combines life protection with the potential for cash value growth depending on your chosen fund's performance. It's a comprehensive option for both protection and financial planning.
+Estimated Annual Premium: Based on your age (36), an annual premium of RM10,000.00 is illustrated as payable from age 30 to age 79.
+Why it suits you: This plan is excellent for someone looking for robust, long-term coverage that extends into their golden years, along with the flexibility of an investment-linked product.
+2. HLA Asset Master
+
+Key Coverage: Another strong investment-linked option, HLA Asset Master offers initial coverage up to age 80, with an option for auto-extension up to age 100.
+Benefits: Similar to HLA CompleteCover, it provides both insurance protection and investment opportunities.
+Estimated Annual Premium: An annual premium of RM10,000.00 is payable in the first year (based on age 30-35, and likely similar for age 36).
+Why it suits you: This plan offers a good balance of protection and investment potential, with the flexibility to extend coverage further into the future.
+3. HLA Asset Elite
+
+Key Coverage: This is a premium investment-linked plan with options for initial coverage up to age 80 with auto-extension up to age 100, or you can choose an initial coverage period up to age 100.
+Benefits: Offers a higher allocation of your premium towards purchasing units in your chosen investment fund, potentially leading to greater investment growth.
+Estimated Annual Premium: An annual premium of RM15,000.00 is payable in the first year (based on age 30-35, and likely similar for age 36).
+Why it suits you: If you're looking for an investment-linked plan with a potentially higher investment component and long-term coverage options, HLA Asset Elite could be a great fit.
+Please note that the premiums are estimated and actual sustainability depends on investment returns and other policy variations.
+
+Would you like more details on any of these plans, or perhaps information on how they compare?
+
+📥 Download Brochures:
+
+📥 PDS_HLA CompleteCover_ENG.pdf
+📥 PDS_HLA Asset Master_ENG.pdf
+📥 PDS_HLA Asset Elite_ENG.pdf

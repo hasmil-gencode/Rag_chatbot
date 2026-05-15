@@ -9,7 +9,7 @@ export const OrganizationsPage = () => {
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editingOrg, setEditingOrg] = useState<any>(null);
-  const [formData, setFormData] = useState({ name: "", type: "department" as "organization" | "entity" | "department", parentId: null as string | null, publicEnabled: false, systemPrompt: "" });
+  const [formData, setFormData] = useState({ name: "", type: "department" as "organization" | "entity" | "department", parentId: null as string | null, publicEnabled: false, systemPrompt: "", mandatoryFields: [] as { name: string; description: string; alwaysRequired?: boolean; requiredFor?: string[] }[], broadFirstSearch: false, broadFirstSearchChunks: 40 });
   const userRole = localStorage.getItem('userRole') || 'user';
   const isDeveloper = userRole === 'developer';
   const confirm = useConfirm();
@@ -18,14 +18,14 @@ export const OrganizationsPage = () => {
 
   const loadData = async () => { try { const data = await api.getAllOrganizations(); setOrganizations(data.organizations || []); } catch (e) { console.error(e); } };
 
-  const handleEdit = (org: any) => { setEditingOrg(org); setFormData({ name: org.name, type: org.type, parentId: org.parentId, publicEnabled: org.publicEnabled || false, systemPrompt: org.systemPrompt || "" }); setShowForm(true); };
+  const handleEdit = (org: any) => { setEditingOrg(org); setFormData({ name: org.name, type: org.type, parentId: org.parentId, publicEnabled: org.publicEnabled || false, systemPrompt: org.systemPrompt || "", mandatoryFields: org.mandatoryFields || [], broadFirstSearch: org.broadFirstSearch || false, broadFirstSearchChunks: org.broadFirstSearchChunks || 40 }); setShowForm(true); };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      if (editingOrg) await api.updateOrganization(editingOrg._id, formData.name, formData.type, formData.parentId, formData.publicEnabled, formData.systemPrompt);
-      else await api.createOrganization(formData.name, formData.type, formData.parentId, formData.publicEnabled, formData.systemPrompt);
-      setShowForm(false); setEditingOrg(null); setFormData({ name: "", type: "organization", parentId: null, publicEnabled: false, systemPrompt: "" }); loadData();
+      if (editingOrg) await api.updateOrganization(editingOrg._id, formData.name, formData.type, formData.parentId, formData.publicEnabled, formData.systemPrompt, formData.mandatoryFields, formData.broadFirstSearch, formData.broadFirstSearchChunks);
+      else await api.createOrganization(formData.name, formData.type, formData.parentId, formData.publicEnabled, formData.systemPrompt, formData.mandatoryFields, formData.broadFirstSearch, formData.broadFirstSearchChunks);
+      setShowForm(false); setEditingOrg(null); setFormData({ name: "", type: "organization", parentId: null, publicEnabled: false, systemPrompt: "", mandatoryFields: [], broadFirstSearch: false, broadFirstSearchChunks: 40 }); loadData();
     } catch (e: any) { toast.error(e.message); }
   };
 
@@ -85,7 +85,7 @@ export const OrganizationsPage = () => {
             <h1 className="text-xl font-semibold">{isDeveloper ? 'Organizations' : 'Departments'}</h1>
             <p className="text-xs text-muted-foreground mt-0.5">{isDeveloper ? 'Manage organizational hierarchy.' : 'Manage departments under your organization.'}</p>
           </div>
-          <Button size="sm" onClick={() => { setShowForm(true); setEditingOrg(null); setFormData({ name: "", type: isDeveloper ? "organization" : "department", parentId: null, publicEnabled: false, systemPrompt: "" }); }} className="text-xs h-8 rounded-lg">
+          <Button size="sm" onClick={() => { setShowForm(true); setEditingOrg(null); setFormData({ name: "", type: isDeveloper ? "organization" : "department", parentId: null, publicEnabled: false, systemPrompt: "", mandatoryFields: [], broadFirstSearch: false, broadFirstSearchChunks: 40 }); }} className="text-xs h-8 rounded-lg">
             <Plus className="w-3.5 h-3.5 mr-1.5" /> {isDeveloper ? 'Create' : 'Add Department'}
           </Button>
         </div>
@@ -159,10 +159,41 @@ export const OrganizationsPage = () => {
                 </label>
               )}
               {formData.type === 'organization' && (
+                <>
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">AI System Prompt <span className="text-[10px] font-normal">(leave empty to use global default)</span></label>
                   <textarea value={formData.systemPrompt} onChange={e => setFormData({ ...formData, systemPrompt: e.target.value })} rows={4} placeholder="Custom AI instructions for this organization..." className="w-full mt-1 px-3 py-2 text-xs border rounded-lg bg-background resize-none" />
                 </div>
+                {/* Mandatory Fields */}
+                <div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-muted-foreground">Mandatory Fields <span className="text-[10px] font-normal">(AI must collect before recommending)</span></label>
+                    <button type="button" onClick={() => setFormData({ ...formData, mandatoryFields: [...formData.mandatoryFields, { name: '', description: '', requiredFor: ['find_plan'] }] })} className="text-[10px] text-blue-500 hover:underline">+ Add</button>
+                  </div>
+                  {formData.mandatoryFields.map((f, i) => (
+                    <div key={i} className="flex gap-1.5 mt-1.5 items-center">
+                      <input value={f.name} onChange={e => { const mf = [...formData.mandatoryFields]; mf[i] = { ...mf[i], name: e.target.value }; setFormData({ ...formData, mandatoryFields: mf }); }} placeholder="Field name" className="w-24 h-7 px-2 text-[11px] rounded border bg-transparent" />
+                      <input value={f.description} onChange={e => { const mf = [...formData.mandatoryFields]; mf[i] = { ...mf[i], description: e.target.value }; setFormData({ ...formData, mandatoryFields: mf }); }} placeholder="Description" className="flex-1 h-7 px-2 text-[11px] rounded border bg-transparent" />
+                      <input value={f.alwaysRequired ? 'always' : (f.requiredFor || []).join(',')} onChange={e => { const mf = [...formData.mandatoryFields]; const val = e.target.value.trim(); if (val === 'always') { mf[i] = { ...mf[i], alwaysRequired: true, requiredFor: undefined }; } else { mf[i] = { ...mf[i], alwaysRequired: false, requiredFor: val.split(',').map(s => s.trim()).filter(Boolean) }; } setFormData({ ...formData, mandatoryFields: mf }); }} placeholder="always or intent1,intent2" className="w-28 h-7 px-2 text-[10px] rounded border bg-transparent" />
+                      <button type="button" onClick={() => setFormData({ ...formData, mandatoryFields: formData.mandatoryFields.filter((_, j) => j !== i) })} className="text-red-500 text-[10px]">✕</button>
+                    </div>
+                  ))}
+                </div>
+                {/* Broad First Search */}
+                <div className="flex items-center justify-between pt-2">
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground">Broad First Search</p>
+                    <p className="text-[10px] text-muted-foreground">AI studies all documents on first message for full product knowledge</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input type="number" value={formData.broadFirstSearchChunks} onChange={e => setFormData({ ...formData, broadFirstSearchChunks: parseInt(e.target.value) || 40 })} className="w-14 h-7 px-2 text-[11px] rounded border bg-transparent text-center" min={10} max={100} />
+                    <button type="button" onClick={() => setFormData({ ...formData, broadFirstSearch: !formData.broadFirstSearch })}
+                      className={`w-10 h-5 rounded-full transition-colors ${formData.broadFirstSearch ? 'bg-foreground' : 'bg-muted'}`}>
+                      <div className={`w-4 h-4 rounded-full bg-background transition-transform mx-0.5 ${formData.broadFirstSearch ? 'translate-x-5' : 'translate-x-0'}`} />
+                    </button>
+                  </div>
+                </div>
+                </>
               )}
               <div className="flex gap-2 pt-2">
                 <Button type="submit" size="sm" className="text-xs h-8 flex-1">{editingOrg ? 'Update' : 'Create'}</Button>

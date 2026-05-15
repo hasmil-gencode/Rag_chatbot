@@ -17,7 +17,7 @@ export function UserSettingsPage() {
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [fullName, setFullName] = useState('');
   const [isEditing, setIsEditing] = useState(false);
-  const [showSources, setShowSources] = useState(true);
+  const [showSources, setShowSources] = useState(false);
   const [verboseMode, setVerboseMode] = useState(false);
 
   useEffect(() => { loadSettings(); }, []);
@@ -43,7 +43,7 @@ export function UserSettingsPage() {
       });
       setFullName(userInfo.fullName || userInfo.email.split('@')[0]);
       const prefs = await api.getUserPreferences();
-      setShowSources(prefs.showSources !== false);
+      setShowSources(prefs.showSources === true);
       setVerboseMode(prefs.verboseMode || false);
     } catch (error) { console.error('Failed to load settings:', error); }
   };

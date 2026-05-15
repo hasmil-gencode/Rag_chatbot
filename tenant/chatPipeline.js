@@ -93,8 +93,8 @@ async function embedQuery(text, settings, db = null, source = 'chat') {
 }
 
 // ─── Vector Search ─────────────────────────────────────────────
-async function searchVectors(queryVector, orgIds, settings, fileId = null) {
-  const maxChunks = settings.chatMaxChunks || 5;
+async function searchVectors(queryVector, orgIds, settings, fileId = null, overrideLimit = null) {
+  const maxChunks = overrideLimit || settings.chatMaxChunks || 15;
   const mode = settings.uploadProcessingMode;
   if (!mode) throw new Error('Upload Processing Mode not configured. Go to Settings → Upload Processing.');
   const vectorDb = mode === 'offline' ? 'qdrant' : (settings.vectorDbProvider);
@@ -124,6 +124,7 @@ async function searchVectors(queryVector, orgIds, settings, fileId = null) {
     return results.map(r => ({
       content: r.payload?.content || '',
       file_name: r.payload?.file_name || '',
+      file_id: r.payload?.file_id || '',
       page_number: r.payload?.page_number || 0,
       score: r.score,
     }));
@@ -146,7 +147,7 @@ async function searchVectors(queryVector, orgIds, settings, fileId = null) {
 
 // ─── Public Vector Search (is_public: true + org scope) ────────
 async function searchPublicVectors(queryVector, orgIds, settings) {
-  const maxChunks = settings.chatMaxChunks || 5;
+  const maxChunks = settings.chatMaxChunks || 15;
   const mode = settings.uploadProcessingMode;
   const vectorDb = mode === 'offline' ? 'qdrant' : (settings.vectorDbProvider || 'qdrant');
 
@@ -245,13 +246,72 @@ export async function processBrowserChat(db, userId, message, sessionId, setting
   const queryVector = await embedQuery(message, settings, db, 'browser_chat');
 
   // 3. Search vectors with org filter + optional file filter
-  const chunks = await searchVectors(queryVector, orgIds, settings, fileId);
+  // Check if first message in session — if org has broadFirstSearch, get more context
+  let maxResults = settings.chatMaxChunks || 15;
+  let broadSearchTriggered = false;
+  if (organizationId && !fileId) {
+    const msgCount = await db.collection('messages').countDocuments({ sessionId });
+    if (msgCount <= 1) {
+      const orgCheck = await db.collection('organizations').findOne({ _id: new ObjectId(organizationId) });
+      if (orgCheck?.broadFirstSearch) {
+        maxResults = orgCheck.broadFirstSearchChunks || 40;
+        broadSearchTriggered = true;
+      }
+    }
+  }
+  const chunks = await searchVectors(queryVector, orgIds, settings, fileId, maxResults);
+  const debug = { chunksRetrieved: chunks.length, broadSearch: broadSearchTriggered, broadSearchChunks: maxResults, mandatoryFieldsCollected: null, mandatoryFieldsMissing: null, nextFieldAsked: null };
 
   // 4. Build messages array — org prompt overrides global
   let systemPrompt = settings.chatSystemPrompt || 'You are a helpful AI assistant.';
   if (organizationId) {
     const org = await db.collection('organizations').findOne({ _id: new ObjectId(organizationId) });
     if (org?.systemPrompt) systemPrompt = org.systemPrompt;
+
+    // Mandatory fields enforcement
+    if (org?.mandatoryFields?.length > 0) {
+      const historyForCheck = await db.collection('messages')
+        .find({ sessionId, role: { $in: ['user', 'bot'] } })
+        .sort({ createdAt: 1 })
+        .limit(20)
+        .toArray();
+      const convo = historyForCheck.map(m => `${m.role === 'bot' ? 'Assistant' : 'User'}: ${m.content}`).join('\n') + `\nUser: ${message}`;
+      const fieldList = org.mandatoryFields.map(f => `"${f.name}" (${f.description})`).join(', ');
+      const checkPrompt = `From this conversation, extract what has been clearly stated by the user.
+Fields to check: ${fieldList}
+
+For "intent", classify as one of: "find_plan" (looking for new insurance), "claim" (making a claim), "check_policy" (checking existing policy), "general" (general question).
+
+Conversation:
+${convo}
+
+Respond ONLY as JSON object with collected fields. Example: {"intent":"find_plan","occupation":"engineer","age":"35"}
+Only include fields that are CLEARLY stated. If not mentioned, omit.`;
+      try {
+        const checkResult = await callLLM([{ role: 'user', content: checkPrompt }], { ...settings, chatLlmModel: settings.chatLlmModel || 'gemini-2.5-flash' });
+        const collected = JSON.parse(checkResult.trim().replace(/```json?\n?/g, '').replace(/```/g, ''));
+        
+        // Determine which fields are required based on intent
+        const intent = collected.intent || null;
+        let requiredFields = org.mandatoryFields.filter(f => f.alwaysRequired);
+        if (intent) {
+          requiredFields = [...requiredFields, ...org.mandatoryFields.filter(f => f.requiredFor?.includes(intent))];
+        }
+        
+        const missing = requiredFields.filter(f => !collected[f.name]);
+        debug.mandatoryFieldsCollected = collected;
+        debug.mandatoryFieldsMissing = missing.map(f => f.name);
+        if (missing.length > 0) {
+          const nextField = missing[0];
+          debug.nextFieldAsked = nextField.name;
+          if (nextField.name === 'intent') {
+            systemPrompt += `\n\n## MANDATORY INSTRUCTION (DO NOT IGNORE):\nYou have NOT yet determined what the user needs help with. You MUST ask what they are looking for FIRST (e.g., find a new plan, make a claim, check existing policy, or general question). Do NOT recommend any plans yet. Do NOT ask for age/occupation yet. Ask naturally in one short question.`;
+          } else {
+            systemPrompt += `\n\n## MANDATORY INSTRUCTION (DO NOT IGNORE):\nYou have NOT yet collected the user's "${nextField.name}" (${nextField.description}). You MUST ask for this information NOW. Do NOT recommend any plans yet. Do NOT skip this. Ask naturally in one short question.`;
+          }
+        }
+      } catch {}
+    }
   }
   let contextBlock = '';
   if (chunks.length > 0) {
@@ -259,12 +319,17 @@ export async function processBrowserChat(db, userId, message, sessionId, setting
       chunks.map((c, i) => `[Source ${i + 1}: ${c.file_name}, Page ${c.page_number}]\n${c.content}`).join('\n\n');
   }
 
-  // Get chat history for this session
+  // Get chat history for this session (exclude current message which is appended separately)
   const history = await db.collection('messages')
     .find({ sessionId, role: { $in: ['user', 'bot'] } })
     .sort({ createdAt: 1 })
     .limit(20)
     .toArray();
+
+  // Remove last entry if it's the current user message (already saved before pipeline call)
+  if (history.length > 0 && history[history.length - 1].role === 'user' && history[history.length - 1].content === message) {
+    history.pop();
+  }
 
   const messages = [
     { role: 'system', content: systemPrompt + contextBlock },
@@ -278,6 +343,7 @@ export async function processBrowserChat(db, userId, message, sessionId, setting
   // 6. Build sources
   const sources = chunks.filter(c => c.file_name).map(c => ({
     file_name: c.file_name,
+    file_id: c.file_id,
     page_number: c.page_number,
     score: c.score,
   }));
@@ -301,7 +367,7 @@ export async function processBrowserChat(db, userId, message, sessionId, setting
     }
   }
 
-  return { response, sources: uniqueSources };
+  return { response, sources: uniqueSources, debug };
 }
 // ─── Public Embed Chat (no user, only public docs) ─────────────
 export async function processPublicChat(db, message, sessionId, settings, orgIds) {
