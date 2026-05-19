@@ -1,0 +1,48 @@
+name: tenant-stag
+
+services:
+  # ── Main App ──────────────────────────────────
+  rag-chatbot:
+    build: .
+    container_name: tenant-stag
+    ports:
+      - "1225:3000"
+    env_file: .env.staging
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - ./uploads-stag:/app/uploads
+      - ./public/logos:/app/public/logos
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── MongoDB Local ─────────────────────────────
+  mongodb:
+    image: mongo:7
+    container_name: tenant-mongo-stag
+    ports:
+      - "27020:27017"
+    volumes:
+      - mongodb_stag_data:/data/db
+    healthcheck:
+      test: mongosh --eval "db.adminCommand('ping')" --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Qdrant Vector DB ──────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-stag
+    ports:
+      - "6334:6333"
+    volumes:
+      - qdrant_stag_data:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  mongodb_stag_data:
+  qdrant_stag_data:

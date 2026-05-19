@@ -203,7 +203,7 @@ function applyConfig(){
   toggle.style.background=config.color||'#3B82F6';
   if(config.shape==='rounded') toggle.style.borderRadius='14px';
   else if(config.shape==='square') toggle.style.borderRadius='8px';
-  if(config.buttonIconUrl) toggle.innerHTML='<img src="'+API_BASE+config.buttonIconUrl+'" alt="">';
+  if(config.buttonIconUrl){toggle.innerHTML='<img src="'+API_BASE+config.buttonIconUrl+'" alt="">';toggle.style.background='transparent';toggle.style.boxShadow='none';}
   else if(config.logoUrl) toggle.innerHTML='<img src="'+API_BASE+config.logoUrl+'" alt="">';
 
   var header=document.getElementById('gbc-header');

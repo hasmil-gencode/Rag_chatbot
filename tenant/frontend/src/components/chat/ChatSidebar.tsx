@@ -354,8 +354,8 @@ export const ChatSidebar = ({
                         {session.date}
                       </div>
                     </button>
-                    {/* Only show delete button for own chats */}
-                    {session.startedByEmail === userEmail && (
+                    {/* Only show delete button for own chats or developer/admin */}
+                    {(session.startedByEmail === userEmail || isDeveloper || isAdmin) && (
                       <Button
                         variant="ghost"
                         size="icon"
