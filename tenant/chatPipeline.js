@@ -225,6 +225,74 @@ export async function callLLM(messages, settings, db = null, source = 'chat') {
   }
 }
 
+// ─── Stream LLM ────────────────────────────────────────────────
+export async function streamLLM(messages, settings, onToken, db = null, source = 'chat') {
+  const provider = settings.chatLlmProvider;
+  const model = settings.chatLlmModel;
+  const apiKey = settings[`chatLlmApiKey_${provider}`] || settings.chatLlmApiKey;
+  if (!provider) throw new Error('Chat LLM Provider not configured. Go to Settings → Chat → LLM.');
+  if (!model) throw new Error('Chat LLM Model not configured. Go to Settings → Chat → LLM.');
+  if (!apiKey) throw new Error(`Chat LLM API key not set for ${provider}. Check Settings or Provider Keys.`);
+  if (!['gemini', 'openai', 'groq'].includes(provider)) {
+    throw new Error(`Streaming is not supported for provider: ${provider}`);
+  }
+
+  const t = Date.now();
+  let fullText = '';
+  const emit = (text) => {
+    if (!text) return;
+    fullText += text;
+    onToken(text);
+  };
+
+  try {
+    if (provider === 'openai' || provider === 'groq') {
+      const baseURL = provider === 'groq' ? 'https://api.groq.com/openai/v1' : 'https://api.openai.com/v1';
+      const openai = new OpenAI({ apiKey, baseURL });
+      const stream = await openai.chat.completions.create({ model, messages, stream: true });
+      for await (const chunk of stream) {
+        emit(chunk.choices?.[0]?.delta?.content || '');
+      }
+    } else if (provider === 'gemini') {
+      const systemMsg = messages.find(m => m.role === 'system');
+      const chatMsgs = messages.filter(m => m.role !== 'system');
+      const body = {
+        contents: chatMsgs.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
+      };
+      if (systemMsg) body.systemInstruction = { parts: [{ text: systemMsg.content }] };
+
+      const res = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${apiKey}&alt=sse`,
+        body,
+        { responseType: 'stream', timeout: 60000 }
+      );
+
+      let buffer = '';
+      for await (const chunk of res.data) {
+        buffer += chunk.toString('utf8');
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const payload = trimmed.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(payload);
+            emit(parsed.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '');
+          } catch {}
+        }
+      }
+    }
+
+    if (db) logAiCall(db, provider, model, 'chat_stream', source, Date.now() - t);
+    return fullText;
+  } catch (e) {
+    if (db) logAiCall(db, provider, model, 'chat_stream', source, Date.now() - t, 'error');
+    throw e;
+  }
+}
+
 // ─── Main Chat Pipeline ────────────────────────────────────────
 export async function processBrowserChat(db, userId, message, sessionId, settings, fileId = null, organizationId = null) {
   // 0. Input guardrail check
@@ -368,6 +436,136 @@ Only include fields that are CLEARLY stated. If not mentioned, omit.`;
   }
 
   return { response, sources: uniqueSources, debug };
+}
+
+// ─── Main Chat Pipeline (Streaming) ────────────────────────────
+export async function processBrowserChatStream(db, userId, message, sessionId, settings, fileId = null, organizationId = null, callbacks = {}) {
+  const notify = (status) => callbacks.onStatus?.(status);
+
+  // 0. Input guardrail check
+  if (settings.guardrailEnabled) {
+    notify('Checking safety...');
+    const inputCheck = await checkGuardrail(message, settings.guardrailInputPrompt, settings, db);
+    if (!inputCheck.safe) {
+      await db.collection('guardrail_logs').insertOne({
+        userId, sessionId, type: 'input', message, reason: inputCheck.reason, createdAt: new Date()
+      });
+      return { response: 'Sorry, I\'m unable to process this request.\n\nMaaf, saya tidak dapat memproses permintaan ini.\n\nமன்னிக்கவும், இந்தக் கோரிக்கையை செயல்படுத்த இயலவில்லை.\n\n抱歉，无法处理此请求。', sources: [], blocked: true, blockReason: inputCheck.reason };
+    }
+  }
+
+  notify('Searching knowledge base...');
+  const orgIds = await getUserAccessibleOrgIds(db, userId);
+  const queryVector = await embedQuery(message, settings, db, 'browser_chat_stream');
+
+  let maxResults = settings.chatMaxChunks || 15;
+  let broadSearchTriggered = false;
+  if (organizationId && !fileId) {
+    const msgCount = await db.collection('messages').countDocuments({ sessionId });
+    if (msgCount <= 1) {
+      const orgCheck = await db.collection('organizations').findOne({ _id: new ObjectId(organizationId) });
+      if (orgCheck?.broadFirstSearch) {
+        maxResults = orgCheck.broadFirstSearchChunks || 40;
+        broadSearchTriggered = true;
+      }
+    }
+  }
+  const chunks = await searchVectors(queryVector, orgIds, settings, fileId, maxResults);
+  const debug = { chunksRetrieved: chunks.length, broadSearch: broadSearchTriggered, broadSearchChunks: maxResults, mandatoryFieldsCollected: null, mandatoryFieldsMissing: null, nextFieldAsked: null };
+
+  let systemPrompt = settings.chatSystemPrompt || 'You are a helpful AI assistant.';
+  if (organizationId) {
+    const org = await db.collection('organizations').findOne({ _id: new ObjectId(organizationId) });
+    if (org?.systemPrompt) systemPrompt = org.systemPrompt;
+
+    if (org?.mandatoryFields?.length > 0) {
+      const historyForCheck = await db.collection('messages')
+        .find({ sessionId, role: { $in: ['user', 'bot'] } })
+        .sort({ createdAt: 1 })
+        .limit(20)
+        .toArray();
+      const convo = historyForCheck.map(m => `${m.role === 'bot' ? 'Assistant' : 'User'}: ${m.content}`).join('\n') + `\nUser: ${message}`;
+      const fieldList = org.mandatoryFields.map(f => `"${f.name}" (${f.description})`).join(', ');
+      const checkPrompt = `From this conversation, extract what has been clearly stated by the user.
+Fields to check: ${fieldList}
+
+For "intent", classify as one of: "find_plan" (looking for new insurance), "claim" (making a claim), "check_policy" (checking existing policy), "general" (general question).
+
+Conversation:
+${convo}
+
+Respond ONLY as JSON object with collected fields. Example: {"intent":"find_plan","occupation":"engineer","age":"35"}
+Only include fields that are CLEARLY stated. If not mentioned, omit.`;
+      try {
+        const checkResult = await callLLM([{ role: 'user', content: checkPrompt }], { ...settings, chatLlmModel: settings.chatLlmModel || 'gemini-2.5-flash' });
+        const collected = JSON.parse(checkResult.trim().replace(/```json?\n?/g, '').replace(/```/g, ''));
+        const intent = collected.intent || null;
+        let requiredFields = org.mandatoryFields.filter(f => f.alwaysRequired);
+        if (intent) requiredFields = [...requiredFields, ...org.mandatoryFields.filter(f => f.requiredFor?.includes(intent))];
+        const missing = requiredFields.filter(f => !collected[f.name]);
+        debug.mandatoryFieldsCollected = collected;
+        debug.mandatoryFieldsMissing = missing.map(f => f.name);
+        if (missing.length > 0) {
+          const nextField = missing[0];
+          debug.nextFieldAsked = nextField.name;
+          if (nextField.name === 'intent') {
+            systemPrompt += `\n\n## MANDATORY INSTRUCTION (DO NOT IGNORE):\nYou have NOT yet determined what the user needs help with. You MUST ask what they are looking for FIRST (e.g., find a new plan, make a claim, check existing policy, or general question). Do NOT recommend any plans yet. Do NOT ask for age/occupation yet. Ask naturally in one short question.`;
+          } else {
+            systemPrompt += `\n\n## MANDATORY INSTRUCTION (DO NOT IGNORE):\nYou have NOT yet collected the user's "${nextField.name}" (${nextField.description}). You MUST ask for this information NOW. Do NOT recommend any plans yet. Do NOT skip this. Ask naturally in one short question.`;
+          }
+        }
+      } catch {}
+    }
+  }
+
+  const contextBlock = chunks.length > 0
+    ? '\n\n## Context from documents:\n' + chunks.map((c, i) => `[Source ${i + 1}: ${c.file_name}, Page ${c.page_number}]\n${c.content}`).join('\n\n')
+    : '';
+
+  const history = await db.collection('messages')
+    .find({ sessionId, role: { $in: ['user', 'bot'] } })
+    .sort({ createdAt: 1 })
+    .limit(20)
+    .toArray();
+
+  if (history.length > 0 && history[history.length - 1].role === 'user' && history[history.length - 1].content === message) {
+    history.pop();
+  }
+
+  const messages = [
+    { role: 'system', content: systemPrompt + contextBlock },
+    ...history.map(m => ({ role: m.role === 'bot' ? 'assistant' : 'user', content: m.content })),
+    { role: 'user', content: message },
+  ];
+
+  notify('Generating answer...');
+  const response = await streamLLM(messages, settings, callbacks.onToken || (() => {}), db, 'browser_chat_stream');
+
+  const seen = new Set();
+  const sources = chunks.filter(c => c.file_name).map(c => ({
+    file_name: c.file_name,
+    file_id: c.file_id,
+    page_number: c.page_number,
+    score: c.score,
+  })).filter(s => {
+    const key = `${s.file_name}:${s.page_number}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  if (settings.guardrailEnabled && response) {
+    notify('Checking response...');
+    const outputCheck = await checkGuardrail(response, settings.guardrailOutputPrompt, settings, db);
+    if (!outputCheck.safe) {
+      await db.collection('guardrail_logs').insertOne({
+        userId, sessionId, type: 'output', message: response.substring(0, 500), reason: outputCheck.reason, createdAt: new Date()
+      });
+      return { response: 'Sorry, I\'m unable to provide that information.\n\nMaaf, saya tidak dapat memberikan maklumat tersebut.\n\nமன்னிக்கவும், அந்தத் தகவலை வழங்க இயலவில்லை.\n\n抱歉，无法提供该信息。', sources: [], blocked: true, blockReason: outputCheck.reason };
+    }
+  }
+
+  return { response, sources, debug };
 }
 // ─── Public Embed Chat (no user, only public docs) ─────────────
 export async function processPublicChat(db, message, sessionId, settings, orgIds) {

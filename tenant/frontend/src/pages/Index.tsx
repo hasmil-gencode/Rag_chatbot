@@ -378,19 +378,128 @@ const Index = () => {
   };
 
   const handleSendMessage = async (content: string, fileId?: string | null) => {
+    const userMessageId = Date.now().toString();
+    const assistantMessageId = (Date.now() + 1).toString();
     const userMessage: Message = {
-      id: Date.now().toString(),
+      id: userMessageId,
       role: "user",
       content,
     };
+    const assistantMessage: Message = {
+      id: assistantMessageId,
+      role: "assistant",
+      content: "",
+    };
 
-    setMessages(prev => [...prev, userMessage]);
+    setMessages(prev => [...prev, userMessage, assistantMessage]);
     setIsLoading(true);
+    let clearStreamBuffer = () => {};
 
     try {
       const sessionId = currentSessionIdRef.current;
 
-      const response = await api.sendMessage(content, sessionId || undefined, fileId || undefined, currentOrganizationId);
+      let streamedAnyToken = false;
+      let pendingText = "";
+      let flushTimer: number | null = null;
+      let drainResolver: (() => void) | null = null;
+
+      const appendAssistantText = (text: string) => {
+        setMessages(prev => prev.map(msg => (
+          msg.id === assistantMessageId
+            ? { ...msg, content: msg.content + text }
+            : msg
+        )));
+      };
+
+      const stopFlushIfDone = () => {
+        if (pendingText.length > 0) return;
+        if (flushTimer) {
+          window.clearInterval(flushTimer);
+          flushTimer = null;
+        }
+        if (drainResolver) {
+          drainResolver();
+          drainResolver = null;
+        }
+      };
+
+      const flushNextTextSlice = () => {
+        if (!pendingText) {
+          stopFlushIfDone();
+          return;
+        }
+        const take = pendingText.length > 800 ? 11 : pendingText.length > 300 ? 7 : pendingText.length > 120 ? 5 : 2;
+        const next = pendingText.slice(0, take);
+        pendingText = pendingText.slice(take);
+        appendAssistantText(next);
+        stopFlushIfDone();
+      };
+
+      const startFlush = () => {
+        if (flushTimer) return;
+        flushTimer = window.setInterval(flushNextTextSlice, 24);
+      };
+
+      const queueToken = (token: string) => {
+        if (!token) return;
+        streamedAnyToken = true;
+        pendingText += token;
+        startFlush();
+      };
+
+      clearStreamBuffer = () => {
+        pendingText = "";
+        if (flushTimer) {
+          window.clearInterval(flushTimer);
+          flushTimer = null;
+        }
+        if (drainResolver) {
+          drainResolver();
+          drainResolver = null;
+        }
+      };
+
+      const waitForBufferedText = () => {
+        if (!flushTimer && pendingText.length === 0) return Promise.resolve();
+        return new Promise<void>((resolve) => {
+          drainResolver = resolve;
+          startFlush();
+        });
+      };
+
+      const response = await api.sendMessageStream(
+        content,
+        sessionId || undefined,
+        fileId || undefined,
+        currentOrganizationId,
+        {
+          onToken: queueToken,
+          onReplace: (replacement) => {
+            clearStreamBuffer();
+            setMessages(prev => prev.map(msg => (
+              msg.id === assistantMessageId
+                ? { ...msg, content: replacement }
+                : msg
+            )));
+          },
+        }
+      ).catch(async (streamError: any) => {
+        if (streamedAnyToken || streamError?.fromStreamEvent) throw streamError;
+        const fallback = await api.sendMessage(content, sessionId || undefined, fileId || undefined, currentOrganizationId);
+        setMessages(prev => prev.map(msg => (
+          msg.id === assistantMessageId
+            ? {
+                ...msg,
+                content: fallback.response,
+                sources: fallback.sources || [],
+                responseTimeMs: fallback.responseTimeMs,
+                debug: fallback.debug,
+              }
+            : msg
+        )));
+        return fallback;
+      });
+      await waitForBufferedText();
       
       // Update session ID immediately if this was first message
       if (!sessionId && response.sessionId) {
@@ -398,46 +507,48 @@ const Index = () => {
         currentSessionIdRef.current = response.sessionId;
       }
       
-      const botMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: response.response,
-        sources: response.sources || [],
-        responseTimeMs: response.responseTimeMs,
-        debug: response.debug,
-      };
-
-      setMessages(prev => [...prev, botMessage]);
+      setMessages(prev => prev.map(msg => (
+        msg.id === assistantMessageId
+          ? {
+              ...msg,
+              content: msg.content || response.response,
+              sources: response.sources || [],
+              responseTimeMs: response.responseTimeMs,
+              debug: response.debug,
+            }
+          : msg
+      )));
       
       // Reload sessions list if new session was created
       if (!sessionId) {
         await loadInitialData();
       }
     } catch (error: any) {
+      clearStreamBuffer();
       // Check if quota exceeded
       if (error.message.includes('quota exceeded') || error.message.includes('429')) {
         const errorMessage: Message = {
-          id: (Date.now() + 1).toString(),
+          id: assistantMessageId,
           role: "assistant",
           content: error.message.includes('Rate limit') 
             ? `⚠️ You're sending messages too fast. Please wait a moment and try again.`
             : `⚠️ Your quota exceeded limit, please contact Admin.`,
         };
-        setMessages(prev => [...prev, errorMessage]);
+        setMessages(prev => prev.map(msg => msg.id === assistantMessageId ? errorMessage : msg));
       } else if (error.message.includes('Rate limit')) {
         const errorMessage: Message = {
-          id: (Date.now() + 1).toString(),
+          id: assistantMessageId,
           role: "assistant",
           content: `⚠️ You're sending messages too fast. Please wait a moment and try again.`,
         };
-        setMessages(prev => [...prev, errorMessage]);
+        setMessages(prev => prev.map(msg => msg.id === assistantMessageId ? errorMessage : msg));
       } else {
         const errorMessage: Message = {
-          id: (Date.now() + 1).toString(),
+          id: assistantMessageId,
           role: "assistant",
           content: `Error: ${error.message}`,
         };
-        setMessages(prev => [...prev, errorMessage]);
+        setMessages(prev => prev.map(msg => msg.id === assistantMessageId ? errorMessage : msg));
       }
     } finally {
       setIsLoading(false);

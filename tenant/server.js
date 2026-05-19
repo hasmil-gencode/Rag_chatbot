@@ -15,7 +15,7 @@ import { GoogleAuth } from 'google-auth-library';
 import { processUploadedFile, deleteFileVectors } from './uploadPipeline.js';
 import { QdrantClient } from '@qdrant/js-client-rest';
 import OpenAI from 'openai';
-import { processBrowserChat, processPublicChat, callLLM, checkGuardrail } from './chatPipeline.js';
+import { processBrowserChat, processBrowserChatStream, processPublicChat, callLLM, streamLLM, checkGuardrail } from './chatPipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -1300,6 +1300,195 @@ app.post('/api/chat', auth, apiRateLimit(30, 60000), async (req, res) => {
   }
 });
 
+// Chat streaming (SSE)
+app.post('/api/chat/stream', auth, apiRateLimit(30, 60000), async (req, res) => {
+  let streamStarted = false;
+  const sendEvent = (event, data) => {
+    if (res.writableEnded) return;
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const { message, sessionId, fileId, currentOrganizationId } = req.body;
+    const chatSessionId = sessionId || new ObjectId().toString();
+
+    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const startedByEmail = user?.email || 'Unknown';
+    const startedByName = startedByEmail.split('@')[0];
+
+    let groupId = user.groupId;
+    let userOrgIdForQuota = null;
+
+    if (!groupId) {
+      const assignments = await db.collection('user_organization_assignments').find({
+        userId: user._id
+      }).toArray();
+
+      if (assignments.length > 0) {
+        userOrgIdForQuota = assignments[0].organizationId;
+        const org = await db.collection('organizations').findOne({
+          _id: assignments[0].organizationId
+        });
+        groupId = org?.groupId;
+      }
+    }
+
+    if (groupId) {
+      const group = await db.collection('groups').findOne({ _id: groupId });
+
+      if (group && group.chatQuota > 0) {
+        const currentMonth = new Date().toISOString().substring(0, 7);
+        const today = new Date().getDate();
+        if (today === group.renewDay) {
+          const lastReset = await db.collection('chat_resets').findOne({
+            groupId: group._id,
+            month: currentMonth
+          });
+
+          if (!lastReset) {
+            await db.collection('chat_counts').deleteMany({
+              groupId: group._id,
+              month: { $lt: currentMonth }
+            });
+            await db.collection('chat_resets').insertOne({
+              groupId: group._id,
+              month: currentMonth,
+              resetAt: new Date()
+            });
+            await db.collection('groups').updateOne(
+              { _id: group._id },
+              { $set: { bonusQuota: 0 } }
+            );
+          }
+        }
+
+        const effectiveQuota = group.chatQuota + (group.bonusQuota || 0);
+        if (group.quotaType === 'individual') {
+          const userCount = await db.collection('chat_counts').findOne({
+            groupId: group._id,
+            organizationId: userOrgIdForQuota,
+            userId: user._id,
+            month: currentMonth
+          });
+
+          const currentCount = userCount?.count || 0;
+          if (currentCount >= effectiveQuota) {
+            return res.status(429).json({
+              error: 'quota_exceeded',
+              message: 'Your quota exceeded limit, please contact Admin',
+              used: currentCount,
+              limit: effectiveQuota
+            });
+          }
+        } else {
+          const counts = await db.collection('chat_counts').find({
+            groupId: group._id,
+            organizationId: userOrgIdForQuota,
+            month: currentMonth
+          }).toArray();
+
+          const totalCount = counts.reduce((sum, c) => sum + c.count, 0);
+          if (totalCount >= effectiveQuota) {
+            return res.status(429).json({
+              error: 'quota_exceeded',
+              message: 'Your quota exceeded limit, please contact Admin',
+              used: totalCount,
+              limit: effectiveQuota
+            });
+          }
+        }
+      }
+    }
+
+    streamStarted = true;
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+    res.write(': connected\n\n');
+
+    await db.collection('messages').insertOne({
+      userId: req.user.id,
+      sessionId: chatSessionId,
+      currentOrganizationId: currentOrganizationId ? new ObjectId(currentOrganizationId) : null,
+      startedBy: startedByName,
+      startedByEmail: startedByEmail,
+      role: 'user',
+      content: message,
+      chatType: 'browser',
+      chatName: 'normal',
+      createdAt: new Date()
+    });
+
+    const chatStartTime = Date.now();
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const result = await processBrowserChatStream(db, req.user.id, message, chatSessionId, settings, fileId || null, currentOrganizationId || null, {
+      onStatus: (status) => sendEvent('status', { status }),
+      onToken: (token) => sendEvent('token', { token }),
+    });
+    const responseTimeMs = Date.now() - chatStartTime;
+
+    const botContent = result.response || '';
+    const userPrefs = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const showSources = userPrefs?.showSources !== undefined ? userPrefs.showSources : false;
+    const verboseMode = userPrefs?.verboseMode || false;
+
+    if (result.blocked) {
+      sendEvent('replace', { content: botContent });
+    }
+
+    await db.collection('messages').insertOne({
+      userId: req.user.id,
+      sessionId: chatSessionId,
+      currentOrganizationId: currentOrganizationId ? new ObjectId(currentOrganizationId) : null,
+      startedBy: startedByName,
+      startedByEmail: startedByEmail,
+      role: 'bot',
+      content: botContent,
+      sources: showSources ? result.sources : [],
+      responseTimeMs: verboseMode ? responseTimeMs : undefined,
+      chatType: 'browser',
+      chatName: 'normal',
+      createdAt: new Date()
+    });
+
+    if (groupId) {
+      const currentMonth = new Date().toISOString().substring(0, 7);
+      await db.collection('chat_counts').updateOne(
+        { groupId: groupId, organizationId: userOrgIdForQuota, userId: user._id, month: currentMonth },
+        {
+          $inc: { count: 1 },
+          $setOnInsert: { createdAt: new Date() },
+          $set: { updatedAt: new Date() }
+        },
+        { upsert: true }
+      );
+    }
+
+    const isDev = req.user.role === 'developer';
+    sendEvent('done', {
+      response: botContent,
+      sources: showSources ? result.sources : [],
+      responseTimeMs: verboseMode ? responseTimeMs : undefined,
+      sessionId: chatSessionId,
+      debug: isDev ? result.debug : undefined,
+      blocked: result.blocked || false,
+    });
+    res.end();
+  } catch (error) {
+    console.error('Chat stream error:', error.message);
+    if (streamStarted && !res.writableEnded) {
+      sendEvent('error', { error: 'Failed to get response: ' + error.message });
+      return res.end();
+    }
+    res.status(500).json({
+      error: 'Failed to get response: ' + error.message,
+    });
+  }
+});
+
 // API Key authentication middleware
 async function authenticateApiKey(req, res, next) {
   const apiKey = req.headers['x-api-key'];
@@ -1547,7 +1736,224 @@ app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req
   }
 });
 
-// Streaming chat endpoint
+// Public streaming chat API endpoint (uses API key)
+app.post('/api/v1/chat/stream', authenticateApiKey, apiRateLimit(60, 60000), async (req, res) => {
+  let streamStarted = false;
+  const sendEvent = (event, data) => {
+    if (res.writableEnded) return;
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const { message, sessionId, organizationId, filter } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    await db.collection('api_usage').insertOne({
+      apiKeyId: req.apiKey._id,
+      endpoint: '/api/v1/chat/stream',
+      method: 'POST',
+      timestamp: new Date(),
+      responseStatus: 200,
+      ipAddress: req.ip
+    });
+
+    streamStarted = true;
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+    res.write(': connected\n\n');
+
+    const chatSessionId = sessionId || new ObjectId().toString();
+    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const startedByEmail = user?.email || 'API User';
+    const startedByName = startedByEmail.split('@')[0];
+
+    let currentOrganizationId = organizationId || null;
+    if (!currentOrganizationId) {
+      const userAssignments = await db.collection('user_organization_assignments').find({
+        userId: req.user.id.toString()
+      }).toArray();
+
+      if (userAssignments.length > 0) {
+        currentOrganizationId = userAssignments[0].organizationId;
+      }
+    }
+
+    await db.collection('messages').insertOne({
+      userId: req.user.id,
+      sessionId: chatSessionId,
+      currentOrganizationId: currentOrganizationId ? new ObjectId(currentOrganizationId) : null,
+      startedBy: startedByName,
+      startedByEmail: startedByEmail,
+      role: 'user',
+      content: message,
+      chatType: 'API',
+      chatName: req.apiKey.name,
+      source: 'api',
+      apiKeyId: req.apiKey._id,
+      createdAt: new Date()
+    });
+
+    const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+    const chatMode = req.apiKey.chatMode || 'webhook';
+    let botContent = '';
+    let sources = [];
+
+    if (settings.guardrailEnabled) {
+      sendEvent('status', { status: 'Checking safety...' });
+      const inputCheck = await checkGuardrail(message, settings.guardrailInputPrompt, settings, db);
+      if (!inputCheck.safe) {
+        botContent = 'Sorry, I\'m unable to process this request.\n\nMaaf, saya tidak dapat memproses permintaan ini.\n\nமன்னிக்கவும், இந்தக் கோரிக்கையை செயல்படுத்த இயலவில்லை.\n\n抱歉，无法处理此请求。';
+        await db.collection('guardrail_logs').insertOne({ userId: req.user.id, sessionId: chatSessionId, type: 'input', source: 'api', message, reason: inputCheck.reason, createdAt: new Date() });
+        sendEvent('replace', { content: botContent });
+        sendEvent('done', { response: { text: botContent, speak: '' }, sessionId: chatSessionId, blocked: true });
+        return res.end();
+      }
+    }
+
+    if (chatMode === 'native') {
+      const pk = await resolveProviderKeys(currentOrganizationId?.toString());
+
+      sendEvent('status', { status: 'Searching knowledge base...' });
+      const embProvider = settings.embeddingProvider || 'gemini';
+      const embModel = settings.embeddingModel || 'gemini-embedding-001';
+      const embKey = settings.embeddingApiKey || pk[embProvider] || '';
+      let queryVector;
+      const embStart = Date.now();
+
+      if (embProvider === 'gemini') {
+        const r = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${embModel}:embedContent?key=${embKey}`, { content: { parts: [{ text: message }] }, taskType: 'RETRIEVAL_QUERY' });
+        queryVector = r.data.embedding.values;
+      } else if (embProvider === 'openai') {
+        const oai = new OpenAI({ apiKey: embKey });
+        const r = await oai.embeddings.create({ model: embModel, input: [message] });
+        queryVector = r.data[0].embedding;
+      } else if (embProvider === 'mistral') {
+        const r = await axios.post('https://api.mistral.ai/v1/embeddings', { model: embModel, input: [message] }, { headers: { 'Authorization': `Bearer ${embKey}` } });
+        queryVector = r.data.data[0].embedding;
+      }
+      await logAiCall(embProvider, embModel, 'embedding', 'api_v1_stream', Date.now() - embStart);
+
+      const qdrantHost = settings.qdrantHost || settings.offlineQdrantHost || 'qdrant';
+      const qdrantPort = settings.qdrantPort || settings.offlineQdrantPort || 6333;
+      const qdrant = new QdrantClient({ host: qdrantHost, port: qdrantPort });
+      const maxChunks = settings.chatMaxChunks || 5;
+      let context = '';
+      try {
+        const must = [];
+        if (filter && typeof filter === 'object') {
+          for (const [key, value] of Object.entries(filter)) {
+            if (key === 'externalUserId') {
+              must.push({ key: 'shared_with', match: { value: `ext_${value}` } });
+            } else {
+              must.push({ key, match: { value } });
+            }
+          }
+        }
+        const searchFilter = must.length > 0 ? { must } : undefined;
+        const results = await qdrant.search('documents', { vector: queryVector, limit: maxChunks, with_payload: true, filter: searchFilter });
+        context = results.map(r => r.payload?.content || '').filter(Boolean).join('\n\n---\n\n');
+        const seen = new Set();
+        sources = results.map(r => ({
+          file_name: r.payload?.file_name || '',
+          file_id: r.payload?.file_id || '',
+          page_number: r.payload?.page_number || 0,
+          score: r.score,
+        })).filter(s => {
+          if (!s.file_name) return false;
+          const key = `${s.file_name}:${s.page_number}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      } catch (e) { console.error('Qdrant search error:', e.message); }
+
+      let systemPrompt = req.apiKey.systemPrompt || settings.chatSystemPrompt || 'You are a helpful AI assistant.';
+      if (!req.apiKey.systemPrompt && req.apiKey.organizationId) {
+        const org = await db.collection('organizations').findOne({ _id: new ObjectId(req.apiKey.organizationId) });
+        if (org?.systemPrompt) systemPrompt = org.systemPrompt;
+      }
+      const llmProvider = settings.chatLlmProvider || 'gemini';
+      const llmModel = settings.chatLlmModel || 'gemini-2.5-flash';
+      const llmKey = settings.chatLlmApiKey || pk[llmProvider] || '';
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        ...(context ? [{ role: 'user', content: `Context:\n${context}` }] : []),
+        { role: 'user', content: message }
+      ];
+
+      sendEvent('status', { status: 'Generating answer...' });
+      botContent = await streamLLM(messages, {
+        ...settings,
+        chatLlmProvider: llmProvider,
+        chatLlmModel: llmModel,
+        chatLlmApiKey: llmKey,
+        [`chatLlmApiKey_${llmProvider}`]: llmKey,
+      }, (token) => sendEvent('token', { token }), db, 'api_v1_stream');
+    } else {
+      const webhookUrl = req.apiKey.webhookUrl;
+      if (!webhookUrl) {
+        sendEvent('error', { error: 'No webhook URL configured for this API key' });
+        return res.end();
+      }
+      sendEvent('status', { status: 'Calling webhook...' });
+      const { data } = await axios.post(webhookUrl, {
+        message, userId: req.user.id.toString(), currentOrganizationId, sessionId: chatSessionId, fileId: null, chatType: 'API', chatName: req.apiKey.name
+      }, { timeout: 60000 });
+      botContent = typeof data.response === 'object' ? data.response.text : data.response;
+      sendEvent('token', { token: botContent || '' });
+    }
+
+    if (settings.guardrailEnabled && botContent) {
+      sendEvent('status', { status: 'Checking response...' });
+      const outputCheck = await checkGuardrail(botContent, settings.guardrailOutputPrompt, settings, db);
+      if (!outputCheck.safe) {
+        await db.collection('guardrail_logs').insertOne({ userId: req.user.id, sessionId: chatSessionId, type: 'output', source: 'api', message: botContent.substring(0, 500), reason: outputCheck.reason, createdAt: new Date() });
+        botContent = 'Sorry, I\'m unable to provide that information.\n\nMaaf, saya tidak dapat memberikan maklumat tersebut.\n\nமன்னிக்கவும், அந்தத் தகவலை வழங்க இயலவில்லை.\n\n抱歉，无法提供此请求。';
+        sendEvent('replace', { content: botContent });
+      }
+    }
+
+    await db.collection('messages').insertOne({
+      userId: req.user.id,
+      sessionId: chatSessionId,
+      currentOrganizationId: currentOrganizationId ? new ObjectId(currentOrganizationId) : null,
+      startedBy: startedByName,
+      startedByEmail: startedByEmail,
+      role: 'bot',
+      content: botContent || '',
+      chatType: 'API',
+      chatName: req.apiKey.name,
+      source: 'api',
+      apiKeyId: req.apiKey._id,
+      createdAt: new Date()
+    });
+
+    sendEvent('done', {
+      response: {
+        text: (botContent.match(/\[TEXT\]([\s\S]*?)\[\/TEXT\]/)?.[1] || botContent).trim(),
+        speak: (botContent.match(/\[SPEAK\]([\s\S]*?)\[\/SPEAK\]/)?.[1] || botContent).trim(),
+      },
+      sessionId: chatSessionId,
+      sources,
+    });
+    res.end();
+  } catch (error) {
+    console.error('API stream chat error:', error.message);
+    if (streamStarted && !res.writableEnded) {
+      sendEvent('error', { error: 'Internal server error', code: 'SERVER_ERROR' });
+      return res.end();
+    }
+    res.status(500).json({ error: 'Internal server error', code: 'SERVER_ERROR' });
+  }
+});
+
 // Get chat history
 app.get('/api/messages', auth, async (req, res) => {
   const sessionId = req.query.sessionId;

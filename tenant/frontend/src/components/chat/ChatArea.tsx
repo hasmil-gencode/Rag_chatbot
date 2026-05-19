@@ -28,7 +28,6 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, userFu
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [waitingForResponse, setWaitingForResponse] = useState(false);
-  const lastMessageCountRef = useRef(0);
   const lastMessageIdRef = useRef<string>('');
 
   useEffect(() => {
@@ -37,9 +36,9 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, userFu
 
   // Auto-trigger Play button when new assistant message arrives
   useEffect(() => {
-    if (waitingForResponse && messages.length > lastMessageCountRef.current) {
+    if (waitingForResponse && !isLoading) {
       const lastMessage = messages[messages.length - 1];
-      if (lastMessage && lastMessage.role === 'assistant' && lastMessage.id !== lastMessageIdRef.current) {
+      if (lastMessage && lastMessage.role === 'assistant' && lastMessage.content.trim() && lastMessage.id !== lastMessageIdRef.current) {
         setWaitingForResponse(false);
         lastMessageIdRef.current = lastMessage.id;
         
@@ -60,8 +59,7 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, userFu
         }, 100); // Reduced delay from 300ms to 100ms
       }
     }
-    lastMessageCountRef.current = messages.length;
-  }, [messages, waitingForResponse]);
+  }, [messages, waitingForResponse, isLoading]);
 
   const getUserName = () => {
     if (userFullName) return userFullName;
@@ -113,6 +111,7 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, userFu
                     key={msg.id} 
                     role={msg.role} 
                     content={msg.content} 
+                    isTyping={isLoading && msg.role === "assistant" && !msg.content}
                     userName={getUserName()} 
                     startedBy={msg.startedBy}
                     timestamp={msg.createdAt}
@@ -133,7 +132,9 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, userFu
                   )}
                 </div>
               ))}
-              {isLoading && <ChatMessage role="assistant" content="" isTyping />}
+              {isLoading && !(messages[messages.length - 1]?.role === "assistant" && !messages[messages.length - 1]?.content) && (
+                <ChatMessage role="assistant" content="" isTyping />
+              )}
               <div ref={messagesEndRef} />
             </div>
           </div>

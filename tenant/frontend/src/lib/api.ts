@@ -174,6 +174,76 @@ class API {
     return json
   }
 
+  async sendMessageStream(
+    message: string,
+    sessionId: string | undefined,
+    fileId: string | undefined,
+    currentOrganizationId: string | null | undefined,
+    handlers: {
+      onToken?: (token: string) => void
+      onStatus?: (status: string) => void
+      onReplace?: (content: string) => void
+    } = {}
+  ): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number }[]; responseTimeMs?: number; debug?: any; blocked?: boolean }> {
+    const res = await fetchWithAuth(`${API_BASE}/chat/stream`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ message, sessionId, fileId, currentOrganizationId }),
+    })
+
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}))
+      throw new Error(json.message || json.error || 'Failed to send message')
+    }
+
+    if (!res.headers.get('content-type')?.includes('text/event-stream')) {
+      throw new Error('Streaming response was not available')
+    }
+
+    const reader = res.body?.getReader()
+    if (!reader) throw new Error('Streaming response was not readable')
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let result: any = null
+
+    const handleEvent = (raw: string) => {
+      const lines = raw.split('\n')
+      let event = 'message'
+      const dataLines: string[] = []
+      for (const line of lines) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
+      }
+      if (dataLines.length === 0) return
+      const data = JSON.parse(dataLines.join('\n'))
+      if (event === 'status' && data.status) handlers.onStatus?.(data.status)
+      if (event === 'token' && data.token) handlers.onToken?.(data.token)
+      if (event === 'replace') handlers.onReplace?.(data.content || '')
+      if (event === 'error') {
+        const err = new Error(data.error || 'Streaming failed') as Error & { fromStreamEvent?: boolean }
+        err.fromStreamEvent = true
+        throw err
+      }
+      if (event === 'done') result = data
+    }
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const events = buffer.split('\n\n')
+      buffer = events.pop() || ''
+      for (const event of events) {
+        if (event.trim()) handleEvent(event)
+      }
+    }
+
+    if (buffer.trim()) handleEvent(buffer)
+    if (!result) throw new Error('Streaming failed: no final response')
+    return result
+  }
+
   async getMessages(sessionId?: string): Promise<ChatMessage[]> {
     const url = sessionId ? `${API_BASE}/messages?sessionId=${sessionId}` : `${API_BASE}/messages`
     const res = await fetchWithAuth(url, {

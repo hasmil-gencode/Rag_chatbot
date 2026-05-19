@@ -195,10 +195,13 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, s
         ) : (
           <div>
             {isTyping ? (
-              <div className="flex items-center gap-1.5 py-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground opacity-40 typing-dot" />
-                <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground opacity-40 typing-dot" />
-                <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground opacity-40 typing-dot" />
+              <div className="flex items-center gap-1.5 py-2 text-[14px] text-muted-foreground">
+                <span>Thinking</span>
+                <span className="flex items-center gap-0.5 pt-1">
+                  <span className="w-1 h-1 rounded-full bg-muted-foreground/70 thinking-dot" />
+                  <span className="w-1 h-1 rounded-full bg-muted-foreground/70 thinking-dot" />
+                  <span className="w-1 h-1 rounded-full bg-muted-foreground/70 thinking-dot" />
+                </span>
               </div>
             ) : (
               <div className="text-[14px] leading-relaxed text-foreground prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-headings:my-3 prose-headings:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-code:bg-muted/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded">

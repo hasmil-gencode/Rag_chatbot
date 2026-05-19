@@ -1,0 +1,71 @@
+hasmil@ip-10-50-2-38:~/genbot-stag/tenant$ cat /etc/nginx/sites-available/genia-stag 
+server {
+    listen 1227;
+    server_name genia-stag.gencode.com.my;
+
+    client_max_body_size 50M;
+
+    # ── Embed widget routes (allow iframe & cross-origin) ──
+    location /embed/ {
+        proxy_pass http://localhost:1225;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Allow iframe from any site
+        add_header X-Frame-Options "ALLOWALL" always;
+        add_header Content-Security-Policy "frame-ancestors *;" always;
+        add_header Access-Control-Allow-Origin "*" always;
+        add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+        # Remove restrictive headers for embed
+        proxy_hide_header Cross-Origin-Embedder-Policy;
+        proxy_hide_header Cross-Origin-Opener-Policy;
+    }
+
+    # ── API routes for embed widget (chat, config, etc) ──
+    location /api/embed/ {
+        proxy_pass http://localhost:1225;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        add_header Access-Control-Allow-Origin "*" always;
+        add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+
+        if ($request_method = 'OPTIONS') {
+            return 204;
+        }
+    }
+
+    # ── Everything else (strict security) ──
+    location / {
+        # Security Headers
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https:; media-src 'self' blob:; frame-ancestors 'none';" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Permissions-Policy "geolocation=(), microphone=(self), camera=()" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
+        add_header Cross-Origin-Embedder-Policy "require-corp" always;
+
+        proxy_pass http://localhost:4001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 75s;
+    }
+}

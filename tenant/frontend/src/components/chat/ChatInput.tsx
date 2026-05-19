@@ -7,6 +7,7 @@ import { FileSelector } from "./FileSelector";
 
 // Silence timeout for continuous mode (in milliseconds)
 const SILENCE_TIMEOUT = 2000; // 2 seconds
+type TimeoutHandle = ReturnType<typeof setTimeout>;
 
 interface ChatInputProps {
   onSend: (message: string, fileId?: string | null) => void;
@@ -26,14 +27,14 @@ export const ChatInput = ({ onSend, isLoading, selectedFileId: externalFileId, o
   const [voiceMode, setVoiceMode] = useState<string>("browser");
   const [voiceLanguage, setVoiceLanguage] = useState<string>("auto");
   const [recognition, setRecognition] = useState<any>(null);
-  const [silenceTimer, setSilenceTimer] = useState<NodeJS.Timeout | null>(null);
+  const [silenceTimer, setSilenceTimer] = useState<TimeoutHandle | null>(null);
   const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
   const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
   const isTTSPlayingRef = useRef(false);
   const recognitionRef = useRef<any>(null);
   const currentTranscriptRef = useRef<string>('');
-  const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const silenceTimerRef = useRef<TimeoutHandle | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const restartRecordingRef = useRef<(() => void) | null>(null);

@@ -109,6 +109,7 @@ export const ApiManagementPage = () => {
           <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">API Usage Guide</p></div>
           <div className="p-4 space-y-3">
             <div><p className="text-[11px] text-muted-foreground mb-1">Endpoint</p><code className="block text-xs bg-muted px-3 py-2 rounded">POST /api/v1/chat</code></div>
+            <div><p className="text-[11px] text-muted-foreground mb-1">Streaming Endpoint</p><code className="block text-xs bg-muted px-3 py-2 rounded">POST /api/v1/chat/stream</code></div>
             <div><p className="text-[11px] text-muted-foreground mb-1">Headers</p><code className="block text-xs bg-muted px-3 py-2 rounded">x-api-key: YOUR_API_KEY</code></div>
             <div><p className="text-[11px] text-muted-foreground mb-1">Basic Request</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`{
   "message": "Your question",
@@ -120,6 +121,36 @@ export const ApiManagementPage = () => {
     "externalUserId": "user_123",
     "type": "purchase_order",
     "company": "ABC Sdn Bhd"
+  }
+}`}</pre></div>
+            <div><p className="text-[11px] text-muted-foreground mb-1">Streaming Events</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`event: status  // processing state
+event: token   // partial response text
+event: replace // replace streamed text if response is blocked
+event: done    // final response, sessionId, sources
+event: error   // request failed`}</pre></div>
+            <div><p className="text-[11px] text-muted-foreground mb-1">Streaming Fetch Example</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`const res = await fetch('/api/v1/chat/stream', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'x-api-key': 'YOUR_API_KEY'
+  },
+  body: JSON.stringify({ message: 'Your question', sessionId: 'optional' })
+});
+
+const reader = res.body.getReader();
+const decoder = new TextDecoder();
+let buffer = '';
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  buffer += decoder.decode(value, { stream: true });
+  for (const eventBlock of buffer.split('\\n\\n')) {
+    if (!eventBlock.includes('data:')) continue;
+    const event = eventBlock.match(/^event: (.+)$/m)?.[1];
+    const data = JSON.parse(eventBlock.match(/^data: (.+)$/m)?.[1] || '{}');
+    if (event === 'token') process.stdout.write(data.token);
+    if (event === 'done') console.log(data.sessionId);
   }
 }`}</pre></div>
             <div className="pt-1">
