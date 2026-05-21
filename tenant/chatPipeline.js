@@ -441,6 +441,20 @@ Only include fields that are CLEARLY stated. If not mentioned, omit.`;
 // ─── Main Chat Pipeline (Streaming) ────────────────────────────
 export async function processBrowserChatStream(db, userId, message, sessionId, settings, fileId = null, organizationId = null, callbacks = {}) {
   const notify = (status) => callbacks.onStatus?.(status);
+  const debug = {
+    chunksRetrieved: 0,
+    broadSearch: false,
+    broadSearchChunks: settings.chatMaxChunks || 15,
+    mandatoryFieldsCollected: null,
+    mandatoryFieldsMissing: null,
+    nextFieldAsked: null,
+    chunks: [],
+    promptUsed: null,
+    provider: settings.chatLlmProvider || 'gemini',
+    model: settings.chatLlmModel || 'gemini-2.5-flash',
+    embeddingLatencyMs: null,
+    providerLatencyMs: null,
+  };
 
   // 0. Input guardrail check
   if (settings.guardrailEnabled) {
@@ -456,7 +470,9 @@ export async function processBrowserChatStream(db, userId, message, sessionId, s
 
   notify('Searching knowledge base...');
   const orgIds = await getUserAccessibleOrgIds(db, userId);
+  const embeddingStart = Date.now();
   const queryVector = await embedQuery(message, settings, db, 'browser_chat_stream');
+  debug.embeddingLatencyMs = Date.now() - embeddingStart;
 
   let maxResults = settings.chatMaxChunks || 15;
   let broadSearchTriggered = false;
@@ -471,7 +487,17 @@ export async function processBrowserChatStream(db, userId, message, sessionId, s
     }
   }
   const chunks = await searchVectors(queryVector, orgIds, settings, fileId, maxResults);
-  const debug = { chunksRetrieved: chunks.length, broadSearch: broadSearchTriggered, broadSearchChunks: maxResults, mandatoryFieldsCollected: null, mandatoryFieldsMissing: null, nextFieldAsked: null };
+  debug.chunksRetrieved = chunks.length;
+  debug.broadSearch = broadSearchTriggered;
+  debug.broadSearchChunks = maxResults;
+  debug.chunks = chunks.map((c, i) => ({
+    index: i + 1,
+    file_name: c.file_name,
+    file_id: c.file_id,
+    page_number: c.page_number,
+    score: c.score,
+    content: (c.content || '').slice(0, 700),
+  }));
 
   let systemPrompt = settings.chatSystemPrompt || 'You are a helpful AI assistant.';
   if (organizationId) {
@@ -537,9 +563,17 @@ Only include fields that are CLEARLY stated. If not mentioned, omit.`;
     ...history.map(m => ({ role: m.role === 'bot' ? 'assistant' : 'user', content: m.content })),
     { role: 'user', content: message },
   ];
+  debug.promptUsed = {
+    system: (systemPrompt + contextBlock).slice(0, 6000),
+    messageCount: messages.length,
+    historyCount: history.length,
+    contextCharacters: contextBlock.length,
+  };
 
   notify('Generating answer...');
+  const providerStart = Date.now();
   const response = await streamLLM(messages, settings, callbacks.onToken || (() => {}), db, 'browser_chat_stream');
+  debug.providerLatencyMs = Date.now() - providerStart;
 
   const seen = new Set();
   const sources = chunks.filter(c => c.file_name).map(c => ({
@@ -617,5 +651,71 @@ export async function processPublicChat(db, message, sessionId, settings, orgIds
 
   const seen = new Set();
   const sources = chunks.filter(c => c.file_name).map(c => ({ file_name: c.file_name, page_number: c.page_number, score: c.score })).filter(s => { const k = `${s.file_name}:${s.page_number}`; if (seen.has(k)) return false; seen.add(k); return true; });
+  return { response, sources };
+}
+
+// ─── Public Embed Chat (Streaming) ─────────────────────────────
+export async function processPublicChatStream(db, message, sessionId, settings, orgIds, callbacks = {}) {
+  const notify = (status) => callbacks.onStatus?.(status);
+
+  if (settings.guardrailEnabled) {
+    notify('Checking safety...');
+    const inputCheck = await checkGuardrail(message, settings.guardrailInputPrompt, settings, db);
+    if (!inputCheck.safe) {
+      await db.collection('guardrail_logs').insertOne({ sessionId, type: 'input', source: 'widget', message, reason: inputCheck.reason, createdAt: new Date() });
+      return { response: 'Sorry, I\'m unable to process this request.\n\nMaaf, saya tidak dapat memproses permintaan ini.\n\nமன்னிக்கவும், இந்தக் கோரிக்கையை செயல்படுத்த இயலவில்லை.\n\n抱歉，无法处理此请求。', sources: [], blocked: true };
+    }
+  }
+
+  notify('Searching knowledge base...');
+  const queryVector = await embedQuery(message, settings, db, 'embed_widget_stream');
+  const chunks = await searchPublicVectors(queryVector, orgIds, settings);
+
+  const systemPrompt = await (async () => {
+    if (orgIds?.length) {
+      const org = await db.collection('organizations').findOne({ _id: orgIds[0], systemPrompt: { $exists: true, $ne: '' } });
+      if (org?.systemPrompt) return org.systemPrompt;
+    }
+    return settings.chatSystemPrompt || 'You are a helpful AI assistant.';
+  })();
+
+  const contextBlock = chunks.length > 0
+    ? '\n\n## Context from documents:\n' + chunks.map((c, i) => `[Source ${i + 1}: ${c.file_name}, Page ${c.page_number}]\n${c.content}`).join('\n\n')
+    : '';
+
+  const history = await db.collection('messages')
+    .find({ sessionId, role: { $in: ['user', 'bot'] } })
+    .sort({ createdAt: 1 }).limit(10).toArray();
+
+  if (history.length > 0 && history[history.length - 1].role === 'user' && history[history.length - 1].content === message) {
+    history.pop();
+  }
+
+  const messages = [
+    { role: 'system', content: systemPrompt + contextBlock },
+    ...history.map(m => ({ role: m.role === 'bot' ? 'assistant' : 'user', content: m.content })),
+    { role: 'user', content: message },
+  ];
+
+  notify('Generating answer...');
+  const response = await streamLLM(messages, settings, callbacks.onToken || (() => {}), db, 'embed_widget_stream');
+
+  if (settings.guardrailEnabled && response) {
+    notify('Checking response...');
+    const outputCheck = await checkGuardrail(response, settings.guardrailOutputPrompt, settings, db);
+    if (!outputCheck.safe) {
+      await db.collection('guardrail_logs').insertOne({ sessionId, type: 'output', source: 'widget', message: response.substring(0, 500), reason: outputCheck.reason, createdAt: new Date() });
+      return { response: 'Sorry, I\'m unable to provide that information.\n\nMaaf, saya tidak dapat memberikan maklumat tersebut.\n\nமன்னிக்கவும், அந்தத் தகவலை வழங்க இயலவில்லை.\n\n抱歉，无法提供该信息。', sources: [], blocked: true };
+    }
+  }
+
+  const seen = new Set();
+  const sources = chunks.filter(c => c.file_name).map(c => ({ file_name: c.file_name, page_number: c.page_number, score: c.score })).filter(s => {
+    const k = `${s.file_name}:${s.page_number}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+
   return { response, sources };
 }

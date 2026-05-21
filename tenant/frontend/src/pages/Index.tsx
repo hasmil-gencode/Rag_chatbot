@@ -1,36 +1,38 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { lazy, Suspense, useState, useEffect, useRef, useCallback } from "react";
 import { Toaster, toast } from "sonner";
 import { ConfirmDialogProvider, useConfirm } from "@/components/chat/ConfirmDialog";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { ChatArea } from "@/components/chat/ChatArea";
-import { FilesPage } from "@/components/chat/FilesPage";
-import { SettingsPage } from "@/components/chat/SettingsPage";
-import { ApiManagementPage } from "@/components/chat/ApiManagementPage";
-import { ProviderKeysPage } from "@/components/chat/ProviderKeysPage";
-import { UsersPage } from "@/components/chat/UsersPage";
-import { OrganizationsPage } from "@/components/chat/OrganizationsPage";
-import { AuditTrailPage } from "@/components/chat/AuditTrailPage";
-import { DeletedChatsPage } from "@/components/chat/DeletedChatsPage";
-import { SystemHealthPage } from "@/components/chat/SystemHealthPage";
-import { VectorBrowserPage } from "@/components/chat/VectorBrowserPage";
-import { MongoBrowserPage } from "@/components/chat/MongoBrowserPage";
-import { GuardrailLogsPage } from "@/components/chat/GuardrailLogsPage";
-import { ExternalKnowledgePage } from "@/components/chat/ExternalKnowledgePage";
-import { AiUsagePage } from "@/components/chat/AiUsagePage";
-import { SmtpSettingsPage } from "@/components/chat/SmtpSettingsPage";
-import { UserSettingsPage } from "@/components/chat/UserSettingsPage";
-import { WebViewPanel } from "@/components/chat/WebViewPanel";
-import { EmbedWidgetsPage } from "@/components/chat/EmbedWidgetsPage";
 import { api, setUnauthorizedHandler } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+
+const FilesPage = lazy(() => import("@/components/chat/FilesPage").then(m => ({ default: m.FilesPage })));
+const SettingsPage = lazy(() => import("@/components/chat/SettingsPage").then(m => ({ default: m.SettingsPage })));
+const ApiManagementPage = lazy(() => import("@/components/chat/ApiManagementPage").then(m => ({ default: m.ApiManagementPage })));
+const ProviderKeysPage = lazy(() => import("@/components/chat/ProviderKeysPage").then(m => ({ default: m.ProviderKeysPage })));
+const UsersPage = lazy(() => import("@/components/chat/UsersPage").then(m => ({ default: m.UsersPage })));
+const OrganizationsPage = lazy(() => import("@/components/chat/OrganizationsPage").then(m => ({ default: m.OrganizationsPage })));
+const AuditTrailPage = lazy(() => import("@/components/chat/AuditTrailPage").then(m => ({ default: m.AuditTrailPage })));
+const DeletedChatsPage = lazy(() => import("@/components/chat/DeletedChatsPage").then(m => ({ default: m.DeletedChatsPage })));
+const SystemHealthPage = lazy(() => import("@/components/chat/SystemHealthPage").then(m => ({ default: m.SystemHealthPage })));
+const VectorBrowserPage = lazy(() => import("@/components/chat/VectorBrowserPage").then(m => ({ default: m.VectorBrowserPage })));
+const MongoBrowserPage = lazy(() => import("@/components/chat/MongoBrowserPage").then(m => ({ default: m.MongoBrowserPage })));
+const GuardrailLogsPage = lazy(() => import("@/components/chat/GuardrailLogsPage").then(m => ({ default: m.GuardrailLogsPage })));
+const ExternalKnowledgePage = lazy(() => import("@/components/chat/ExternalKnowledgePage").then(m => ({ default: m.ExternalKnowledgePage })));
+const AiUsagePage = lazy(() => import("@/components/chat/AiUsagePage").then(m => ({ default: m.AiUsagePage })));
+const SmtpSettingsPage = lazy(() => import("@/components/chat/SmtpSettingsPage").then(m => ({ default: m.SmtpSettingsPage })));
+const UserSettingsPage = lazy(() => import("@/components/chat/UserSettingsPage").then(m => ({ default: m.UserSettingsPage })));
+const EmbedWidgetsPage = lazy(() => import("@/components/chat/EmbedWidgetsPage").then(m => ({ default: m.EmbedWidgetsPage })));
+const WebViewPanel = lazy(() => import("@/components/chat/WebViewPanel").then(m => ({ default: m.WebViewPanel })));
 
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
   startedBy?: string;
-  sources?: { file_name: string; page_number: number; file_id?: string }[];
+  status?: string;
+  sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[];
   responseTimeMs?: number;
   actions?: { label: string; value: string }[];
   debug?: any;
@@ -44,6 +46,20 @@ interface ChatSession {
   startedBy?: string;
   startedByEmail?: string;
 }
+
+const PageFallback = () => (
+  <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+    Loading...
+  </div>
+);
+
+type StreamingSpeed = "fast" | "balanced" | "smooth";
+
+const STREAMING_PROFILES: Record<StreamingSpeed, { interval: number; small: number; medium: number; large: number; huge: number }> = {
+  fast: { interval: 14, small: 4, medium: 8, large: 13, huge: 20 },
+  balanced: { interval: 24, small: 2, medium: 5, large: 7, huge: 11 },
+  smooth: { interval: 36, small: 1, medium: 3, large: 5, huge: 8 },
+};
 
 const Index = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -60,6 +76,7 @@ const Index = () => {
   const [canUploadFiles, setCanUploadFiles] = useState<boolean>(true);
   const [userOrganizations, setUserOrganizations] = useState<any[]>([]);
   const [currentOrganizationId, setCurrentOrganizationId] = useState<string | null>(null);
+  const [streamingSpeed, setStreamingSpeed] = useState<StreamingSpeed>("balanced");
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const unauthorizedHandledRef = useRef(false);
   const idleTimerRef = useRef<number | null>(null);
@@ -123,6 +140,31 @@ const Index = () => {
       loadInitialData();
     }
   }, []);
+
+  useEffect(() => {
+    fetch('/api/public-settings')
+      .then(res => res.json())
+      .then(data => {
+        const speed = data.chatStreamingSpeed;
+        if (speed === 'fast' || speed === 'balanced' || speed === 'smooth') {
+          setStreamingSpeed(speed);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const loadStreamingSpeed = async () => {
+    try {
+      const res = await fetch('/api/public-settings');
+      const data = await res.json();
+      const speed = data.chatStreamingSpeed;
+      if (speed === 'fast' || speed === 'balanced' || speed === 'smooth') {
+        setStreamingSpeed(speed);
+        return speed as StreamingSpeed;
+      }
+    } catch {}
+    return streamingSpeed;
+  };
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -389,6 +431,7 @@ const Index = () => {
       id: assistantMessageId,
       role: "assistant",
       content: "",
+      status: "Thinking",
     };
 
     setMessages(prev => [...prev, userMessage, assistantMessage]);
@@ -397,11 +440,13 @@ const Index = () => {
 
     try {
       const sessionId = currentSessionIdRef.current;
+      const activeStreamingSpeed = await loadStreamingSpeed();
 
       let streamedAnyToken = false;
       let pendingText = "";
       let flushTimer: number | null = null;
       let drainResolver: (() => void) | null = null;
+      const streamProfile = STREAMING_PROFILES[activeStreamingSpeed] || STREAMING_PROFILES.balanced;
 
       const appendAssistantText = (text: string) => {
         setMessages(prev => prev.map(msg => (
@@ -428,7 +473,13 @@ const Index = () => {
           stopFlushIfDone();
           return;
         }
-        const take = pendingText.length > 800 ? 11 : pendingText.length > 300 ? 7 : pendingText.length > 120 ? 5 : 2;
+        const take = pendingText.length > 800
+          ? streamProfile.huge
+          : pendingText.length > 300
+            ? streamProfile.large
+            : pendingText.length > 120
+              ? streamProfile.medium
+              : streamProfile.small;
         const next = pendingText.slice(0, take);
         pendingText = pendingText.slice(take);
         appendAssistantText(next);
@@ -437,7 +488,7 @@ const Index = () => {
 
       const startFlush = () => {
         if (flushTimer) return;
-        flushTimer = window.setInterval(flushNextTextSlice, 24);
+        flushTimer = window.setInterval(flushNextTextSlice, streamProfile.interval);
       };
 
       const queueToken = (token: string) => {
@@ -473,12 +524,19 @@ const Index = () => {
         fileId || undefined,
         currentOrganizationId,
         {
+          onStatus: (status) => {
+            setMessages(prev => prev.map(msg => (
+              msg.id === assistantMessageId
+                ? { ...msg, status }
+                : msg
+            )));
+          },
           onToken: queueToken,
           onReplace: (replacement) => {
             clearStreamBuffer();
             setMessages(prev => prev.map(msg => (
               msg.id === assistantMessageId
-                ? { ...msg, content: replacement }
+                ? { ...msg, content: replacement, status: undefined }
                 : msg
             )));
           },
@@ -491,6 +549,7 @@ const Index = () => {
             ? {
                 ...msg,
                 content: fallback.response,
+                status: undefined,
                 sources: fallback.sources || [],
                 responseTimeMs: fallback.responseTimeMs,
                 debug: fallback.debug,
@@ -512,6 +571,7 @@ const Index = () => {
           ? {
               ...msg,
               content: msg.content || response.response,
+              status: undefined,
               sources: response.sources || [],
               responseTimeMs: response.responseTimeMs,
               debug: response.debug,
@@ -533,6 +593,7 @@ const Index = () => {
           content: error.message.includes('Rate limit') 
             ? `⚠️ You're sending messages too fast. Please wait a moment and try again.`
             : `⚠️ Your quota exceeded limit, please contact Admin.`,
+          status: undefined,
         };
         setMessages(prev => prev.map(msg => msg.id === assistantMessageId ? errorMessage : msg));
       } else if (error.message.includes('Rate limit')) {
@@ -540,6 +601,7 @@ const Index = () => {
           id: assistantMessageId,
           role: "assistant",
           content: `⚠️ You're sending messages too fast. Please wait a moment and try again.`,
+          status: undefined,
         };
         setMessages(prev => prev.map(msg => msg.id === assistantMessageId ? errorMessage : msg));
       } else {
@@ -547,6 +609,7 @@ const Index = () => {
           id: assistantMessageId,
           role: "assistant",
           content: `Error: ${error.message}`,
+          status: undefined,
         };
         setMessages(prev => prev.map(msg => msg.id === assistantMessageId ? errorMessage : msg));
       }
@@ -970,29 +1033,35 @@ const Index = () => {
                 onWebViewOpen={setWebViewUrl}
               />
             )}
-            {currentPage === "files" && <FilesPage />}
-            {currentPage === "settings" && <SettingsPage />}
-            {currentPage === "api" && <ApiManagementPage />}
-            {currentPage === "provider-keys" && <ProviderKeysPage />}
-            {currentPage === "deleted-chats" && <DeletedChatsPage />}
-            {currentPage === "system-health" && <SystemHealthPage />}
-            {currentPage === "vector-browser" && <VectorBrowserPage />}
-            {currentPage === "mongo-browser" && <MongoBrowserPage />}
-            {currentPage === "guardrail-logs" && <GuardrailLogsPage />}
-            {currentPage === "external-knowledge" && <ExternalKnowledgePage />}
-            {currentPage === "ai-usage" && <AiUsagePage />}
-            {currentPage === "smtp-settings" && <SmtpSettingsPage />}
-            {currentPage === "organizations" && <OrganizationsPage />}
-            {currentPage === "audit-trail" && <AuditTrailPage />}
-            {currentPage === "users" && <UsersPage />}
-            {currentPage === "user-settings" && <UserSettingsPage />}
-            {currentPage === "embed-widgets" && <EmbedWidgetsPage />}
+            {currentPage !== "chat" && (
+              <Suspense fallback={<PageFallback />}>
+                {currentPage === "files" && <FilesPage />}
+                {currentPage === "settings" && <SettingsPage />}
+                {currentPage === "api" && <ApiManagementPage />}
+                {currentPage === "provider-keys" && <ProviderKeysPage />}
+                {currentPage === "deleted-chats" && <DeletedChatsPage />}
+                {currentPage === "system-health" && <SystemHealthPage />}
+                {currentPage === "vector-browser" && <VectorBrowserPage />}
+                {currentPage === "mongo-browser" && <MongoBrowserPage />}
+                {currentPage === "guardrail-logs" && <GuardrailLogsPage />}
+                {currentPage === "external-knowledge" && <ExternalKnowledgePage />}
+                {currentPage === "ai-usage" && <AiUsagePage />}
+                {currentPage === "smtp-settings" && <SmtpSettingsPage />}
+                {currentPage === "organizations" && <OrganizationsPage />}
+                {currentPage === "audit-trail" && <AuditTrailPage />}
+                {currentPage === "users" && <UsersPage />}
+                {currentPage === "user-settings" && <UserSettingsPage />}
+                {currentPage === "embed-widgets" && <EmbedWidgetsPage />}
+              </Suspense>
+            )}
           </div>
           
           {/* Web view panel */}
           {webViewUrl && currentPage === "chat" && (
             <div className="w-1/2">
-              <WebViewPanel url={webViewUrl} onClose={() => setWebViewUrl(null)} />
+              <Suspense fallback={<PageFallback />}>
+                <WebViewPanel url={webViewUrl} onClose={() => setWebViewUrl(null)} />
+              </Suspense>
             </div>
           )}
         </div>

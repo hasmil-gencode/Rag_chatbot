@@ -393,6 +393,26 @@ export const SettingsPage = () => {
                     className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
                   <p className="text-[10px] text-muted-foreground mt-1">Number of document chunks to include as context for each chat message.</p>
                 </div>
+                <div>
+                  <label className="text-[11px] text-muted-foreground">Streaming Speed</label>
+                  <div className="mt-1 grid grid-cols-3 rounded-lg border p-1">
+                    {(['fast', 'balanced', 'smooth'] as const).map((speed) => (
+                      <button
+                        key={speed}
+                        type="button"
+                        onClick={() => updateSetting('chatStreamingSpeed', speed)}
+                        className={`h-8 rounded-md text-[12px] capitalize transition-colors ${
+                          (settings.chatStreamingSpeed || 'balanced') === speed
+                            ? 'bg-primary text-primary-foreground'
+                            : 'text-muted-foreground hover:bg-muted'
+                        }`}
+                      >
+                        {speed}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-1">Controls the browser typewriter effect for streamed chat responses.</p>
+                </div>
               </div>
             </div>
           </div>

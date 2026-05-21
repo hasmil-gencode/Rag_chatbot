@@ -91,7 +91,7 @@ export interface Message {
   createdAt: string
   startedBy?: string
   startedByEmail?: string
-  sources?: { file_name: string; page_number: number }[]
+  sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[]
 }
 
 interface Settings {
@@ -163,7 +163,7 @@ class API {
     return json
   }
 
-  async sendMessage(message: string, sessionId?: string, fileId?: string, currentOrganizationId?: string | null): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number }[]; responseTimeMs?: number; debug?: any }> {
+  async sendMessage(message: string, sessionId?: string, fileId?: string, currentOrganizationId?: string | null): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[]; responseTimeMs?: number; debug?: any }> {
     const res = await fetchWithAuth(`${API_BASE}/chat`, {
       method: 'POST',
       headers: this.getHeaders(),
@@ -184,7 +184,7 @@ class API {
       onStatus?: (status: string) => void
       onReplace?: (content: string) => void
     } = {}
-  ): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number }[]; responseTimeMs?: number; debug?: any; blocked?: boolean }> {
+  ): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[]; responseTimeMs?: number; debug?: any; blocked?: boolean }> {
     const res = await fetchWithAuth(`${API_BASE}/chat/stream`, {
       method: 'POST',
       headers: this.getHeaders(),
@@ -567,18 +567,18 @@ class API {
     return json
   }
 
-  async createApiKey(name: string, userId: string, generateShortKey: boolean = false, _robotSettingId: string | null = null, description: string = '', webhookUrl: string = '', chatMode: string = 'native', systemPrompt: string = '') {
+  async createApiKey(name: string, userId: string, generateShortKey: boolean = false, _robotSettingId: string | null = null, description: string = '', webhookUrl: string = '', chatMode: string = 'native', systemPrompt: string = '', scopes: string[] = ['chat'], allowedCollectionIds: string[] = []) {
     const res = await fetchWithAuth(`${API_BASE}/keys`, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({ name, userId, generateShortKey, description, webhookUrl, chatMode, systemPrompt }),
+      body: JSON.stringify({ name, userId, generateShortKey, description, webhookUrl, chatMode, systemPrompt, scopes, allowedCollectionIds }),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to create API key')
     return json
   }
 
-  async updateApiKeyDetails(id: string, data: { name: string; description: string; chatMode: string; webhookUrl: string; systemPrompt: string }) {
+  async updateApiKeyDetails(id: string, data: { name: string; description: string; chatMode: string; webhookUrl: string; systemPrompt: string; scopes?: string[]; allowedCollectionIds?: string[] }) {
     const res = await fetchWithAuth(`${API_BASE}/keys/${id}/details`, {
       method: 'PUT', headers: this.getHeaders(), body: JSON.stringify(data),
     })
@@ -941,13 +941,13 @@ class API {
     if (!res.ok) throw new Error('Failed to get collections')
     return res.json()
   }
-  async createExternalCollection(data: { name: string; description?: string; organizationIds?: string[] }) {
+  async createExternalCollection(data: { name: string; description?: string; organizationIds?: string[]; metadataSchema?: any[] }) {
     const res = await fetchWithAuth(`${API_BASE}/external-collections`, { method: 'POST', headers: this.getHeaders(), body: JSON.stringify(data) })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed')
     return json
   }
-  async updateExternalCollection(id: string, data: { name: string; description?: string; organizationIds?: string[] }) {
+  async updateExternalCollection(id: string, data: { name: string; description?: string; organizationIds?: string[]; metadataSchema?: any[] }) {
     const res = await fetchWithAuth(`${API_BASE}/external-collections/${id}`, { method: 'PUT', headers: this.getHeaders(), body: JSON.stringify(data) })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed')
@@ -957,6 +957,24 @@ class API {
     const res = await fetchWithAuth(`${API_BASE}/external-collections/${id}`, { method: 'DELETE', headers: this.getHeaders() })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed')
+    return json
+  }
+  async getExternalIngestLogs(id: string) {
+    const res = await fetchWithAuth(`${API_BASE}/external-collections/${id}/ingest-logs`, { headers: this.getHeaders() })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to get ingest logs')
+    return json
+  }
+  async clearExternalCollectionVectors(id: string) {
+    const res = await fetchWithAuth(`${API_BASE}/external-collections/${id}/clear-vectors`, { method: 'POST', headers: this.getHeaders() })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to clear vectors')
+    return json
+  }
+  async searchExternalCollection(id: string, data: { query: string; limit?: number; filter?: Record<string, any> }) {
+    const res = await fetchWithAuth(`${API_BASE}/external-collections/${id}/search`, { method: 'POST', headers: this.getHeaders(), body: JSON.stringify(data) })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to search collection')
     return json
   }
 }

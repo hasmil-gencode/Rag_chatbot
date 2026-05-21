@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Volume2, Square, Loader2 } from "lucide-react";
+import { FileText, Loader2, Square, Volume2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import ReactMarkdown from 'react-markdown';
@@ -12,19 +12,21 @@ interface ChatMessageProps {
   content: string;
   isTyping?: boolean;
   isStreaming?: boolean;
+  status?: string;
   userName?: string;
   startedBy?: string;
   timestamp?: Date | string;
-  sources?: { file_name: string; page_number: number; file_id?: string }[];
+  sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[];
   responseTimeMs?: number;
   onWebViewOpen?: (url: string) => void;
   debug?: any;
 }
 
-export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, sources, responseTimeMs, onWebViewOpen, debug }: ChatMessageProps) => {
+export const ChatMessage = ({ role, content, isTyping, isStreaming, status, startedBy, sources, responseTimeMs, onWebViewOpen, debug }: ChatMessageProps) => {
   const isUser = role === "user";
   const [showDebug, setShowDebug] = useState(false);
   const userRole = localStorage.getItem('userRole') || 'user';
+  const canShowSourceCitations = userRole.toLowerCase() === 'developer';
   const showStartedBy = (userRole.toLowerCase() === 'developer' || userRole === 'admin' || userRole === 'manager') && startedBy;
   
   const [isPlaying, setIsPlaying] = useState(false);
@@ -33,6 +35,23 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, s
   const [ttsLanguage, setTtsLanguage] = useState<string>("en-US");
   const [audio, setAudio] = useState<HTMLAudioElement | null>(null);
   const [downloadableMatches, setDownloadableMatches] = useState<any[]>([]);
+  const displayStatus = (() => {
+    const raw = (status || 'Thinking').replace(/\.+$/, '').trim();
+    if (/safety|checking/i.test(raw)) return 'Thinking';
+    if (/search/i.test(raw)) return 'Searching knowledge';
+    if (/generat/i.test(raw)) return 'Generating';
+    return raw || 'Thinking';
+  })();
+  const formatMs = (value?: number | null) => {
+    if (typeof value !== 'number') return 'n/a';
+    return value >= 1000 ? `${(value / 1000).toFixed(2)}s` : `${value}ms`;
+  };
+  const makeSourceUrl = (source: { file_id?: string; page_number?: number }) => {
+    if (!source.file_id) return '';
+    const token = localStorage.getItem('token') || '';
+    const page = source.page_number && source.page_number > 0 ? `#page=${source.page_number}` : '';
+    return `/api/files/${source.file_id}/view?token=${encodeURIComponent(token)}${page}`;
+  };
 
   // Auto-open form if message contains form link
   // Custom link renderer for ReactMarkdown
@@ -196,7 +215,7 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, s
           <div>
             {isTyping ? (
               <div className="flex items-center gap-1.5 py-2 text-[14px] text-muted-foreground">
-                <span>Thinking</span>
+                <span>{displayStatus}</span>
                 <span className="flex items-center gap-0.5 pt-1">
                   <span className="w-1 h-1 rounded-full bg-muted-foreground/70 thinking-dot" />
                   <span className="w-1 h-1 rounded-full bg-muted-foreground/70 thinking-dot" />
@@ -205,13 +224,22 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, s
               </div>
             ) : (
               <div className="text-[14px] leading-relaxed text-foreground prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-headings:my-3 prose-headings:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-code:bg-muted/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded">
+                {isStreaming && status && (
+                  <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-normal text-muted-foreground not-prose">
+                    <span>{displayStatus}</span>
+                    <span className="flex items-center gap-0.5 pt-1">
+                      <span className="w-1 h-1 rounded-full bg-muted-foreground/70 thinking-dot" />
+                      <span className="w-1 h-1 rounded-full bg-muted-foreground/70 thinking-dot" />
+                      <span className="w-1 h-1 rounded-full bg-muted-foreground/70 thinking-dot" />
+                    </span>
+                  </div>
+                )}
                 <ReactMarkdown 
                   remarkPlugins={[remarkGfm]}
                   components={{ a: LinkRenderer }}
                 >
                   {content.replace(/\[Download:\s*(.+?)\]/g, (_, filename) => `[📥 ${filename.trim()}](/api/files/download-by-name/${encodeURIComponent(filename.trim())}?token=${localStorage.getItem('token')})`)}
                 </ReactMarkdown>
-                {isStreaming && <span className="inline-block w-1.5 h-4 bg-current ml-0.5 animate-pulse">▊</span>}
               </div>
             )}
           </div>
@@ -243,17 +271,23 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, s
         )}
 
         {/* Source citations */}
-        {!isUser && !isTyping && sources && sources.length > 0 && (
+        {canShowSourceCitations && !isUser && !isTyping && sources && sources.length > 0 && (
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {sources.map((s, i) => (
               s.file_id ? (
-                <a key={i} href={`/api/files/${s.file_id}/download`} target="_blank" rel="noopener noreferrer"
+                <a key={i} href={makeSourceUrl(s)} target="_blank" rel="noopener noreferrer"
+                  onClick={(e) => {
+                    if (!onWebViewOpen) return;
+                    e.preventDefault();
+                    onWebViewOpen(makeSourceUrl(s));
+                  }}
+                  title={typeof s.score === 'number' ? `Score: ${s.score.toFixed(3)}` : undefined}
                   className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground hover:bg-primary/10 hover:text-primary cursor-pointer transition-colors">
-                  📄 {s.file_name}{s.page_number > 0 ? ` — p.${s.page_number}` : ''}
+                  <FileText className="h-3 w-3" /> {s.file_name}{s.page_number > 0 ? ` - p.${s.page_number}` : ''}
                 </a>
               ) : (
                 <span key={i} className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
-                  {s.file_name}{s.page_number > 0 ? ` — p.${s.page_number}` : ''}
+                  <FileText className="h-3 w-3" /> {s.file_name}{s.page_number > 0 ? ` - p.${s.page_number}` : ''}
                 </span>
               )
             ))}
@@ -266,12 +300,52 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, startedBy, s
               {showDebug ? '▼' : '▶'} Debug
             </button>
             {showDebug && (
-              <div className="mt-1 p-2 rounded-md bg-muted/50 text-[10px] text-muted-foreground font-mono space-y-0.5">
-                <div>📚 Chunks: {debug.chunksRetrieved} / {debug.broadSearchChunks}</div>
-                <div>🔍 Broad Search: {debug.broadSearch ? '✅ YES' : '❌ No'}</div>
-                {debug.mandatoryFieldsCollected && <div>✅ Collected: {JSON.stringify(debug.mandatoryFieldsCollected)}</div>}
-                {debug.mandatoryFieldsMissing && <div>❓ Missing: {debug.mandatoryFieldsMissing.join(', ') || 'none'}</div>}
-                {debug.nextFieldAsked && <div>➡️ Asking: {debug.nextFieldAsked}</div>}
+              <div className="mt-1 w-full max-w-2xl rounded-md border bg-muted/30 p-3 text-[11px] text-muted-foreground">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div><span className="block text-[9px] uppercase">Chunks</span><span className="font-mono text-foreground">{debug.chunksRetrieved ?? 0}/{debug.broadSearchChunks ?? '-'}</span></div>
+                  <div><span className="block text-[9px] uppercase">Search</span><span className="font-mono text-foreground">{debug.broadSearch ? 'Broad' : 'Normal'}</span></div>
+                  <div><span className="block text-[9px] uppercase">Provider</span><span className="font-mono text-foreground">{debug.provider || '-'}</span></div>
+                  <div><span className="block text-[9px] uppercase">Latency</span><span className="font-mono text-foreground">{formatMs(debug.providerLatencyMs)}</span></div>
+                </div>
+
+                {(debug.embeddingLatencyMs || debug.model) && (
+                  <div className="mt-2 grid grid-cols-1 gap-1 font-mono sm:grid-cols-2">
+                    <div>model: {debug.model || '-'}</div>
+                    <div>embedding: {formatMs(debug.embeddingLatencyMs)}</div>
+                  </div>
+                )}
+
+                {Array.isArray(debug.chunks) && debug.chunks.length > 0 && (
+                  <div className="mt-3 space-y-1.5">
+                    <p className="text-[9px] font-medium uppercase tracking-wide">Retrieved Chunks</p>
+                    {debug.chunks.slice(0, 8).map((chunk: any) => (
+                      <div key={chunk.index} className="rounded border bg-background/60 p-2">
+                        <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] text-foreground">
+                          <span>#{chunk.index}</span>
+                          <span>{chunk.file_name || 'unknown'}</span>
+                          {chunk.page_number > 0 && <span>p.{chunk.page_number}</span>}
+                          {typeof chunk.score === 'number' && <span>score {chunk.score.toFixed(3)}</span>}
+                        </div>
+                        {chunk.content && <p className="mt-1 line-clamp-3 whitespace-pre-wrap">{chunk.content}</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {debug.promptUsed?.system && (
+                  <details className="mt-3">
+                    <summary className="cursor-pointer text-[9px] font-medium uppercase tracking-wide">Prompt Used</summary>
+                    <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded border bg-background/60 p-2 font-mono text-[10px]">{debug.promptUsed.system}</pre>
+                  </details>
+                )}
+
+                {(debug.mandatoryFieldsCollected || debug.mandatoryFieldsMissing || debug.nextFieldAsked) && (
+                  <div className="mt-3 space-y-1 font-mono">
+                    {debug.mandatoryFieldsCollected && <div>collected: {JSON.stringify(debug.mandatoryFieldsCollected)}</div>}
+                    {debug.mandatoryFieldsMissing && <div>missing: {debug.mandatoryFieldsMissing.join(', ') || 'none'}</div>}
+                    {debug.nextFieldAsked && <div>asking: {debug.nextFieldAsked}</div>}
+                  </div>
+                )}
               </div>
             )}
           </div>

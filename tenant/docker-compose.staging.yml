@@ -13,6 +13,7 @@ services:
     volumes:
       - ./uploads-stag:/app/uploads
       - ./public/logos:/app/public/logos
+      - ./public/embed/logos:/app/public/embed/logos
     depends_on:
       mongodb:
         condition: service_healthy

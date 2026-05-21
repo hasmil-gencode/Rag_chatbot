@@ -6,17 +6,22 @@
 <title>Chat</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:transparent;overflow:hidden}
+html,body{background:transparent!important}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;overflow:hidden}
+body.config-bridge #gbc-toggle,body.config-bridge #gbc-window{display:none!important}
+body.host-window #gbc-toggle{display:none}
+body.host-window #gbc-window{display:flex;inset:0;width:100vw;height:100vh;max-width:none;max-height:none;bottom:auto;right:auto;border-radius:0!important;box-shadow:none}
 
-#gbc-toggle{position:fixed;bottom:20px;right:20px;width:56px;height:56px;border-radius:50%;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,.25);transition:transform .2s;z-index:10;overflow:hidden}
+#gbc-toggle{position:fixed;bottom:0;right:0;width:56px;height:56px;border-radius:50%;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,.25);transition:transform .2s;z-index:10;overflow:hidden}
 #gbc-toggle:hover{transform:scale(1.08)}
 #gbc-toggle img{width:100%;height:100%;object-fit:cover}
 #gbc-toggle svg{width:24px;height:24px;fill:#fff}
 
-#gbc-window{position:fixed;bottom:86px;right:20px;width:380px;max-width:calc(100vw - 32px);height:520px;max-height:calc(100vh - 100px);border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,.18);display:none;flex-direction:column;overflow:hidden;z-index:10}
+#gbc-window{position:fixed;bottom:76px;right:0;width:380px;max-width:calc(100vw - 32px);height:520px;max-height:calc(100vh - 100px);border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,.18);display:none;flex-direction:column;overflow:hidden;z-index:10}
 #gbc-window.open{display:flex}
 
 .theme-light #gbc-window{background:#fff}
+body.theme-light.host-window{background:#fff!important}
 .theme-light #gbc-login h3{color:#1e293b}
 .theme-light #gbc-login p{color:#64748b}
 .theme-light #gbc-login input{border:1px solid #e2e8f0;background:#fff;color:#1e293b}
@@ -31,6 +36,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .theme-light #gbc-messages::-webkit-scrollbar-thumb{background:#cbd5e1}
 
 .theme-dark #gbc-window{background:#1e1e2e}
+body.theme-dark.host-window{background:#1e1e2e!important}
 .theme-dark #gbc-login h3{color:#e2e8f0}
 .theme-dark #gbc-login p{color:#94a3b8}
 .theme-dark #gbc-login input{border:1px solid #374151;background:#2a2a3e;color:#e2e8f0}
@@ -50,6 +56,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 
 @media(prefers-color-scheme:dark){
 .theme-auto #gbc-window{background:#1e1e2e}
+body.theme-auto.host-window{background:#1e1e2e!important}
 .theme-auto #gbc-login h3{color:#e2e8f0}
 .theme-auto #gbc-login p{color:#94a3b8}
 .theme-auto #gbc-login input{border:1px solid #374151;background:#2a2a3e;color:#e2e8f0}
@@ -168,25 +175,50 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 </div>
 
 <script>
+var params = new URLSearchParams(window.location.search);
 var API_BASE = window.location.origin;
-var WIDGET_ID = new URLSearchParams(window.location.search).get('widgetId');
+var WIDGET_ID = params.get('widgetId');
+var PARENT_ORIGIN = params.get('parentOrigin') || '';
 var config = {}, token = localStorage.getItem('gbc_token_'+WIDGET_ID);
 var sessionId = localStorage.getItem('gbc_session_'+WIDGET_ID);
 var userName = localStorage.getItem('gbc_user_'+WIDGET_ID);
 var isOpen = false, isLoading = false;
 var isPublicMode = false;
 var publicSession = JSON.parse(localStorage.getItem('gbc_public_'+WIDGET_ID)||'null');
+var MODE = params.get('mode') || '';
+var HOST_WINDOW_MODE = MODE === 'window';
+var CONFIG_BRIDGE_MODE = MODE === 'config';
 
 function notifySize(open) {
-  parent.postMessage({type:'gbc-resize',width:open?'412px':'80px',height:open?'620px':'80px'},'*');
+  parent.postMessage({type:'gbc-resize',open:open,width:open?'380px':'56px',height:open?'520px':'56px'},'*');
+}
+
+function notifyStyle() {
+  var theme = config.theme || 'light';
+  var bg = '#ffffff';
+  if(theme === 'dark') bg = '#1e1e2e';
+  if(theme === 'auto' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) bg = '#1e1e2e';
+  if(HOST_WINDOW_MODE) {
+    document.documentElement.style.setProperty('background', bg, 'important');
+    document.body.style.setProperty('background', bg, 'important');
+  }
+  parent.postMessage({type:'gbc-style',background:bg},'*');
 }
 
 (async function(){
-  notifySize(false);
+  if(HOST_WINDOW_MODE) document.body.classList.add('host-window');
+  if(CONFIG_BRIDGE_MODE) document.body.classList.add('config-bridge');
+  if(!CONFIG_BRIDGE_MODE) notifySize(HOST_WINDOW_MODE);
   try {
-    var r = await fetch(API_BASE+'/api/embed/config/'+WIDGET_ID);
+    var configUrl = API_BASE+'/api/embed/config/'+WIDGET_ID;
+    if(PARENT_ORIGIN) configUrl += '?parentOrigin=' + encodeURIComponent(PARENT_ORIGIN);
+    var r = await fetch(configUrl);
     if(!r.ok) return;
     config = await r.json();
+    if(CONFIG_BRIDGE_MODE) {
+      parent.postMessage({type:'gbc-config',widgetId:WIDGET_ID,config:config},'*');
+      return;
+    }
     applyConfig();
     isPublicMode = config.accessMode === 'public';
     if(isPublicMode) {
@@ -194,11 +226,21 @@ function notifySize(open) {
       sessionId = publicSession.sessionId;
       showPublicChat();
     } else if(token && userName) { showChat(); }
-  } catch(e){}
+  } catch(e){
+    if(CONFIG_BRIDGE_MODE) parent.postMessage({type:'gbc-config-error',widgetId:WIDGET_ID,message:e.message},'*');
+  }
 })();
 
 function applyConfig(){
-  document.body.className='theme-'+(config.theme||'light')+' bubble-'+(config.bubbleStyle||'modern')+' font-'+(config.fontSize||'md');
+  var classes = [
+    'theme-'+(config.theme||'light'),
+    'bubble-'+(config.bubbleStyle||'modern'),
+    'font-'+(config.fontSize||'md')
+  ];
+  if(HOST_WINDOW_MODE) classes.push('host-window');
+  if(CONFIG_BRIDGE_MODE) classes.push('config-bridge');
+  document.body.className=classes.join(' ');
+  notifyStyle();
   var toggle=document.getElementById('gbc-toggle');
   toggle.style.background=config.color||'#3B82F6';
   if(config.shape==='rounded') toggle.style.borderRadius='14px';
@@ -220,6 +262,10 @@ function applyConfig(){
 }
 
 function toggleChat(){
+  if(HOST_WINDOW_MODE){
+    parent.postMessage({type:'gbc-close',widgetId:WIDGET_ID},'*');
+    return;
+  }
   isOpen=!isOpen;
   document.getElementById('gbc-window').classList.toggle('open',isOpen);
   notifySize(isOpen);
@@ -313,10 +359,88 @@ function addMessage(role,text,cls){
   if(role==='user'){div.style.background=config.color||'#3B82F6';div.textContent=text;}
   else div.innerHTML=renderMarkdown(text);
   msgs.appendChild(div);msgs.scrollTop=msgs.scrollHeight;
+  return div;
 }
 
 function showTyping(){var m=document.getElementById('gbc-messages');var d=document.createElement('div');d.className='gbc-typing';d.id='gbc-typing';d.innerHTML='<span></span><span></span><span></span>';m.appendChild(d);m.scrollTop=m.scrollHeight;}
 function hideTyping(){var e=document.getElementById('gbc-typing');if(e)e.remove();}
+function scrollToMessageStart(el){
+  var m=document.getElementById('gbc-messages');
+  var target=el.offsetTop-12;
+  if(target<0) target=0;
+  m.scrollTop=target;
+}
+function setBotMessage(el,text,followBottom){
+  el.innerHTML=renderMarkdown(text||'');
+  var m=document.getElementById('gbc-messages');
+  if(followBottom) m.scrollTop=m.scrollHeight;
+}
+
+function createTypewriter(el){
+  var state={el:el,visible:'',pending:'',timer:null,started:false};
+  state.timer=setInterval(function(){
+    if(!state.pending) return;
+    var take=state.pending.length>220?7:state.pending.length>120?5:state.pending.length>45?3:1;
+    state.visible+=state.pending.slice(0,take);
+    state.pending=state.pending.slice(take);
+    setBotMessage(state.el,state.visible,true);
+    if(!state.started) state.started=true;
+  },24);
+  return state;
+}
+function queueTypewriter(state,text){if(text)state.pending+=text;}
+function finishTypewriter(state,finalText){
+  if(state.timer) clearInterval(state.timer);
+  state.timer=null;
+  if(finalText!==undefined&&finalText!==null) state.visible=finalText;
+  else state.visible+=state.pending;
+  state.pending='';
+  setBotMessage(state.el,state.visible,true);
+}
+function drainTypewriter(state,finalText){
+  return new Promise(function(resolve){
+    function check(){
+      if(!state.pending){
+        finishTypewriter(state,finalText!==undefined&&finalText!==null?finalText:state.visible);
+        resolve();
+        return;
+      }
+      setTimeout(check,30);
+    }
+    check();
+  });
+}
+
+async function readSseResponse(res,handlers){
+  var reader=res.body.getReader();
+  var decoder=new TextDecoder();
+  var buffer='';
+  function processBlock(block){
+    if(!block.trim()||block.trim().charAt(0)===':') return;
+    var event='message',data='';
+    block.split(/\r?\n/).forEach(function(line){
+      if(line.indexOf('event:')===0) event=line.slice(6).trim();
+      if(line.indexOf('data:')===0) data+=line.slice(5).trim();
+    });
+    if(!data) return;
+    var parsed;
+    try{
+      parsed=JSON.parse(data);
+    }catch(e){}
+    if(parsed&&handlers[event]) handlers[event](parsed);
+  }
+  while(true){
+    var part=await reader.read();
+    if(part.done) break;
+    buffer+=decoder.decode(part.value,{stream:true});
+    var idx;
+    while((idx=buffer.indexOf('\n\n'))!==-1){
+      processBlock(buffer.slice(0,idx));
+      buffer=buffer.slice(idx+2);
+    }
+  }
+  if(buffer.trim()) processBlock(buffer);
+}
 
 async function sendMsg(){
   var input=document.getElementById('gbc-input');
@@ -325,23 +449,60 @@ async function sendMsg(){
   input.value='';addMessage('user',text);
   isLoading=true;document.getElementById('gbc-send').disabled=true;showTyping();
   try{
-    var r,data;
+    var r,data,botEl,writer;
     if(isPublicMode){
-      r=await fetch(API_BASE+'/api/embed/public/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,sessionId:sessionId,widgetId:WIDGET_ID})});
-      data=await r.json();if(!r.ok) throw new Error(data.error||'Failed');
+      r=await fetch(API_BASE+'/api/embed/public/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,sessionId:sessionId,widgetId:WIDGET_ID})});
+      if(!r.ok||!r.headers.get('content-type')?.includes('text/event-stream')){
+        data=await r.json();if(!r.ok) throw new Error(data.error||'Failed');
+        if(!sessionId){sessionId=data.sessionId;publicSession.sessionId=sessionId;localStorage.setItem('gbc_public_'+WIDGET_ID,JSON.stringify(publicSession));}
+        hideTyping();addMessage('bot',data.response);
+      }else{
+        var publicTokenSeen=false;
+        var ensurePublicWriter=function(){
+          if(writer) return;
+          hideTyping();
+          botEl=addMessage('bot','');
+          writer=createTypewriter(botEl);
+        };
+        await readSseResponse(r,{
+          token:function(d){ensurePublicWriter();publicTokenSeen=true;queueTypewriter(writer,d.token);},
+          replace:function(d){ensurePublicWriter();finishTypewriter(writer,d.content||'');writer=createTypewriter(botEl);},
+          done:function(d){data=d;ensurePublicWriter();if(!publicTokenSeen&&d.response)queueTypewriter(writer,d.response);},
+          error:function(d){throw new Error(d.error||'Failed');}
+        });
+        if(writer) await drainTypewriter(writer,data&&data.response);
+        else hideTyping();
+      }
       if(!sessionId){sessionId=data.sessionId;publicSession.sessionId=sessionId;localStorage.setItem('gbc_public_'+WIDGET_ID,JSON.stringify(publicSession));}
-      hideTyping();addMessage('bot',data.response);
       if(data.limitReached||data.remaining<=0){
         document.getElementById('gbc-input').disabled=true;
         document.getElementById('gbc-send').disabled=true;
         document.getElementById('gbc-input').placeholder='Chat limit reached';
       }
     } else {
-      r=await fetch(API_BASE+'/api/embed/chat',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({message:text,sessionId:sessionId,widgetId:WIDGET_ID})});
+      r=await fetch(API_BASE+'/api/embed/chat/stream',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({message:text,sessionId:sessionId,widgetId:WIDGET_ID})});
       if(r.status===401){doLogout();return;}
-      data=await r.json();if(!r.ok) throw new Error(data.error||'Failed');
+      if(!r.ok||!r.headers.get('content-type')?.includes('text/event-stream')){
+        data=await r.json();if(!r.ok) throw new Error(data.error||'Failed');
+        hideTyping();addMessage('bot',data.response);
+      }else{
+        var privateTokenSeen=false;
+        var ensurePrivateWriter=function(){
+          if(writer) return;
+          hideTyping();
+          botEl=addMessage('bot','');
+          writer=createTypewriter(botEl);
+        };
+        await readSseResponse(r,{
+          token:function(d){ensurePrivateWriter();privateTokenSeen=true;queueTypewriter(writer,d.token);},
+          replace:function(d){ensurePrivateWriter();finishTypewriter(writer,d.content||'');writer=createTypewriter(botEl);},
+          done:function(d){data=d;ensurePrivateWriter();if(!privateTokenSeen&&d.response)queueTypewriter(writer,d.response);},
+          error:function(d){throw new Error(d.error||'Failed');}
+        });
+        if(writer) await drainTypewriter(writer,data&&data.response);
+        else hideTyping();
+      }
       if(!sessionId){sessionId=data.sessionId;localStorage.setItem('gbc_session_'+WIDGET_ID,sessionId);}
-      hideTyping();addMessage('bot',data.response);
     }
   }catch(e){hideTyping();addMessage('bot','Error: '+e.message);}
   finally{isLoading=false;if(!document.getElementById('gbc-input').disabled)document.getElementById('gbc-send').disabled=false;input.focus();}

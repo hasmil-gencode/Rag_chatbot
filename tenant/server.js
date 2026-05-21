@@ -15,13 +15,39 @@ import { GoogleAuth } from 'google-auth-library';
 import { processUploadedFile, deleteFileVectors } from './uploadPipeline.js';
 import { QdrantClient } from '@qdrant/js-client-rest';
 import OpenAI from 'openai';
-import { processBrowserChat, processBrowserChatStream, processPublicChat, callLLM, streamLLM, checkGuardrail } from './chatPipeline.js';
+import { processBrowserChat, processBrowserChatStream, processPublicChat, processPublicChatStream, callLLM, streamLLM, checkGuardrail } from './chatPipeline.js';
+import { registerApiKeyRoutes } from './routes/apiKeys.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 
 // Disable X-Powered-By header globally
 app.disable('x-powered-by');
+
+app.use((req, res, next) => {
+  const incomingId = req.headers['x-request-id'];
+  req.requestId = typeof incomingId === 'string' && incomingId.trim()
+    ? incomingId.trim().slice(0, 80)
+    : crypto.randomUUID();
+  res.setHeader('X-Request-ID', req.requestId);
+
+  const startedAt = Date.now();
+  res.on('finish', () => {
+    if (!req.path.startsWith('/api')) return;
+    const actor = req.apiKey?._id?.toString?.() || req.user?.id?.toString?.() || 'anonymous';
+    console.log(JSON.stringify({
+      requestId: req.requestId,
+      method: req.method,
+      path: req.originalUrl,
+      status: res.statusCode,
+      latencyMs: Date.now() - startedAt,
+      actor,
+      ip: req.ip,
+    }));
+  });
+
+  next();
+});
 
 // Serve React app static files
 app.use(express.static(join(__dirname, 'frontend/dist')));
@@ -35,6 +61,35 @@ const client = new MongoClient(MONGODB_URI);
 await client.connect();
 db = client.db(); // Use database from connection string
 console.log(`Connected to MongoDB (${db.databaseName})`);
+
+await ensureMongoIndexes();
+
+async function ensureMongoIndexes() {
+  const indexes = [
+    ['messages', { sessionId: 1 }, {}],
+    ['messages', { userId: 1 }, {}],
+    ['messages', { sessionId: 1, createdAt: 1 }, {}],
+    ['files', { organizationId: 1 }, {}],
+    ['files', { sharedWith: 1 }, {}],
+    ['api_keys', { key: 1 }, {}],
+    ['api_keys', { shortKey: 1 }, {}],
+    ['api_usage', { apiKeyId: 1 }, {}],
+    ['api_usage', { timestamp: -1 }, {}],
+    ['api_usage', { apiKeyId: 1, timestamp: -1 }, {}],
+    ['rate_limits', { key: 1, windowStart: 1 }, { unique: true }],
+    ['rate_limits', { expireAt: 1 }, { expireAfterSeconds: 0 }],
+    ['external_collections', { createdAt: -1 }, {}],
+    ['external_ingest_logs', { collectionId: 1, createdAt: -1 }, {}],
+  ];
+
+  for (const [collection, spec, options] of indexes) {
+    try {
+      await db.collection(collection).createIndex(spec, options);
+    } catch (error) {
+      console.warn(`Failed to ensure index ${collection} ${JSON.stringify(spec)}: ${error.message}`);
+    }
+  }
+}
 
 // Initialize default settings
 const settingsExists = await db.collection('settings').findOne({ _id: 'config' });
@@ -98,6 +153,7 @@ if (!settingsExists) {
     chatEmbeddingModel: 'gemini-embedding-001',
     chatMaxChunks: 5,
     chatShowSourcesDefault: true,
+    chatStreamingSpeed: 'balanced',
     // Guardrail settings
     guardrailEnabled: true,
     guardrailModel: 'gemini-2.5-flash-lite',
@@ -211,6 +267,16 @@ async function logAiCall(provider, model, type, source, latency, status = 'ok') 
 // Middleware
 app.set('trust proxy', true); // Trust Cloudflare/reverse proxy headers
 app.use(express.json());
+app.use((error, req, res, next) => {
+  if (error instanceof SyntaxError && 'body' in error) {
+    return res.status(400).json({
+      error: 'Invalid JSON request body',
+      code: 'INVALID_JSON',
+      requestId: req.requestId,
+    });
+  }
+  next(error);
+});
 app.use(express.static('public'));
 
 // HTTPS enforcement handled by Cloudflare — no redirect needed at app level
@@ -337,22 +403,66 @@ function recordLoginSuccess(ip) { loginAttempts.delete(ip); }
 // Cleanup old entries every 10 min
 setInterval(() => { const now = Date.now(); for (const [k, v] of loginAttempts) { if (v.lockedUntil < now && v.count === 0) loginAttempts.delete(k); } }, 600000);
 
-// ─── P1 #4: API Rate Limiter (per API key / per user) ─────────
+// ─── P4: API Rate Limiter (memory now, Mongo persistent/Redis-ready) ───
+const RATE_LIMIT_STORE = (process.env.RATE_LIMIT_STORE || 'memory').toLowerCase();
 const apiRateLimits = new Map(); // key: identifier → { count, resetAt }
+
+async function incrementRateLimit(key, limit, windowMs) {
+  const now = Date.now();
+  const windowStart = Math.floor(now / windowMs) * windowMs;
+  const resetAt = windowStart + windowMs;
+
+  if (RATE_LIMIT_STORE === 'mongo' || RATE_LIMIT_STORE === 'persistent') {
+    const result = await db.collection('rate_limits').findOneAndUpdate(
+      { key, windowStart },
+      {
+        $inc: { count: 1 },
+        $setOnInsert: {
+          key,
+          windowStart,
+          expireAt: new Date(resetAt + windowMs),
+          createdAt: new Date(),
+        },
+        $set: { updatedAt: new Date() },
+      },
+      { upsert: true, returnDocument: 'after' }
+    );
+    const doc = result?.value || result;
+    return { count: doc?.count || 1, resetAt };
+  }
+
+  if (RATE_LIMIT_STORE === 'redis') {
+    // Redis adapter hook: keep the route contract stable while infra is added.
+    // Implement with INCR + EXPIRE using the same key/window shape.
+  }
+
+  let entry = apiRateLimits.get(key);
+  if (!entry || entry.resetAt < now) entry = { count: 0, resetAt };
+  entry.count++;
+  apiRateLimits.set(key, entry);
+  return entry;
+}
+
 function apiRateLimit(limit = 60, windowMs = 60000) {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     const key = req.apiKey?._id?.toString() || req.user?.id || req.ip;
-    const now = Date.now();
-    let entry = apiRateLimits.get(key);
-    if (!entry || entry.resetAt < now) { entry = { count: 0, resetAt: now + windowMs }; }
-    entry.count++;
-    apiRateLimits.set(key, entry);
-    res.setHeader('X-RateLimit-Limit', limit);
-    res.setHeader('X-RateLimit-Remaining', Math.max(0, limit - entry.count));
-    if (entry.count > limit) {
-      return res.status(429).json({ error: 'Rate limit exceeded. Please slow down.' });
+    try {
+      const entry = await incrementRateLimit(`${key}:${windowMs}`, limit, windowMs);
+      res.setHeader('X-RateLimit-Limit', limit);
+      res.setHeader('X-RateLimit-Remaining', Math.max(0, limit - entry.count));
+      res.setHeader('X-RateLimit-Reset', Math.ceil(entry.resetAt / 1000));
+      if (entry.count > limit) {
+        return res.status(429).json({
+          error: 'Rate limit exceeded. Please slow down.',
+          code: 'RATE_LIMIT_EXCEEDED',
+          requestId: req.requestId,
+        });
+      }
+      next();
+    } catch (error) {
+      console.error(`[${req.requestId}] Rate limit error:`, error.message);
+      next();
     }
-    next();
   };
 }
 setInterval(() => { const now = Date.now(); for (const [k, v] of apiRateLimits) { if (v.resetAt < now) apiRateLimits.delete(k); } }, 60000);
@@ -380,6 +490,84 @@ function sanitizeInput(obj) {
 // Apply to all requests
 app.use((req, res, next) => { if (req.body && typeof req.body === 'object') req.body = sanitizeInput(req.body); next(); });
 
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validationError(res, message, details = {}) {
+  return res.status(400).json({
+    error: message,
+    code: 'VALIDATION_ERROR',
+    requestId: res.req?.requestId,
+    ...details,
+  });
+}
+
+function validateRequestBody(schema = {}) {
+  return (req, res, next) => {
+    const body = isPlainObject(req.body) ? req.body : {};
+    const errors = [];
+
+    for (const [field, rules] of Object.entries(schema)) {
+      const value = body[field];
+      const present = value !== undefined && value !== null && value !== '';
+
+      if (rules.required && !present) {
+        errors.push(`${field} is required`);
+        continue;
+      }
+      if (!present) continue;
+
+      if (rules.type === 'string' && typeof value !== 'string') errors.push(`${field} must be a string`);
+      if (rules.type === 'boolean' && typeof value !== 'boolean') errors.push(`${field} must be a boolean`);
+      if (rules.type === 'number' && (typeof value !== 'number' || Number.isNaN(value))) errors.push(`${field} must be a number`);
+      if (rules.type === 'array' && !Array.isArray(value)) errors.push(`${field} must be an array`);
+      if (rules.type === 'object' && !isPlainObject(value)) errors.push(`${field} must be an object`);
+
+      if (rules.minLength && typeof value === 'string' && value.trim().length < rules.minLength) errors.push(`${field} is too short`);
+      if (rules.maxLength && typeof value === 'string' && value.length > rules.maxLength) errors.push(`${field} is too long`);
+      if (rules.enum && !rules.enum.includes(value)) errors.push(`${field} must be one of: ${rules.enum.join(', ')}`);
+      if (rules.objectId && !ObjectId.isValid(value?.toString?.() || value)) errors.push(`${field} must be a valid ObjectId`);
+      if (rules.objectIdArray && Array.isArray(value)) {
+        const invalidIds = value.filter(id => !ObjectId.isValid(id?.toString?.() || id));
+        if (invalidIds.length > 0) errors.push(`${field} contains invalid ObjectIds`);
+      }
+      if (rules.arrayOf && Array.isArray(value)) {
+        const invalidItems = value.filter(item => typeof item !== rules.arrayOf);
+        if (invalidItems.length > 0) errors.push(`${field} must contain only ${rules.arrayOf} values`);
+      }
+    }
+
+    if (errors.length > 0) return validationError(res, 'Invalid request body', { details: errors });
+    next();
+  };
+}
+
+function validateObjectIdParam(paramName) {
+  return (req, res, next, value) => {
+    if (!ObjectId.isValid(value)) {
+      return validationError(res, `Invalid ${paramName}`, { field: paramName });
+    }
+    next();
+  };
+}
+
+app.param('id', validateObjectIdParam('id'));
+app.param('userId', validateObjectIdParam('userId'));
+app.param('widgetId', validateObjectIdParam('widgetId'));
+
+app.use((req, res, next) => {
+  const objectIdQueryKeys = ['currentOrganizationId', 'organizationId', 'groupId', 'userId', 'fileId'];
+  for (const key of objectIdQueryKeys) {
+    const value = req.query?.[key];
+    if (value === undefined || value === null || value === '') continue;
+    if (Array.isArray(value) || !ObjectId.isValid(value.toString())) {
+      return validationError(res, `Invalid ${key}`, { field: key });
+    }
+  }
+  next();
+});
+
 // ─── P1 #7: Account Lockout (per email) ───────────────────────
 const accountLockouts = new Map(); // key: email → { count, lockedUntil }
 function checkAccountLockout(email) {
@@ -400,7 +588,10 @@ function recordAccountSuccess(email) { accountLockouts.delete(email); }
 setInterval(() => { const now = Date.now(); for (const [k, v] of accountLockouts) { if (v.lockedUntil < now && v.count === 0) accountLockouts.delete(k); } }, 600000);
 
 // Auth
-app.post('/api/login', loginRateLimit, async (req, res) => {
+app.post('/api/login', loginRateLimit, validateRequestBody({
+  email: { required: true, type: 'string', minLength: 3, maxLength: 320 },
+  password: { required: true, type: 'string', minLength: 1, maxLength: 200 },
+}), async (req, res) => {
   const { email, password } = req.body;
 
   // Account lockout check
@@ -465,7 +656,10 @@ app.post('/api/login', loginRateLimit, async (req, res) => {
 });
 
 // First-time password change
-app.post('/api/change-password-first-login', async (req, res) => {
+app.post('/api/change-password-first-login', validateRequestBody({
+  tempToken: { required: true, type: 'string' },
+  newPassword: { required: true, type: 'string', minLength: 8, maxLength: 200 },
+}), async (req, res) => {
   try {
     const { tempToken, newPassword } = req.body;
     
@@ -678,7 +872,10 @@ app.post('/api/reembed', auth, hasPermission(), async (req, res) => {
 
 
 // Create organization/entity/department
-app.post('/api/organizations', auth, hasPermission('org:manage'), async (req, res) => {
+app.post('/api/organizations', auth, hasPermission('org:manage'), validateRequestBody({
+  name: { required: true, type: 'string', minLength: 1, maxLength: 160 },
+  parentId: { objectId: true },
+}), async (req, res) => {
   try {
     const { name, type, parentId } = req.body; // type: 'organization' | 'entity' | 'department'
     
@@ -813,7 +1010,10 @@ app.get('/api/audit-logs', auth, async (req, res) => {
   } catch (error) { res.status(500).json({ error: 'Failed to get audit logs' }); }
 });
 
-app.post('/api/user-assignments', auth, hasPermission('user:manage'), async (req, res) => {
+app.post('/api/user-assignments', auth, hasPermission('user:manage'), validateRequestBody({
+  userId: { required: true, objectId: true },
+  organizationIds: { required: true, type: 'array', objectIdArray: true },
+}), async (req, res) => {
   try {
     const { userId, organizationIds } = req.body; // organizationIds is array
     
@@ -1106,7 +1306,9 @@ app.delete('/api/users/:id', auth, hasPermission(), async (req, res) => {
 });
 
 // Switch active organization context
-app.post('/api/switch-organization', auth, async (req, res) => {
+app.post('/api/switch-organization', auth, validateRequestBody({
+  organizationId: { required: true, objectId: true },
+}), async (req, res) => {
   try {
     const { organizationId } = req.body;
     
@@ -1128,7 +1330,12 @@ app.post('/api/switch-organization', auth, async (req, res) => {
 });
 
 // Chat
-app.post('/api/chat', auth, apiRateLimit(30, 60000), async (req, res) => {
+app.post('/api/chat', auth, apiRateLimit(30, 60000), validateRequestBody({
+  message: { required: true, type: 'string', minLength: 1, maxLength: 20000 },
+  sessionId: { objectId: true },
+  fileId: { objectId: true },
+  currentOrganizationId: { objectId: true },
+}), async (req, res) => {
   try {
     const { message, sessionId, fileId, currentOrganizationId } = req.body;
     const chatSessionId = sessionId || new ObjectId().toString();
@@ -1260,6 +1467,8 @@ app.post('/api/chat', auth, apiRateLimit(30, 60000), async (req, res) => {
     const userPrefs = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
     const showSources = userPrefs?.showSources !== undefined ? userPrefs.showSources : false;
     const verboseMode = userPrefs?.verboseMode || false;
+    const isDev = req.user.role === 'developer';
+    const sourceCitations = isDev && showSources ? result.sources : [];
 
     await db.collection('messages').insertOne({
       userId: req.user.id,
@@ -1269,7 +1478,7 @@ app.post('/api/chat', auth, apiRateLimit(30, 60000), async (req, res) => {
       startedByEmail: startedByEmail,
       role: 'bot',
       content: botContent,
-      sources: showSources ? result.sources : [],
+      sources: sourceCitations,
       responseTimeMs: verboseMode ? responseTimeMs : undefined,
       chatType: 'browser',
       chatName: 'normal',
@@ -1290,8 +1499,7 @@ app.post('/api/chat', auth, apiRateLimit(30, 60000), async (req, res) => {
       );
     }
 
-    const isDev = req.user.role === 'developer';
-    res.json({ response: botContent, sources: showSources ? result.sources : [], responseTimeMs: verboseMode ? responseTimeMs : undefined, sessionId: chatSessionId, debug: isDev ? result.debug : undefined });
+    res.json({ response: botContent, sources: sourceCitations, responseTimeMs: verboseMode ? responseTimeMs : undefined, sessionId: chatSessionId, debug: isDev ? result.debug : undefined });
   } catch (error) {
     console.error('Chat error:', error.message);
     res.status(500).json({ 
@@ -1301,7 +1509,12 @@ app.post('/api/chat', auth, apiRateLimit(30, 60000), async (req, res) => {
 });
 
 // Chat streaming (SSE)
-app.post('/api/chat/stream', auth, apiRateLimit(30, 60000), async (req, res) => {
+app.post('/api/chat/stream', auth, apiRateLimit(30, 60000), validateRequestBody({
+  message: { required: true, type: 'string', minLength: 1, maxLength: 20000 },
+  sessionId: { objectId: true },
+  fileId: { objectId: true },
+  currentOrganizationId: { objectId: true },
+}), async (req, res) => {
   let streamStarted = false;
   const sendEvent = (event, data) => {
     if (res.writableEnded) return;
@@ -1434,6 +1647,8 @@ app.post('/api/chat/stream', auth, apiRateLimit(30, 60000), async (req, res) => 
     const userPrefs = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
     const showSources = userPrefs?.showSources !== undefined ? userPrefs.showSources : false;
     const verboseMode = userPrefs?.verboseMode || false;
+    const isDev = req.user.role === 'developer';
+    const sourceCitations = isDev && showSources ? result.sources : [];
 
     if (result.blocked) {
       sendEvent('replace', { content: botContent });
@@ -1447,7 +1662,7 @@ app.post('/api/chat/stream', auth, apiRateLimit(30, 60000), async (req, res) => 
       startedByEmail: startedByEmail,
       role: 'bot',
       content: botContent,
-      sources: showSources ? result.sources : [],
+      sources: sourceCitations,
       responseTimeMs: verboseMode ? responseTimeMs : undefined,
       chatType: 'browser',
       chatName: 'normal',
@@ -1467,10 +1682,9 @@ app.post('/api/chat/stream', auth, apiRateLimit(30, 60000), async (req, res) => 
       );
     }
 
-    const isDev = req.user.role === 'developer';
     sendEvent('done', {
       response: botContent,
-      sources: showSources ? result.sources : [],
+      sources: sourceCitations,
       responseTimeMs: verboseMode ? responseTimeMs : undefined,
       sessionId: chatSessionId,
       debug: isDev ? result.debug : undefined,
@@ -1532,26 +1746,111 @@ async function authenticateApiKey(req, res, next) {
   }
 }
 
-// Public chat API endpoint (uses API key)
-app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req, res) => {
+async function logApiUsage(entry) {
   try {
-    const { message, sessionId, organizationId, filter } = req.body;
+    await db.collection('api_usage').insertOne({
+      timestamp: new Date(),
+      ...entry,
+    });
+  } catch (error) {
+    console.error('Failed to log API usage:', error.message);
+  }
+}
+
+function classifyApiChatError(error) {
+  const msg = error.message || '';
+  if (msg.includes('429') || msg.includes('quota') || msg.includes('rate')) {
+    return { status: 503, code: 'LLM_RATE_LIMIT', message: 'AI provider rate limit exceeded. Please try again shortly.' };
+  }
+  if (msg.includes('timeout') || msg.includes('ETIMEDOUT') || msg.includes('ECONNABORTED')) {
+    return { status: 504, code: 'LLM_TIMEOUT', message: 'AI provider timeout. Please try again.' };
+  }
+  if (msg.includes('401') || msg.includes('403') || msg.includes('API key')) {
+    return { status: 502, code: 'LLM_AUTH_ERROR', message: 'AI provider authentication error. Check provider keys.' };
+  }
+  return { status: 500, code: 'SERVER_ERROR', message: 'Internal server error' };
+}
+
+function getApiKeyScopes(apiKey) {
+  if (Array.isArray(apiKey?.scopes) && apiKey.scopes.length > 0) return apiKey.scopes;
+  return ['chat'];
+}
+
+function apiKeyHasScope(apiKey, scope) {
+  return getApiKeyScopes(apiKey).includes(scope);
+}
+
+function getApiKeyCollectionIds(apiKey) {
+  return Array.isArray(apiKey?.allowedCollectionIds)
+    ? apiKey.allowedCollectionIds.map(id => id?.toString?.() || id).filter(Boolean)
+    : [];
+}
+
+function collectionMatchFilter(collectionIds) {
+  if (!collectionIds?.length) return null;
+  if (collectionIds.length === 1) return { key: 'collection_id', match: { value: collectionIds[0] } };
+  return { key: 'collection_id', match: { any: collectionIds } };
+}
+
+function requireApiScope(scope) {
+  return (req, res, next) => {
+    if (!apiKeyHasScope(req.apiKey, scope)) {
+      return res.status(403).json({ error: `API key does not have ${scope} scope`, code: 'API_SCOPE_DENIED' });
+    }
+    next();
+  };
+}
+
+// Public chat API endpoint (uses API key)
+app.post('/api/v1/chat', authenticateApiKey, requireApiScope('chat'), apiRateLimit(60, 60000), validateRequestBody({
+  message: { required: true, type: 'string', minLength: 1, maxLength: 20000 },
+  sessionId: { type: 'string', maxLength: 120 },
+  organizationId: { objectId: true },
+}), async (req, res) => {
+  const usageStart = Date.now();
+  let usageLogged = false;
+  let message = req.body?.message;
+  let sessionId = req.body?.sessionId;
+  let chatSessionId = sessionId || null;
+  let currentOrganizationId = req.body?.organizationId || null;
+  let chatMode = req.apiKey.chatMode || 'webhook';
+  let llmProvider = null;
+  let llmModel = null;
+  let botContent = '';
+
+  const recordUsage = async (extra = {}) => {
+    if (usageLogged) return;
+    usageLogged = true;
+    await logApiUsage({
+      apiKeyId: req.apiKey._id,
+      apiKeyName: req.apiKey.name,
+      endpoint: '/api/v1/chat',
+      method: 'POST',
+      responseStatus: 200,
+      ipAddress: req.ip,
+      userId: req.user.id,
+      sessionId: chatSessionId,
+      organizationId: currentOrganizationId,
+      chatMode,
+      streaming: false,
+      provider: llmProvider,
+      model: llmModel,
+      messageLength: typeof message === 'string' ? message.length : 0,
+      responseLength: typeof botContent === 'string' ? botContent.length : 0,
+      latencyMs: Date.now() - usageStart,
+      ...extra,
+    });
+  };
+
+  try {
+    const { organizationId, filter } = req.body;
 
     if (!message) {
+      await recordUsage({ responseStatus: 400, errorCode: 'BAD_REQUEST', errorMessage: 'Message is required' });
       return res.status(400).json({ error: 'Message is required' });
     }
 
-    // Log API usage
-    await db.collection('api_usage').insertOne({
-      apiKeyId: req.apiKey._id,
-      endpoint: '/api/v1/chat',
-      method: 'POST',
-      timestamp: new Date(),
-      responseStatus: 200,
-      ipAddress: req.ip
-    });
-
-    const chatSessionId = sessionId || new ObjectId().toString();
+    chatSessionId = sessionId || new ObjectId().toString();
     
     // Get user info
     const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
@@ -1559,7 +1858,7 @@ app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req
     const startedByName = startedByEmail.split('@')[0];
     
     // Use provided organizationId or get from user's assignments
-    let currentOrganizationId = organizationId || null;
+    currentOrganizationId = organizationId || null;
     
     if (!currentOrganizationId) {
       const userAssignments = await db.collection('user_organization_assignments').find({ 
@@ -1587,16 +1886,15 @@ app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req
       createdAt: new Date()
     });
 
-    const chatMode = req.apiKey.chatMode || 'webhook';
-    let botContent;
-
     // Input guardrail check
     const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
     if (settings.guardrailEnabled) {
       const inputCheck = await checkGuardrail(message, settings.guardrailInputPrompt, settings, db);
       if (!inputCheck.safe) {
+        botContent = 'Sorry, I\'m unable to process this request.\n\nMaaf, saya tidak dapat memproses permintaan ini.\n\nமன்னிக்கவும், இந்தக் கோரிக்கையை செயல்படுத்த இயலவில்லை.\n\n抱歉，无法处理此请求。';
         await db.collection('guardrail_logs').insertOne({ userId: req.user.id, sessionId: chatSessionId, type: 'input', source: 'api', message, reason: inputCheck.reason, createdAt: new Date() });
-        return res.json({ response: { text: 'Sorry, I\'m unable to process this request.\n\nMaaf, saya tidak dapat memproses permintaan ini.\n\nமன்னிக்கவும், இந்தக் கோரிக்கையை செயல்படுத்த இயலவில்லை.\n\n抱歉，无法处理此请求。', speak: '' }, sessionId: chatSessionId, blocked: true });
+        await recordUsage({ blocked: true, guardrailType: 'input', responseLength: botContent.length });
+        return res.json({ response: { text: botContent, speak: '' }, sessionId: chatSessionId, blocked: true });
       }
     }
 
@@ -1634,6 +1932,8 @@ app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req
       try {
         // Build Qdrant filter from request filter object
         const must = [];
+        const allowedCollectionFilter = collectionMatchFilter(getApiKeyCollectionIds(req.apiKey));
+        if (allowedCollectionFilter) must.push(allowedCollectionFilter);
         if (filter && typeof filter === 'object') {
           for (const [key, value] of Object.entries(filter)) {
             if (key === 'externalUserId') {
@@ -1655,8 +1955,8 @@ app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req
         const org = await db.collection('organizations').findOne({ _id: new ObjectId(req.apiKey.organizationId) });
         if (org?.systemPrompt) systemPrompt = org.systemPrompt;
       }
-      const llmProvider = settings.chatLlmProvider || 'gemini';
-      const llmModel = settings.chatLlmModel || 'gemini-2.5-flash';
+      llmProvider = settings.chatLlmProvider || 'gemini';
+      llmModel = settings.chatLlmModel || 'gemini-2.5-flash';
       const llmKey = settings.chatLlmApiKey || pk[llmProvider] || '';
       const fullPrompt = context ? `${systemPrompt}\n\nContext from documents:\n${context}\n\nUser question: ${message}` : `${systemPrompt}\n\nUser question: ${message}`;
 
@@ -1679,6 +1979,7 @@ app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req
       // ─── Webhook mode: forward to n8n ───
       const webhookUrl = req.apiKey.webhookUrl;
       if (!webhookUrl) {
+        await recordUsage({ responseStatus: 400, errorCode: 'WEBHOOK_NOT_CONFIGURED', errorMessage: 'No webhook URL configured for this API key' });
         return res.status(400).json({ error: 'No webhook URL configured for this API key' });
       }
       const { data } = await axios.post(webhookUrl, {
@@ -1707,10 +2008,13 @@ app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req
       const outputCheck = await checkGuardrail(botContent, settings.guardrailOutputPrompt, settings, db);
       if (!outputCheck.safe) {
         await db.collection('guardrail_logs').insertOne({ userId: req.user.id, sessionId: chatSessionId, type: 'output', source: 'api', message: botContent.substring(0, 500), reason: outputCheck.reason, createdAt: new Date() });
-        return res.json({ response: { text: 'Sorry, I\'m unable to provide that information.\n\nMaaf, saya tidak dapat memberikan maklumat tersebut.\n\nமன்னிக்கவும், அந்தத் தகவலை வழங்க இயலவில்லை.\n\n抱歉，无法提供该信息。', speak: '' }, sessionId: chatSessionId, blocked: true });
+        botContent = 'Sorry, I\'m unable to provide that information.\n\nMaaf, saya tidak dapat memberikan maklumat tersebut.\n\nமன்னிக்கவும், அந்தத் தகவலை வழங்க இயலவில்லை.\n\n抱歉，无法提供该信息。';
+        await recordUsage({ blocked: true, guardrailType: 'output', responseLength: botContent.length });
+        return res.json({ response: { text: botContent, speak: '' }, sessionId: chatSessionId, blocked: true });
       }
     }
 
+    await recordUsage();
     res.json({ 
       response: {
         text: (botContent.match(/\[TEXT\]([\s\S]*?)\[\/TEXT\]/)?.[1] || botContent).trim(),
@@ -1721,24 +2025,56 @@ app.post('/api/v1/chat', authenticateApiKey, apiRateLimit(60, 60000), async (req
 
   } catch (error) {
     console.error('API chat error:', error.message);
-    // Differentiate LLM provider errors from app errors
-    const msg = error.message || '';
-    if (msg.includes('429') || msg.includes('quota') || msg.includes('rate')) {
-      return res.status(503).json({ error: 'AI provider rate limit exceeded. Please try again shortly.', code: 'LLM_RATE_LIMIT' });
-    }
-    if (msg.includes('timeout') || msg.includes('ETIMEDOUT') || msg.includes('ECONNABORTED')) {
-      return res.status(504).json({ error: 'AI provider timeout. Please try again.', code: 'LLM_TIMEOUT' });
-    }
-    if (msg.includes('401') || msg.includes('403') || msg.includes('API key')) {
-      return res.status(502).json({ error: 'AI provider authentication error. Check provider keys.', code: 'LLM_AUTH_ERROR' });
-    }
-    res.status(500).json({ error: 'Internal server error', code: 'SERVER_ERROR' });
+    const apiError = classifyApiChatError(error);
+    await recordUsage({ responseStatus: apiError.status, errorCode: apiError.code, errorMessage: error.message });
+    res.status(apiError.status).json({ error: apiError.message, code: apiError.code });
   }
 });
 
 // Public streaming chat API endpoint (uses API key)
-app.post('/api/v1/chat/stream', authenticateApiKey, apiRateLimit(60, 60000), async (req, res) => {
+app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), apiRateLimit(60, 60000), validateRequestBody({
+  message: { required: true, type: 'string', minLength: 1, maxLength: 20000 },
+  sessionId: { type: 'string', maxLength: 120 },
+  organizationId: { objectId: true },
+}), async (req, res) => {
+  const usageStart = Date.now();
   let streamStarted = false;
+  let usageLogged = false;
+  let message = req.body?.message;
+  let sessionId = req.body?.sessionId;
+  let chatSessionId = sessionId || null;
+  let currentOrganizationId = req.body?.organizationId || null;
+  let chatMode = req.apiKey.chatMode || 'webhook';
+  let llmProvider = null;
+  let llmModel = null;
+  let botContent = '';
+  let blocked = false;
+
+  const recordUsage = async (extra = {}) => {
+    if (usageLogged) return;
+    usageLogged = true;
+    await logApiUsage({
+      apiKeyId: req.apiKey._id,
+      apiKeyName: req.apiKey.name,
+      endpoint: '/api/v1/chat/stream',
+      method: 'POST',
+      responseStatus: 200,
+      ipAddress: req.ip,
+      userId: req.user.id,
+      sessionId: chatSessionId,
+      organizationId: currentOrganizationId,
+      chatMode,
+      streaming: true,
+      provider: llmProvider,
+      model: llmModel,
+      messageLength: typeof message === 'string' ? message.length : 0,
+      responseLength: typeof botContent === 'string' ? botContent.length : 0,
+      latencyMs: Date.now() - usageStart,
+      blocked,
+      ...extra,
+    });
+  };
+
   const sendEvent = (event, data) => {
     if (res.writableEnded) return;
     res.write(`event: ${event}\n`);
@@ -1746,20 +2082,12 @@ app.post('/api/v1/chat/stream', authenticateApiKey, apiRateLimit(60, 60000), asy
   };
 
   try {
-    const { message, sessionId, organizationId, filter } = req.body;
+    const { organizationId, filter } = req.body;
 
     if (!message) {
+      await recordUsage({ responseStatus: 400, errorCode: 'BAD_REQUEST', errorMessage: 'Message is required' });
       return res.status(400).json({ error: 'Message is required' });
     }
-
-    await db.collection('api_usage').insertOne({
-      apiKeyId: req.apiKey._id,
-      endpoint: '/api/v1/chat/stream',
-      method: 'POST',
-      timestamp: new Date(),
-      responseStatus: 200,
-      ipAddress: req.ip
-    });
 
     streamStarted = true;
     res.setHeader('Content-Type', 'text/event-stream');
@@ -1769,12 +2097,12 @@ app.post('/api/v1/chat/stream', authenticateApiKey, apiRateLimit(60, 60000), asy
     res.flushHeaders?.();
     res.write(': connected\n\n');
 
-    const chatSessionId = sessionId || new ObjectId().toString();
+    chatSessionId = sessionId || new ObjectId().toString();
     const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
     const startedByEmail = user?.email || 'API User';
     const startedByName = startedByEmail.split('@')[0];
 
-    let currentOrganizationId = organizationId || null;
+    currentOrganizationId = organizationId || null;
     if (!currentOrganizationId) {
       const userAssignments = await db.collection('user_organization_assignments').find({
         userId: req.user.id.toString()
@@ -1801,18 +2129,18 @@ app.post('/api/v1/chat/stream', authenticateApiKey, apiRateLimit(60, 60000), asy
     });
 
     const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
-    const chatMode = req.apiKey.chatMode || 'webhook';
-    let botContent = '';
     let sources = [];
 
     if (settings.guardrailEnabled) {
       sendEvent('status', { status: 'Checking safety...' });
       const inputCheck = await checkGuardrail(message, settings.guardrailInputPrompt, settings, db);
       if (!inputCheck.safe) {
+        blocked = true;
         botContent = 'Sorry, I\'m unable to process this request.\n\nMaaf, saya tidak dapat memproses permintaan ini.\n\nமன்னிக்கவும், இந்தக் கோரிக்கையை செயல்படுத்த இயலவில்லை.\n\n抱歉，无法处理此请求。';
         await db.collection('guardrail_logs').insertOne({ userId: req.user.id, sessionId: chatSessionId, type: 'input', source: 'api', message, reason: inputCheck.reason, createdAt: new Date() });
         sendEvent('replace', { content: botContent });
         sendEvent('done', { response: { text: botContent, speak: '' }, sessionId: chatSessionId, blocked: true });
+        await recordUsage({ guardrailType: 'input', responseLength: botContent.length });
         return res.end();
       }
     }
@@ -1847,6 +2175,8 @@ app.post('/api/v1/chat/stream', authenticateApiKey, apiRateLimit(60, 60000), asy
       let context = '';
       try {
         const must = [];
+        const allowedCollectionFilter = collectionMatchFilter(getApiKeyCollectionIds(req.apiKey));
+        if (allowedCollectionFilter) must.push(allowedCollectionFilter);
         if (filter && typeof filter === 'object') {
           for (const [key, value] of Object.entries(filter)) {
             if (key === 'externalUserId') {
@@ -1879,8 +2209,8 @@ app.post('/api/v1/chat/stream', authenticateApiKey, apiRateLimit(60, 60000), asy
         const org = await db.collection('organizations').findOne({ _id: new ObjectId(req.apiKey.organizationId) });
         if (org?.systemPrompt) systemPrompt = org.systemPrompt;
       }
-      const llmProvider = settings.chatLlmProvider || 'gemini';
-      const llmModel = settings.chatLlmModel || 'gemini-2.5-flash';
+      llmProvider = settings.chatLlmProvider || 'gemini';
+      llmModel = settings.chatLlmModel || 'gemini-2.5-flash';
       const llmKey = settings.chatLlmApiKey || pk[llmProvider] || '';
       const messages = [
         { role: 'system', content: systemPrompt },
@@ -1900,6 +2230,7 @@ app.post('/api/v1/chat/stream', authenticateApiKey, apiRateLimit(60, 60000), asy
       const webhookUrl = req.apiKey.webhookUrl;
       if (!webhookUrl) {
         sendEvent('error', { error: 'No webhook URL configured for this API key' });
+        await recordUsage({ responseStatus: 400, errorCode: 'WEBHOOK_NOT_CONFIGURED', errorMessage: 'No webhook URL configured for this API key' });
         return res.end();
       }
       sendEvent('status', { status: 'Calling webhook...' });
@@ -1914,6 +2245,7 @@ app.post('/api/v1/chat/stream', authenticateApiKey, apiRateLimit(60, 60000), asy
       sendEvent('status', { status: 'Checking response...' });
       const outputCheck = await checkGuardrail(botContent, settings.guardrailOutputPrompt, settings, db);
       if (!outputCheck.safe) {
+        blocked = true;
         await db.collection('guardrail_logs').insertOne({ userId: req.user.id, sessionId: chatSessionId, type: 'output', source: 'api', message: botContent.substring(0, 500), reason: outputCheck.reason, createdAt: new Date() });
         botContent = 'Sorry, I\'m unable to provide that information.\n\nMaaf, saya tidak dapat memberikan maklumat tersebut.\n\nமன்னிக்கவும், அந்தத் தகவலை வழங்க இயலவில்லை.\n\n抱歉，无法提供此请求。';
         sendEvent('replace', { content: botContent });
@@ -1943,14 +2275,17 @@ app.post('/api/v1/chat/stream', authenticateApiKey, apiRateLimit(60, 60000), asy
       sessionId: chatSessionId,
       sources,
     });
+    await recordUsage({ responseLength: botContent.length });
     res.end();
   } catch (error) {
     console.error('API stream chat error:', error.message);
+    const apiError = classifyApiChatError(error);
+    await recordUsage({ responseStatus: apiError.status, errorCode: apiError.code, errorMessage: error.message });
     if (streamStarted && !res.writableEnded) {
-      sendEvent('error', { error: 'Internal server error', code: 'SERVER_ERROR' });
+      sendEvent('error', { error: apiError.message, code: apiError.code });
       return res.end();
     }
-    res.status(500).json({ error: 'Internal server error', code: 'SERVER_ERROR' });
+    res.status(apiError.status).json({ error: apiError.message, code: apiError.code });
   }
 });
 
@@ -2368,7 +2703,9 @@ function calculateSimilarity(str1, str2) {
 }
 
 // Check downloadable files with fuzzy match
-app.post('/api/files/check-downloadable', auth, async (req, res) => {
+app.post('/api/files/check-downloadable', auth, validateRequestBody({
+  fileNames: { required: true, type: 'array', arrayOf: 'string' },
+}), async (req, res) => {
   try {
     const { fileNames } = req.body;
     
@@ -2612,6 +2949,104 @@ app.get('/api/forms', auth, async (req, res) => {
 });
 
 // Download file endpoint with tracking
+app.get('/api/files/:id/view', auth, async (req, res) => {
+  try {
+    res.removeHeader('X-Frame-Options');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+
+    const file = await db.collection('files').findOne({
+      _id: new ObjectId(req.params.id)
+    });
+
+    if (!file) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    if (file.type === 'form' && !file.isDownloadable) {
+      return res.status(404).json({ error: 'File not found or not downloadable' });
+    }
+
+    if (req.user.role !== 'developer') {
+      const sharedWith = Array.isArray(file.sharedWith) ? file.sharedWith : [];
+      if (sharedWith.length > 0) {
+        const userId = new ObjectId(req.user.id);
+        const assignments = await db.collection('user_organization_assignments')
+          .find({ userId })
+          .toArray();
+
+        if (assignments.length === 0) {
+          return res.status(403).json({ error: 'No organization access' });
+        }
+
+        const assignedOrgs = await db.collection('organizations')
+          .find({ _id: { $in: assignments.map(a => a.organizationId) } })
+          .toArray();
+
+        const allOrgIds = new Set(assignments.map(a => a.organizationId.toString()));
+
+        for (const org of assignedOrgs) {
+          if (org.path && Array.isArray(org.path)) {
+            const parents = await db.collection('organizations')
+              .find({ name: { $in: org.path } })
+              .toArray();
+            parents.forEach(p => allOrgIds.add(p._id.toString()));
+          }
+        }
+
+        const sharedWithIds = sharedWith.map(id => id.toString());
+        const hasAccess = sharedWithIds.some(id => allOrgIds.has(id));
+
+        if (!hasAccess) {
+          return res.status(403).json({ error: 'Access denied' });
+        }
+      }
+    }
+
+    if (file.url?.startsWith('https://') && file.url.includes('.s3.')) {
+      const s3Client = await getS3Client();
+      if (s3Client) {
+        try {
+          const urlParts = file.url.replace('https://', '').split('/');
+          const bucket = urlParts[0].split('.')[0];
+          const key = urlParts.slice(1).join('/');
+
+          const { GetObjectCommand } = require('@aws-sdk/client-s3');
+          const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+
+          const command = new GetObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            ResponseContentDisposition: `inline; filename="${file.name}"`
+          });
+
+          const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+          return res.redirect(signedUrl);
+        } catch (s3Error) {
+          console.error('S3 view URL error:', s3Error);
+        }
+      }
+    }
+
+    if (file.url?.startsWith('file://')) {
+      let localPath = file.url.replace('file://', '');
+      if (!localPath.startsWith('/')) localPath = join(__dirname, localPath);
+      if (fs.existsSync(localPath)) {
+        res.setHeader('Content-Disposition', `inline; filename="${file.name}"`);
+        return res.sendFile(localPath, { root: '/' });
+      }
+    }
+
+    if (file.url?.startsWith('http://') || file.url?.startsWith('https://')) {
+      return res.redirect(file.url);
+    }
+
+    res.status(404).json({ error: 'File content not available' });
+  } catch (error) {
+    console.error('View file error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Download file by name (for AI-suggested downloads)
 app.get('/api/files/download-by-name/:filename', auth, async (req, res) => {
   try {
@@ -2731,41 +3166,6 @@ app.get('/api/files/:id/download', auth, async (req, res) => {
     res.json({ downloadUrl: file.url, fileName: file.name });
   } catch (error) {
     console.error('Download error:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// List forms (everyone can access)
-app.get('/api/forms', auth, async (req, res) => {
-  try {
-    const forms = await db.collection('files')
-      .find({ 
-        type: 'form',
-        isDownloadable: true 
-      })
-      .sort({ uploadedAt: -1 })
-      .toArray();
-    
-    const formsWithInfo = await Promise.all(forms.map(async (f) => {
-      let orgName = null;
-      if (f.organizationId) {
-        const org = await db.collection('organizations').findOne({ _id: new ObjectId(f.organizationId) });
-        orgName = org?.name || 'Unknown';
-      }
-      
-      return {
-        id: f._id,
-        name: f.name,
-        uploadedAt: f.uploadedAt,
-        uploadedBy: f.uploadedBy,
-        userId: f.userId,
-        organizationName: f.isAllOrganizations ? 'All Organizations' : orgName
-      };
-    }));
-    
-    res.json(formsWithInfo);
-  } catch (error) {
-    console.error('List forms error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -2902,57 +3302,6 @@ app.delete('/api/roles/:id', auth, hasPermission('role:manage', 'system:delete')
   res.json({ success: true });
 });
 
-// Add these endpoints to server.js after RBAC endpoints
-
-// ============= ORGANIZATIONS =============
-app.get('/api/organizations', auth, hasPermission('org:view'), async (req, res) => {
-  const orgs = await db.collection('organizations').find().toArray();
-  res.json(orgs);
-});
-
-app.post('/api/organizations', auth, hasPermission('org:manage'), async (req, res) => {
-  const { name, description, status } = req.body;
-  
-  const result = await db.collection('organizations').insertOne({
-    name,
-    description,
-    status: status || 'active',
-    createdAt: new Date()
-  });
-  
-  res.json({ success: true, id: result.insertedId });
-});
-
-app.put('/api/organizations/:id', auth, hasPermission('org:manage'), async (req, res) => {
-  const { name, description, status } = req.body;
-  
-  await db.collection('organizations').updateOne(
-    { _id: new ObjectId(req.params.id) },
-    { $set: { name, description, status, updatedAt: new Date() } }
-  );
-  
-  res.json({ success: true });
-});
-
-app.delete('/api/organizations/:id', auth, hasPermission('org:manage', 'system:delete'), async (req, res) => {
-  // Check if any users belong to this org
-  const usersCount = await db.collection('users').countDocuments({
-    organizationId: new ObjectId(req.params.id)
-  });
-  
-  if (usersCount > 0) {
-    return res.status(400).json({ error: 'Cannot delete organization with users' });
-  }
-  
-  // Delete all departments in this org
-  await db.collection('departments').deleteMany({
-    organizationId: new ObjectId(req.params.id)
-  });
-  
-  await db.collection('organizations').deleteOne({ _id: new ObjectId(req.params.id) });
-  res.json({ success: true });
-});
-
 // ============= DEPARTMENTS =============
 app.get('/api/departments', auth, hasPermission('dept:view'), async (req, res) => {
   const { organizationId } = req.query;
@@ -3019,69 +3368,6 @@ app.delete('/api/departments/:id', auth, hasPermission('dept:manage', 'system:de
 
 
 // ============= USERS =============
-app.get('/api/users', auth, hasPermission('user:view'), async (req, res) => {
-  // Get current user info
-  const currentUser = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
-  const currentUserRoles = await db.collection('roles').find({
-    _id: { $in: currentUser.roles.map(r => new ObjectId(r)) }
-  }).toArray();
-  const currentUserRole = currentUserRoles[0]?.name.toLowerCase();
-  
-  // Build filter based on role
-  let userFilter = {};
-  
-  if (currentUserRole === 'developer') {
-    // Developer sees all users
-    userFilter = {};
-  } else if (currentUserRole === 'admin') {
-    // Admin sees only users in own organization
-    userFilter = { organizationId: currentUser.organizationId };
-  } else if (currentUserRole === 'manager') {
-    // Manager sees only users in own department
-    userFilter = { 
-      organizationId: currentUser.organizationId,
-      departmentId: currentUser.departmentId 
-    };
-  } else {
-    // User role cannot view users list (but has permission check above)
-    userFilter = { _id: new ObjectId(req.user.id) }; // Only see self
-  }
-  
-  const users = await db.collection('users').find(userFilter).toArray();
-  
-  const usersWithRoles = await Promise.all(users.map(async (user) => {
-    const roles = await db.collection('roles').find({
-      _id: { $in: user.roles.map(r => new ObjectId(r)) }
-    }).toArray();
-    
-    let organization = null;
-    let department = null;
-    
-    if (user.organizationId) {
-      organization = await db.collection('organizations').findOne({ _id: new ObjectId(user.organizationId) });
-    }
-    
-    if (user.departmentId) {
-      department = await db.collection('departments').findOne({ _id: new ObjectId(user.departmentId) });
-    }
-    
-    return {
-      id: user._id,
-      email: user.email,
-      fullName: user.fullName,
-      status: user.status,
-      roles: roles.map(r => ({ id: r._id, name: r.name })),
-      organizationId: user.organizationId,
-      organizationName: organization?.name || null,
-      departmentId: user.departmentId,
-      departmentName: department?.name || null,
-      createdAt: user.createdAt
-    };
-  }));
-  
-  res.json(usersWithRoles);
-});
-
 app.post('/api/users', auth, hasPermission('user:manage'), async (req, res) => {
   try {
     const { email, password, fullName, canUploadFiles, isAdmin } = req.body;
@@ -3117,42 +3403,6 @@ app.post('/api/users', auth, hasPermission('user:manage'), async (req, res) => {
     console.error('Create user error:', error.message);
     res.status(500).json({ error: 'Failed to create user' });
   }
-});
-
-app.put('/api/users/:id', auth, hasPermission('user:manage'), async (req, res) => {
-  const { email, fullName, roles, status, password, organizationId, departmentId } = req.body;
-  
-  const updateData = {
-    email,
-    fullName,
-    roles: roles.map(r => new ObjectId(r)),
-    organizationId: organizationId ? new ObjectId(organizationId) : null,
-    departmentId: departmentId ? new ObjectId(departmentId) : null,
-    status,
-    updatedAt: new Date()
-  };
-  
-  if (password) {
-    updateData.password = await bcrypt.hash(password, 10);
-  }
-  
-  await db.collection('users').updateOne(
-    { _id: new ObjectId(req.params.id) },
-    { $set: updateData }
-  );
-  
-  await logAudit(req.user.id, 'user.update', `Updated user: ${email}`);
-  res.json({ success: true });
-});
-
-app.delete('/api/users/:id', auth, hasPermission('user:manage', 'system:delete'), async (req, res) => {
-  if (req.params.id === req.user.id.toString()) {
-    return res.status(400).json({ error: 'Cannot delete your own account' });
-  }
-  const delUser = await db.collection('users').findOne({ _id: new ObjectId(req.params.id) });
-  await db.collection('users').deleteOne({ _id: new ObjectId(req.params.id) });
-  await logAudit(req.user.id, 'user.delete', `Deleted user: ${delUser?.email || req.params.id}`);
-  res.json({ success: true });
 });
 
 // Reset user password to default (developer only)
@@ -3208,7 +3458,8 @@ app.get('/api/public-settings', async (req, res) => {
       voiceMode: settings.voiceMode || 'browser',
       voiceLanguage: settings.voiceLanguage || 'auto',
       ttsMode: settings.ttsMode || 'browser',
-      ttsLanguage: settings.ttsLanguage || 'en-US'
+      ttsLanguage: settings.ttsLanguage || 'en-US',
+      chatStreamingSpeed: settings.chatStreamingSpeed || 'balanced'
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to load settings' });
@@ -3280,6 +3531,7 @@ app.get('/api/settings', auth, hasPermission(), async (req, res) => {
     chatEmbeddingModel: settings.chatEmbeddingModel || '',
     chatMaxChunks: settings.chatMaxChunks || 5,
     chatShowSourcesDefault: settings.chatShowSourcesDefault !== false,
+    chatStreamingSpeed: settings.chatStreamingSpeed || 'balanced',
     chatApiFlows: settings.chatApiFlows || [],
     // Guardrail settings
     guardrailEnabled: settings.guardrailEnabled || false,
@@ -3390,131 +3642,7 @@ app.put('/api/provider-keys', auth, hasPermission(), async (req, res) => {
   res.json({ success: true });
 });
 
-// API Key Management (Developer only)
-app.get('/api/keys', auth, hasPermission(), async (req, res) => {
-  try {
-    const keys = await db.collection('api_keys').find().sort({ createdAt: -1 }).toArray();
-    
-    // Include user email for each key
-    const keysWithUser = await Promise.all(keys.map(async (key) => {
-      const user = await db.collection('users').findOne({ _id: key.userId });
-      return {
-        ...key,
-        userEmail: user?.email || 'Unknown',
-      };
-    }));
-    
-    res.json(keysWithUser);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get API keys' });
-  }
-});
-
-app.post('/api/keys', auth, hasPermission(), async (req, res) => {
-  try {
-    const { name, userId, generateShortKey, description, webhookUrl, chatMode, systemPrompt } = req.body;
-    
-    // Generate API key
-    const key = 'gk_' + crypto.randomBytes(32).toString('hex');
-    
-    // Generate short key if requested
-    let shortKey = null;
-    if (generateShortKey) {
-      shortKey = await generateUniqueShortKey();
-    }
-    
-    const apiKey = {
-      key,
-      shortKey,
-      hasShortKey: !!generateShortKey,
-      name,
-      description: description || '',
-      chatMode: chatMode || 'native',
-      webhookUrl: webhookUrl || '',
-      systemPrompt: systemPrompt || '',
-      userId: new ObjectId(userId),
-      isActive: true,
-      createdAt: new Date(),
-      lastUsedAt: null
-    };
-    
-    await db.collection('api_keys').insertOne(apiKey);
-    await logAudit(req.user.id, 'apikey.create', `Created API key: ${name}`);
-    res.json({ success: true, key, shortKey });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to create API key' });
-  }
-});
-
-// Helper function to generate unique 6-char short key
-async function generateUniqueShortKey() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let shortKey;
-  let attempts = 0;
-  const maxAttempts = 10;
-  
-  while (attempts < maxAttempts) {
-    shortKey = '';
-    for (let i = 0; i < 6; i++) {
-      shortKey += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    
-    // Check if unique
-    const existing = await db.collection('api_keys').findOne({ shortKey });
-    if (!existing) {
-      return shortKey;
-    }
-    attempts++;
-  }
-  
-  throw new Error('Failed to generate unique short key');
-}
-
-app.patch('/api/keys/:id', auth, hasPermission(), async (req, res) => {
-  try {
-    const { isActive } = req.body;
-    await db.collection('api_keys').updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: { isActive } }
-    );
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to toggle API key' });
-  }
-});
-
-app.put('/api/keys/:id/details', auth, hasPermission(), async (req, res) => {
-  try {
-    const { name, description, chatMode, webhookUrl, systemPrompt } = req.body;
-    await db.collection('api_keys').updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: { name, description, chatMode, webhookUrl, systemPrompt, updatedAt: new Date() } }
-    );
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update API key' });
-  }
-});
-
-app.delete('/api/keys/:id', auth, hasPermission(), async (req, res) => {
-  try {
-    const delKey = await db.collection('api_keys').findOne({ _id: new ObjectId(req.params.id) });
-    await db.collection('api_keys').deleteOne({ _id: new ObjectId(req.params.id) });
-    await logAudit(req.user.id, 'apikey.delete', `Deleted API key: ${delKey?.name || req.params.id}`);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete API key' });
-  }
-});
-
-app.get('/api/usage', auth, hasPermission(), async (req, res) => {
-  try {
-    const usage = await db.collection('api_usage').find().sort({ timestamp: -1 }).limit(100).toArray();
-    res.json(usage);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get API usage' });
-  }
-});
+registerApiKeyRoutes(app, { auth, hasPermission, db, logAudit, validateRequestBody });
 
 // Group Management (Developer only)
 app.get('/api/groups', auth, hasPermission(), async (req, res) => {
@@ -4333,134 +4461,6 @@ app.post('/api/tts', auth, async (req, res) => {
   }
 });
 
-// ============= API KEY MANAGEMENT =============
-
-// Generate API key
-function generateApiKey() {
-  return 'gbc_' + Array.from({ length: 32 }, () => 
-    'abcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(Math.random() * 36)]
-  ).join('');
-}
-
-// Get all API keys (developer only)
-app.get('/api/keys', auth, async (req, res) => {
-  try {
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access required' });
-    }
-
-    const keys = await db.collection('apiKeys').find({ createdBy: req.user.userId }).toArray();
-    res.json(keys);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Create new API key (developer only)
-app.post('/api/keys', auth, async (req, res) => {
-  try {
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access required' });
-    }
-
-    const { name, userId } = req.body;
-    
-    if (!userId) {
-      return res.status(400).json({ error: 'User ID is required' });
-    }
-
-    const apiKey = generateApiKey();
-
-    const newKey = {
-      key: apiKey,
-      userId: userId, // User yang akan guna API key ni
-      createdBy: req.user.userId, // Developer yang create
-      name: name || 'Unnamed Key',
-      isActive: true,
-      createdAt: new Date(),
-      lastUsedAt: null
-    };
-
-    await db.collection('apiKeys').insertOne(newKey);
-    res.json(newKey);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Toggle API key status (developer only)
-app.patch('/api/keys/:id', auth, async (req, res) => {
-  try {
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access required' });
-    }
-
-    const { isActive } = req.body;
-    await db.collection('apiKeys').updateOne(
-      { _id: new ObjectId(req.params.id), createdBy: req.user.userId },
-      { $set: { isActive } }
-    );
-
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Delete API key (developer only)
-app.delete('/api/keys/:id', auth, async (req, res) => {
-  try {
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access required' });
-    }
-
-    await db.collection('apiKeys').deleteOne({
-      _id: new ObjectId(req.params.id),
-      userId: req.user.userId
-    });
-
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get API usage logs (developer only)
-// Get API usage logs (developer only)
-app.get('/api/usage', auth, async (req, res) => {
-  try {
-    if (req.user.role !== 'developer') {
-      return res.status(403).json({ error: 'Developer access required' });
-    }
-
-    // Get API keys created by this developer
-    const apiKeys = await db.collection('apiKeys')
-      .find({ createdBy: req.user.userId })
-      .toArray();
-    
-    if (apiKeys.length === 0) {
-      return res.json([]);
-    }
-
-    const apiKeyIds = apiKeys.map(k => k._id);
-
-    // Get usage for those keys
-    const usage = await db.collection('apiUsage')
-      .find({ apiKeyId: { $in: apiKeyIds } })
-      .sort({ timestamp: -1 })
-      .limit(100)
-      .toArray();
-
-    res.json(usage);
-  } catch (error) {
-    console.error('API usage error:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============= PUBLIC API ENDPOINTS =============
-
-// API Key authentication middleware
 // Text embedding endpoints (Developer only)
 app.get('/api/text-embeddings', auth, async (req, res) => {
   try {
@@ -4759,8 +4759,9 @@ app.post('/api/robot-navigation', authenticateApiKey, async (req, res) => {
 // EMBED WIDGET ENDPOINTS
 // ============================================
 
-// Serve embed static files (before React catch-all)
-app.use('/embed', express.static(join(__dirname, 'public/embed')));
+// Serve embed static files (before React catch-all). Missing embed assets should
+// 404 instead of falling through to the React index.html.
+app.use('/embed', express.static(join(__dirname, 'public/embed'), { fallthrough: false }));
 
 // Get widget config (public — no auth, just widget ID)
 app.get('/api/embed/config/:widgetId', async (req, res) => {
@@ -4769,7 +4770,7 @@ app.get('/api/embed/config/:widgetId', async (req, res) => {
     if (!widget) return res.status(404).json({ error: 'Widget not found' });
 
     // Check allowed domains
-    const origin = req.headers.origin || req.headers.referer || '';
+    const origin = String(req.query.parentOrigin || req.headers.origin || req.headers.referer || '');
     if (widget.allowedDomains?.length > 0) {
       const allowed = widget.allowedDomains.some(d => origin.includes(d));
       if (!allowed && !origin.includes('localhost')) {
@@ -4935,6 +4936,128 @@ app.post('/api/embed/public/chat', async (req, res) => {
   }
 });
 
+app.post('/api/embed/public/chat/stream', async (req, res) => {
+  let streamStarted = false;
+  const sendEvent = (event, data) => {
+    if (res.writableEnded) return;
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const { message, sessionId, widgetId } = req.body;
+    if (!message || !widgetId) return res.status(400).json({ error: 'Missing fields' });
+
+    const widget = await db.collection('embed_widgets').findOne({ _id: new ObjectId(widgetId), isActive: true });
+    if (!widget || widget.accessMode !== 'public') return res.status(404).json({ error: 'Widget not found' });
+
+    const ipKey = `${req.ip}:${widgetId}`;
+    const now = Date.now();
+    const ipEntry = publicChatRateLimit.get(ipKey) || { count: 0, resetAt: now + 3600000 };
+    if (now > ipEntry.resetAt) { ipEntry.count = 0; ipEntry.resetAt = now + 3600000; }
+    ipEntry.count++;
+    publicChatRateLimit.set(ipKey, ipEntry);
+    if (ipEntry.count > 30) return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+
+    streamStarted = true;
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+    res.write(': connected\n\n');
+
+    const chatSessionId = sessionId || new ObjectId().toString();
+    const limit = widget.publicChatLimit || 5;
+    const msgCount = await db.collection('messages').countDocuments({ sessionId: chatSessionId, role: 'user', chatType: 'embed-public' });
+
+    if (msgCount >= limit) {
+      const fallback = widget.fallbackMessage || 'You have reached the question limit. Please contact our team for further assistance.';
+      const history = await db.collection('messages').find({ sessionId: chatSessionId, chatType: 'embed-public' }).sort({ createdAt: 1 }).limit(20).toArray();
+      const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+      let closing = fallback;
+      try {
+        closing = await streamLLM([
+          { role: 'system', content: 'You are ending a conversation because the user has reached their question limit. Based on the conversation so far, write a brief, natural closing message. You MUST include this contact information naturally: ' + fallback + '\nKeep it short (2-3 sentences max). Be warm and helpful. Do not mention "question limit" directly.' },
+          ...history.map(m => ({ role: m.role === 'bot' ? 'assistant' : 'user', content: m.content })),
+        ], settings, (token) => sendEvent('token', { token }), db, 'embed_widget_stream_limit');
+      } catch {
+        sendEvent('token', { token: closing });
+      }
+      sendEvent('done', { response: closing, sessionId: chatSessionId, sources: [], limitReached: true });
+      return res.end();
+    }
+
+    await db.collection('messages').insertOne({
+      sessionId: chatSessionId, role: 'user', content: message,
+      chatType: 'embed-public', chatName: widget.name,
+      visitorIp: req.ip, createdAt: new Date()
+    });
+
+    const orgIds = [];
+    if (widget.organizationId) {
+      orgIds.push(widget.organizationId.toString());
+      const children = await db.collection('organizations').find({ parentId: new ObjectId(widget.organizationId) }).toArray();
+      for (const c of children) {
+        orgIds.push(c._id.toString());
+        const grandchildren = await db.collection('organizations').find({ parentId: c._id }).toArray();
+        grandchildren.forEach(gc => orgIds.push(gc._id.toString()));
+      }
+    }
+
+    const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+    let chatPrompt = widget.systemPrompt;
+    if (!chatPrompt && widget.organizationId) {
+      const org = await db.collection('organizations').findOne({ _id: new ObjectId(widget.organizationId) });
+      if (org?.systemPrompt) chatPrompt = org.systemPrompt;
+    }
+    const overrideSettings = chatPrompt ? { ...settings, chatSystemPrompt: chatPrompt } : settings;
+
+    const result = await processPublicChatStream(db, message, chatSessionId, overrideSettings, orgIds, {
+      onStatus: (status) => sendEvent('status', { status }),
+      onToken: (token) => sendEvent('token', { token }),
+    });
+
+    let finalResponse = result.response || '';
+    const remaining = limit - msgCount - 1;
+
+    if (result.blocked) {
+      sendEvent('replace', { content: finalResponse });
+    } else if (remaining <= 0) {
+      const fallback = widget.fallbackMessage || 'Please contact our team for further assistance.';
+      const history = await db.collection('messages').find({ sessionId: chatSessionId, chatType: 'embed-public' }).sort({ createdAt: 1 }).limit(20).toArray();
+      try {
+        sendEvent('token', { token: '\n\n' });
+        const closing = await streamLLM([
+          { role: 'system', content: 'The user has used their last question. Write only a short natural closing. You MUST include this contact info: ' + fallback + '\nKeep it to 1-2 sentences. Be warm.' },
+          ...history.map(m => ({ role: m.role === 'bot' ? 'assistant' : 'user', content: m.content })),
+          { role: 'assistant', content: finalResponse },
+        ], settings, (token) => sendEvent('token', { token }), db, 'embed_widget_stream_closing');
+        finalResponse += '\n\n' + closing;
+      } catch {
+        sendEvent('token', { token: '\n\n' + fallback });
+        finalResponse += '\n\n' + fallback;
+      }
+    }
+
+    await db.collection('messages').insertOne({
+      sessionId: chatSessionId, role: 'bot', content: finalResponse,
+      sources: result.sources || [], chatType: 'embed-public', chatName: widget.name,
+      createdAt: new Date()
+    });
+
+    sendEvent('done', { response: finalResponse, sessionId: chatSessionId, sources: result.sources || [], remaining });
+    res.end();
+  } catch (error) {
+    console.error('Public embed stream chat error:', error.message);
+    if (streamStarted && !res.writableEnded) {
+      sendEvent('error', { error: error.message });
+      return res.end();
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Public embed message history (no auth, by sessionId)
 app.get('/api/embed/public/messages', async (req, res) => {
   try {
@@ -4998,6 +5121,84 @@ app.post('/api/embed/chat', auth, async (req, res) => {
     res.json({ response: result.response, sessionId: chatSessionId, sources: result.sources || [] });
   } catch (error) {
     console.error('Embed chat error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/embed/chat/stream', auth, async (req, res) => {
+  let streamStarted = false;
+  const sendEvent = (event, data) => {
+    if (res.writableEnded) return;
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const { message, sessionId, widgetId } = req.body;
+    if (!message || !widgetId) return res.status(400).json({ error: 'Missing fields' });
+
+    const widget = await db.collection('embed_widgets').findOne({ _id: new ObjectId(widgetId) });
+    if (!widget) return res.status(404).json({ error: 'Widget not found' });
+
+    streamStarted = true;
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+    res.write(': connected\n\n');
+
+    const chatSessionId = sessionId || new ObjectId().toString();
+    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const startedByEmail = user?.email || 'Embed User';
+    const startedByName = startedByEmail.split('@')[0];
+
+    await db.collection('messages').insertOne({
+      userId: req.user.id, sessionId: chatSessionId,
+      startedBy: startedByName, startedByEmail,
+      role: 'user', content: message,
+      chatType: 'embed', chatName: widget.name,
+      createdAt: new Date()
+    });
+
+    const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+    let chatPrompt = widget.systemPrompt;
+    if (!chatPrompt && widget.organizationId) {
+      const org = await db.collection('organizations').findOne({ _id: new ObjectId(widget.organizationId) });
+      if (org?.systemPrompt) chatPrompt = org.systemPrompt;
+    }
+    const overrideSettings = chatPrompt ? { ...settings, chatSystemPrompt: chatPrompt } : settings;
+
+    const chatStartTime = Date.now();
+    const result = await processBrowserChatStream(db, req.user.id, message, chatSessionId, overrideSettings, null, widget.organizationId || null, {
+      onStatus: (status) => sendEvent('status', { status }),
+      onToken: (token) => sendEvent('token', { token }),
+    });
+    const responseTimeMs = Date.now() - chatStartTime;
+    const botContent = result.response || '';
+
+    if (result.blocked) {
+      sendEvent('replace', { content: botContent });
+    }
+
+    await db.collection('messages').insertOne({
+      userId: req.user.id, sessionId: chatSessionId,
+      startedBy: startedByName, startedByEmail,
+      role: 'bot', content: botContent,
+      sources: result.sources || [],
+      responseTimeMs,
+      chatType: 'embed', chatName: widget.name,
+      createdAt: new Date()
+    });
+
+    sendEvent('done', { response: botContent, sessionId: chatSessionId, sources: result.sources || [], blocked: result.blocked || false });
+    res.end();
+  } catch (error) {
+    console.error('Embed stream chat error:', error.message);
+    if (streamStarted && !res.writableEnded) {
+      sendEvent('error', { error: error.message });
+      return res.end();
+    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -5438,29 +5639,93 @@ app.get('/api/ai-usage', auth, async (req, res) => {
 });
 
 // ─── External Knowledge Collections ───────────────────────────
+function normalizeOrganizationIds(organizationIds = []) {
+  return organizationIds
+    .map(id => id?.toString?.() || id)
+    .filter(id => ObjectId.isValid(id))
+    .map(id => new ObjectId(id));
+}
+
+function extractExternalRecordText(record) {
+  if (typeof record === 'string') return record.trim();
+  if (!record || typeof record !== 'object') return '';
+  if (typeof record.content === 'string' && record.content.trim()) return record.content.trim();
+  const { metadata, externalUserId, content, ...fields } = record;
+  return Object.entries(fields)
+    .filter(([, value]) => value !== null && value !== undefined && typeof value !== 'object')
+    .map(([key, value]) => `${key}: ${value}`)
+    .join(', ')
+    .trim();
+}
+
+function getExternalRecordId(collectionId, record, index) {
+  const meta = record && typeof record === 'object' && !Array.isArray(record) && record.metadata && typeof record.metadata === 'object'
+    ? record.metadata
+    : {};
+  const rawId = typeof record === 'object' && record
+    ? record.id || record._id || record.externalId || meta.id || meta.externalId
+    : null;
+  const stablePart = rawId ? rawId.toString() : `${Date.now()}-${index}-${Math.random()}`;
+  const hash = crypto.createHash('sha256').update(`${collectionId}:${stablePart}`).digest('hex');
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+}
+
 app.get('/api/external-collections', auth, async (req, res) => {
   if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
   const cols = await db.collection('external_collections').find().sort({ createdAt: -1 }).toArray();
-  res.json(cols);
+  const latestLogs = await db.collection('external_ingest_logs').aggregate([
+    { $sort: { createdAt: -1 } },
+    { $group: { _id: '$collectionId', latest: { $first: '$$ROOT' }, runs: { $sum: 1 }, errors: { $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] } } } },
+  ]).toArray();
+  const logMap = new Map(latestLogs.map(row => [row._id, row]));
+  res.json(cols.map(col => {
+    const stats = logMap.get(col._id.toString());
+    return {
+      ...col,
+      lastIngestStatus: col.lastIngestStatus || stats?.latest?.status || 'never',
+      lastIngestAt: col.lastIngestAt || stats?.latest?.completedAt || stats?.latest?.createdAt || null,
+      lastIngestCount: col.lastIngestCount ?? stats?.latest?.ingested ?? 0,
+      lastIngestSkipped: col.lastIngestSkipped ?? stats?.latest?.skipped ?? 0,
+      lastIngestDurationMs: col.lastIngestDurationMs ?? stats?.latest?.durationMs ?? null,
+      lastIngestError: col.lastIngestError || stats?.latest?.error || '',
+      ingestRuns: stats?.runs || 0,
+      ingestErrors: stats?.errors || 0,
+      lastIngest: stats?.latest || null,
+    };
+  }));
 });
 
-app.post('/api/external-collections', auth, async (req, res) => {
+app.post('/api/external-collections', auth, validateRequestBody({
+  name: { required: true, type: 'string', minLength: 1, maxLength: 160 },
+  organizationIds: { type: 'array', objectIdArray: true },
+  metadataSchema: { type: 'array' },
+}), async (req, res) => {
   if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
-  const { name, description, organizationIds } = req.body;
+  const { name, description, organizationIds, metadataSchema } = req.body;
   if (!name) return res.status(400).json({ error: 'Name required' });
   const result = await db.collection('external_collections').insertOne({
-    name, description: description || '', organizationIds: (organizationIds || []).map(id => new ObjectId(id)),
-    recordCount: 0, createdAt: new Date()
+    name,
+    description: description || '',
+    organizationIds: normalizeOrganizationIds(organizationIds),
+    metadataSchema: Array.isArray(metadataSchema) ? metadataSchema : [],
+    recordCount: 0,
+    totalIngested: 0,
+    lastIngestStatus: 'never',
+    createdAt: new Date()
   });
   await logAudit(req.user.id, 'collection.create', `Created external collection: ${name}`);
   res.json({ success: true, collectionId: result.insertedId });
 });
 
-app.put('/api/external-collections/:id', auth, async (req, res) => {
+app.put('/api/external-collections/:id', auth, validateRequestBody({
+  name: { required: true, type: 'string', minLength: 1, maxLength: 160 },
+  organizationIds: { type: 'array', objectIdArray: true },
+  metadataSchema: { type: 'array' },
+}), async (req, res) => {
   if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
-  const { name, description, organizationIds } = req.body;
+  const { name, description, organizationIds, metadataSchema } = req.body;
   await db.collection('external_collections').updateOne({ _id: new ObjectId(req.params.id) }, { $set: {
-    name, description: description || '', organizationIds: (organizationIds || []).map(id => new ObjectId(id)), updatedAt: new Date()
+    name, description: description || '', organizationIds: normalizeOrganizationIds(organizationIds), metadataSchema: Array.isArray(metadataSchema) ? metadataSchema : [], updatedAt: new Date()
   }});
   // Update Qdrant vectors org access
   const col = await db.collection('external_collections').findOne({ _id: new ObjectId(req.params.id) });
@@ -5491,29 +5756,203 @@ app.delete('/api/external-collections/:id', auth, async (req, res) => {
   res.json({ success: true });
 });
 
+app.get('/api/external-collections/:id/ingest-logs', auth, async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  const logs = await db.collection('external_ingest_logs')
+    .find({ collectionId: req.params.id })
+    .sort({ createdAt: -1 })
+    .limit(50)
+    .toArray();
+  res.json(logs);
+});
+
+app.post('/api/external-collections/:id/clear-vectors', auth, async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  if (!ObjectId.isValid(req.params.id)) return res.status(400).json({ error: 'Invalid collection id' });
+  const col = await db.collection('external_collections').findOne({ _id: new ObjectId(req.params.id) });
+  if (!col) return res.status(404).json({ error: 'Collection not found' });
+
+  try {
+    const qdrant = new QdrantClient({ host: 'qdrant', port: 6333 });
+    await qdrant.delete('documents', { filter: { must: [{ key: 'collection_id', match: { value: req.params.id } }] } });
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to clear vectors: ' + error.message });
+  }
+
+  await db.collection('external_collections').updateOne(
+    { _id: new ObjectId(req.params.id) },
+    {
+      $set: {
+        recordCount: 0,
+        lastIngestStatus: 'cleared',
+        lastIngestCount: 0,
+        lastIngestSkipped: 0,
+        lastIngestError: '',
+        updatedAt: new Date(),
+      },
+    }
+  );
+  await logAudit(req.user.id, 'collection.clear_vectors', `Cleared vectors for external collection: ${col.name}`);
+  res.json({ success: true });
+});
+
+app.post('/api/external-collections/:id/search', auth, validateRequestBody({
+  query: { required: true, type: 'string', minLength: 1, maxLength: 4000 },
+  limit: { type: 'number' },
+  filter: { type: 'object' },
+}), async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  if (!ObjectId.isValid(req.params.id)) return res.status(400).json({ error: 'Invalid collection id' });
+  const { query, limit = 5, filter } = req.body;
+  if (!query?.trim()) return res.status(400).json({ error: 'Query is required' });
+
+  const col = await db.collection('external_collections').findOne({ _id: new ObjectId(req.params.id) });
+  if (!col) return res.status(404).json({ error: 'Collection not found' });
+
+  try {
+    const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+    const pk = await resolveProviderKeys(null);
+    const embProvider = settings.embeddingProvider || settings.chatEmbeddingProvider || 'gemini';
+    const embModel = settings.embeddingModel || settings.chatEmbeddingModel || 'gemini-embedding-001';
+    const embKey = settings[`embeddingApiKey_${embProvider}`] || settings.embeddingApiKey || pk[embProvider] || '';
+    const embStart = Date.now();
+    let queryVector;
+
+    if (embProvider === 'gemini') {
+      const resp = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${embModel}:embedContent?key=${embKey}`, {
+        content: { parts: [{ text: query }] }, taskType: 'RETRIEVAL_QUERY'
+      });
+      queryVector = resp.data.embedding.values;
+    } else if (embProvider === 'openai') {
+      const oai = new OpenAI({ apiKey: embKey });
+      const resp = await oai.embeddings.create({ model: embModel, input: [query] });
+      queryVector = resp.data[0].embedding;
+    } else if (embProvider === 'mistral') {
+      const resp = await axios.post('https://api.mistral.ai/v1/embeddings', { model: embModel, input: [query] }, { headers: { Authorization: `Bearer ${embKey}` } });
+      queryVector = resp.data.data[0].embedding;
+    }
+    if (!queryVector) return res.status(400).json({ error: `Unsupported embedding provider: ${embProvider}` });
+    await logAiCall(embProvider, embModel, 'embedding', 'external_search_test', Date.now() - embStart);
+
+    const must = [{ key: 'collection_id', match: { value: req.params.id } }];
+    if (filter && typeof filter === 'object') {
+      for (const [key, value] of Object.entries(filter)) {
+        if (value === '' || value === null || value === undefined) continue;
+        if (key === 'externalUserId') must.push({ key: 'shared_with', match: { value: `ext_${value}` } });
+        else must.push({ key, match: { value } });
+      }
+    }
+
+    const qdrant = new QdrantClient({ host: 'qdrant', port: 6333 });
+    const results = await qdrant.search('documents', {
+      vector: queryVector,
+      limit: Math.min(Math.max(Number(limit) || 5, 1), 20),
+      with_payload: true,
+      filter: { must },
+    });
+
+    res.json({
+      query,
+      provider: embProvider,
+      model: embModel,
+      results: results.map(r => ({
+        score: r.score,
+        content: r.payload?.content || '',
+        recordId: r.payload?.record_id || null,
+        metadata: r.payload || {},
+      })),
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Search failed: ' + error.message });
+  }
+});
+
 // Ingest API — Node-RED calls this
-app.post('/api/ingest', async (req, res) => {
+app.post('/api/ingest', validateRequestBody({
+  collectionId: { required: true, objectId: true },
+  records: { required: true, type: 'array' },
+  mode: { enum: ['append', 'replace'] },
+}), async (req, res) => {
+  const ingestStart = Date.now();
+  let ingestLogId = null;
+  let collectionId = req.body?.collectionId;
+  let col = null;
+  let authType = null;
+  let authApiKey = null;
+
+  const updateIngestLog = async (patch) => {
+    if (!ingestLogId) return;
+    try {
+      await db.collection('external_ingest_logs').updateOne(
+        { _id: ingestLogId },
+        { $set: { ...patch, updatedAt: new Date() } }
+      );
+    } catch (error) {
+      console.error('Failed to update ingest log:', error.message);
+    }
+  };
+
   try {
     const internalKey = req.headers['x-internal-key'];
     const apiKey = req.headers['x-api-key'];
     // Auth: internal key OR API key OR JWT developer
     let authed = false;
-    if (internalKey && internalKey === process.env.INTERNAL_KEY) authed = true;
+    if (internalKey && internalKey === process.env.INTERNAL_KEY) {
+      authed = true;
+      authType = 'internal';
+    }
     if (!authed && apiKey) {
       const key = await db.collection('api_keys').findOne({ $or: [{ key: apiKey }, { shortKey: apiKey }], isActive: true });
-      if (key) authed = true;
+      if (key) {
+        authed = true;
+        authType = 'api_key';
+        authApiKey = key;
+      }
     }
     if (!authed) {
       const token = req.headers.authorization?.replace('Bearer ', '');
-      if (token) { try { const u = jwt.verify(token, process.env.JWT_SECRET || 'secret'); if (u.role === 'developer') authed = true; } catch {} }
+      if (token) {
+        try {
+          const u = jwt.verify(token, JWT_SECRET);
+          if (u.role === 'developer') {
+            authed = true;
+            authType = 'developer_jwt';
+          }
+        } catch {}
+      }
     }
     if (!authed) return res.status(401).json({ error: 'Unauthorized' });
 
-    const { collectionId, records } = req.body;
+    const { records, mode = 'append' } = req.body;
     if (!collectionId || !records?.length) return res.status(400).json({ error: 'collectionId and records required' });
+    if (!ObjectId.isValid(collectionId)) return res.status(400).json({ error: 'Invalid collectionId' });
+    if (!Array.isArray(records)) return res.status(400).json({ error: 'records must be an array' });
+    if (records.length > 1000) return res.status(413).json({ error: 'Maximum 1000 records per ingest request' });
+    if (!['append', 'replace'].includes(mode)) return res.status(400).json({ error: 'mode must be append or replace' });
+    if (authApiKey && !apiKeyHasScope(authApiKey, 'ingest')) {
+      return res.status(403).json({ error: 'API key does not have ingest scope', code: 'API_SCOPE_DENIED' });
+    }
+    const allowedCollectionIds = getApiKeyCollectionIds(authApiKey);
+    if (authApiKey && allowedCollectionIds.length > 0 && !allowedCollectionIds.includes(collectionId)) {
+      return res.status(403).json({ error: 'API key cannot access this collection', code: 'API_COLLECTION_DENIED' });
+    }
 
-    const col = await db.collection('external_collections').findOne({ _id: new ObjectId(collectionId) });
+    col = await db.collection('external_collections').findOne({ _id: new ObjectId(collectionId) });
     if (!col) return res.status(404).json({ error: 'Collection not found' });
+
+    const logResult = await db.collection('external_ingest_logs').insertOne({
+      collectionId,
+      collectionName: col.name,
+      mode,
+      requestedRecords: records.length,
+      status: 'processing',
+      authType,
+      apiKeyId: authApiKey?._id || null,
+      apiKeyName: authApiKey?.name || null,
+      createdAt: new Date(),
+      startedAt: new Date(),
+    });
+    ingestLogId = logResult.insertedId;
 
     const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
     const pk = await resolveProviderKeys(null);
@@ -5529,17 +5968,26 @@ app.post('/api/ingest', async (req, res) => {
       await qdrant.createCollection('documents', { vectors: { size: dim, distance: 'Cosine' } });
     }
 
+    if (mode === 'replace') {
+      await qdrant.delete('documents', { filter: { must: [{ key: 'collection_id', match: { value: collectionId } }] } });
+    }
+
     let ingested = 0;
+    let skipped = 0;
     // Process in batches of 20
     for (let i = 0; i < records.length; i += 20) {
       const batch = records.slice(i, i + 20);
-      const texts = batch.map(r => {
-        if (typeof r === 'string') return r;
-        // Build text from content field or all fields (excluding metadata/externalUserId)
-        if (r.content) return r.content;
-        const { metadata, externalUserId, ...fields } = r;
-        return Object.entries(fields).map(([k, v]) => `${k}: ${v}`).join(', ');
+      const prepared = batch.map((record, j) => ({
+        record,
+        text: extractExternalRecordText(record),
+        index: i + j,
+      })).filter(item => {
+        if (item.text) return true;
+        skipped += 1;
+        return false;
       });
+      if (prepared.length === 0) continue;
+      const texts = prepared.map(item => item.text);
 
       // Embed batch
       let vectors;
@@ -5560,27 +6008,32 @@ app.post('/api/ingest', async (req, res) => {
         const resp = await axios.post('https://api.mistral.ai/v1/embeddings', { model: embModel, input: texts }, { headers: { Authorization: `Bearer ${embKey}` } });
         vectors = resp.data.data.map(d => d.embedding);
       }
+      if (!vectors?.length) throw new Error(`Unsupported embedding provider: ${embProvider}`);
       await logAiCall(embProvider, embModel, 'embedding', 'ingest', Date.now() - ingestEmbStart);
 
       // Upsert to Qdrant
       const points = vectors.map((vec, j) => {
-        const record = batch[j];
-        const meta = (typeof record === 'object' && record.metadata) ? record.metadata : {};
+        const { record, text, index } = prepared[j];
+        const meta = (typeof record === 'object' && record.metadata && !Array.isArray(record.metadata)) ? record.metadata : {};
         const extUserId = meta.externalUserId || (typeof record === 'object' ? record.externalUserId : null);
         const sharedWith = [...orgIds];
         if (extUserId) sharedWith.push(`ext_${extUserId}`);
+        const recordId = typeof record === 'object' && record
+          ? record.id || record._id || record.externalId || meta.id || meta.externalId || null
+          : null;
         // Merge custom metadata into payload
         return {
-          id: Date.now() + i + j + Math.floor(Math.random() * 1000000),
+          id: getExternalRecordId(collectionId, record, index),
           vector: vec,
           payload: {
             ...meta,
-            content: texts[j],
+            content: text,
+            record_id: recordId ? recordId.toString() : null,
             collection_id: collectionId,
             collection_name: col.name,
             file_name: col.name,
             file_id: `ext_${collectionId}`,
-            page_number: i + j + 1,
+            page_number: index + 1,
             organization_ids: orgIds,
             shared_with: sharedWith,
             source: 'external',
@@ -5588,14 +6041,71 @@ app.post('/api/ingest', async (req, res) => {
         };
       });
       await qdrant.upsert('documents', { points });
-      ingested += batch.length;
+      ingested += prepared.length;
     }
 
-    // Update record count
-    await db.collection('external_collections').updateOne({ _id: new ObjectId(collectionId) }, { $set: { recordCount: ingested, lastIngestAt: new Date() } });
+    let recordCount = null;
+    try {
+      const countResult = await qdrant.count('documents', {
+        filter: { must: [{ key: 'collection_id', match: { value: collectionId } }] },
+        exact: true,
+      });
+      recordCount = countResult?.count ?? null;
+    } catch {}
 
-    res.json({ success: true, ingested });
+    const durationMs = Date.now() - ingestStart;
+    const collectionUpdate = {
+      lastIngestAt: new Date(),
+      lastIngestStatus: 'success',
+      lastIngestCount: ingested,
+      lastIngestSkipped: skipped,
+      lastIngestMode: mode,
+      lastIngestDurationMs: durationMs,
+      lastIngestError: '',
+      totalIngested: (col.totalIngested || 0) + ingested,
+      updatedAt: new Date(),
+    };
+    if (recordCount !== null) collectionUpdate.recordCount = recordCount;
+    else if (mode === 'replace') collectionUpdate.recordCount = ingested;
+    else collectionUpdate.recordCount = (col.recordCount || 0) + ingested;
+
+    await db.collection('external_collections').updateOne(
+      { _id: new ObjectId(collectionId) },
+      { $set: collectionUpdate }
+    );
+    await updateIngestLog({
+      status: 'success',
+      ingested,
+      skipped,
+      provider: embProvider,
+      model: embModel,
+      durationMs,
+      recordCount: collectionUpdate.recordCount,
+      completedAt: new Date(),
+    });
+
+    res.json({ success: true, ingested, skipped, mode, collectionId, durationMs, recordCount: collectionUpdate.recordCount });
   } catch (error) {
+    const durationMs = Date.now() - ingestStart;
+    await updateIngestLog({
+      status: 'failed',
+      error: error.message,
+      durationMs,
+      completedAt: new Date(),
+    });
+    if (collectionId && ObjectId.isValid(collectionId)) {
+      await db.collection('external_collections').updateOne(
+        { _id: new ObjectId(collectionId) },
+        {
+          $set: {
+            lastIngestStatus: 'failed',
+            lastIngestError: error.message,
+            lastIngestDurationMs: durationMs,
+            updatedAt: new Date(),
+          },
+        }
+      );
+    }
     res.status(500).json({ error: 'Ingest failed: ' + error.message });
   }
 });

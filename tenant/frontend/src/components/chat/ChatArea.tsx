@@ -8,7 +8,8 @@ interface Message {
   content: string;
   startedBy?: string;
   createdAt?: Date | string;
-  sources?: { file_name: string; page_number: number; file_id?: string }[];
+  status?: string;
+  sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[];
   responseTimeMs?: number;
   actions?: { label: string; value: string }[];
   debug?: any;
@@ -112,6 +113,8 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, userFu
                     role={msg.role} 
                     content={msg.content} 
                     isTyping={isLoading && msg.role === "assistant" && !msg.content}
+                    isStreaming={isLoading && msg.role === "assistant" && !!msg.content}
+                    status={msg.status}
                     userName={getUserName()} 
                     startedBy={msg.startedBy}
                     timestamp={msg.createdAt}

@@ -3,45 +3,80 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { useConfirm } from "./ConfirmDialog";
 import { api } from "@/lib/api";
-import { Plus, Copy, Power, Trash2, Eye, EyeOff, Key, X, Edit2 } from "lucide-react";
+import { Plus, Copy, Power, Trash2, Eye, EyeOff, Key, X, Edit2, Activity } from "lucide-react";
 
-interface ApiKey { _id: string; key: string; shortKey?: string; hasShortKey?: boolean; name: string; description?: string; userId: string; userEmail: string; chatMode?: string; webhookUrl?: string; systemPrompt?: string; isActive: boolean; createdAt: string; lastUsedAt: string | null; }
+interface ApiKey { _id: string; key: string; shortKey?: string; hasShortKey?: boolean; name: string; description?: string; userId: string; userEmail: string; chatMode?: string; webhookUrl?: string; systemPrompt?: string; scopes?: string[]; allowedCollectionIds?: string[]; isActive: boolean; createdAt: string; lastUsedAt: string | null; }
+interface ApiUsageSummary {
+  totalRequests: number;
+  totalErrors: number;
+  streamingRequests: number;
+  normalRequests: number;
+  avgLatencyMs: number;
+  lastRequestAt: string | null;
+  lastError?: { timestamp?: string; endpoint?: string; apiKeyName?: string; status?: number; code?: string; message?: string } | null;
+}
 
 export const ApiManagementPage = () => {
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [users, setUsers] = useState<any[]>([]);
+  const [collections, setCollections] = useState<any[]>([]);
+  const [usage, setUsage] = useState<any>(null);
   const [showModal, setShowModal] = useState(false);
   const [editingKey, setEditingKey] = useState<ApiKey | null>(null);
-  const [form, setForm] = useState({ name: "", description: "", userId: "", chatMode: "native", webhookUrl: "", systemPrompt: "", generateShortKey: false });
+  const [form, setForm] = useState({ name: "", description: "", userId: "", chatMode: "native", webhookUrl: "", systemPrompt: "", generateShortKey: false, scopes: ["chat"] as string[], allowedCollectionIds: [] as string[] });
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
   const confirm = useConfirm();
 
-  useEffect(() => { loadKeys(); loadUsers(); }, []);
+  useEffect(() => { loadKeys(); loadUsers(); loadUsage(); loadCollections(); }, []);
 
   const loadKeys = async () => { try { setKeys(await api.getApiKeys()); } catch (e: any) { toast.error(e.message); } };
   const loadUsers = async () => { try { setUsers(await api.getUsers()); } catch (e) { setUsers([]); } };
+  const loadUsage = async () => { try { setUsage(await api.getApiUsage()); } catch (e) { setUsage(null); } };
+  const loadCollections = async () => { try { setCollections(await api.getExternalCollections()); } catch (e) { setCollections([]); } };
 
-  const openCreate = () => { setEditingKey(null); setForm({ name: "", description: "", userId: "", chatMode: "native", webhookUrl: "", systemPrompt: "", generateShortKey: false }); setShowModal(true); };
-  const openEdit = (k: ApiKey) => { setEditingKey(k); setForm({ name: k.name, description: k.description || "", userId: k.userId, chatMode: k.chatMode || "webhook", webhookUrl: k.webhookUrl || "", systemPrompt: k.systemPrompt || "", generateShortKey: false }); setShowModal(true); };
+  const openCreate = () => { setEditingKey(null); setForm({ name: "", description: "", userId: "", chatMode: "native", webhookUrl: "", systemPrompt: "", generateShortKey: false, scopes: ["chat"], allowedCollectionIds: [] }); setShowModal(true); };
+  const openEdit = (k: ApiKey) => { setEditingKey(k); setForm({ name: k.name, description: k.description || "", userId: k.userId, chatMode: k.chatMode || "webhook", webhookUrl: k.webhookUrl || "", systemPrompt: k.systemPrompt || "", generateShortKey: false, scopes: k.scopes?.length ? k.scopes : ["chat"], allowedCollectionIds: k.allowedCollectionIds || [] }); setShowModal(true); };
 
   const handleSubmit = async () => {
     if (!form.name || (!editingKey && !form.userId)) { toast.error("Fill required fields"); return; }
     if (form.chatMode === "webhook" && !form.webhookUrl) { toast.error("Webhook URL required for webhook mode"); return; }
     try {
       if (editingKey) {
-        await api.updateApiKeyDetails(editingKey._id, { name: form.name, description: form.description, chatMode: form.chatMode, webhookUrl: form.webhookUrl, systemPrompt: form.systemPrompt });
+        await api.updateApiKeyDetails(editingKey._id, { name: form.name, description: form.description, chatMode: form.chatMode, webhookUrl: form.webhookUrl, systemPrompt: form.systemPrompt, scopes: form.scopes, allowedCollectionIds: form.allowedCollectionIds });
       } else {
-        await api.createApiKey(form.name, form.userId, form.generateShortKey, null, form.description, form.webhookUrl, form.chatMode, form.systemPrompt);
+        await api.createApiKey(form.name, form.userId, form.generateShortKey, null, form.description, form.webhookUrl, form.chatMode, form.systemPrompt, form.scopes, form.allowedCollectionIds);
       }
-      setShowModal(false); loadKeys(); toast.success(editingKey ? "Updated" : "Created");
+      setShowModal(false); loadKeys(); loadUsage(); toast.success(editingKey ? "Updated" : "Created");
     } catch (e: any) { toast.error(e.message); }
   };
 
-  const handleToggleKey = async (id: string, isActive: boolean) => { try { await api.toggleApiKey(id, !isActive); loadKeys(); } catch (e: any) { toast.error(e.message); } };
-  const handleDeleteKey = async (id: string) => { if (!await confirm("Delete this API key?")) return; try { await api.deleteApiKey(id); loadKeys(); toast.success("Deleted"); } catch (e: any) { toast.error(e.message); } };
+  const handleToggleKey = async (id: string, isActive: boolean) => { try { await api.toggleApiKey(id, !isActive); loadKeys(); loadUsage(); } catch (e: any) { toast.error(e.message); } };
+  const handleDeleteKey = async (id: string) => { if (!await confirm("Delete this API key?")) return; try { await api.deleteApiKey(id); loadKeys(); loadUsage(); toast.success("Deleted"); } catch (e: any) { toast.error(e.message); } };
   const copyToClipboard = (text: string) => { navigator.clipboard.writeText(text); toast.success("Copied!"); };
   const toggleKeyVisibility = (id: string) => setVisibleKeys(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const maskKey = (key: string) => key.substring(0, 8) + "..." + key.substring(key.length - 4);
+  const toggleScope = (scope: string) => setForm(prev => {
+    const scopes = prev.scopes.includes(scope) ? prev.scopes.filter(s => s !== scope) : [...prev.scopes, scope];
+    return { ...prev, scopes: scopes.length ? scopes : ["chat"] };
+  });
+  const toggleCollection = (collectionId: string) => setForm(prev => ({
+    ...prev,
+    allowedCollectionIds: prev.allowedCollectionIds.includes(collectionId)
+      ? prev.allowedCollectionIds.filter(id => id !== collectionId)
+      : [...prev.allowedCollectionIds, collectionId],
+  }));
+  const usageSummary: ApiUsageSummary = usage?.summary || {
+    totalRequests: Array.isArray(usage) ? usage.length : 0,
+    totalErrors: Array.isArray(usage) ? usage.filter((item: any) => item.responseStatus >= 400).length : 0,
+    streamingRequests: Array.isArray(usage) ? usage.filter((item: any) => item.streaming).length : 0,
+    normalRequests: Array.isArray(usage) ? usage.filter((item: any) => !item.streaming).length : 0,
+    avgLatencyMs: 0,
+    lastRequestAt: Array.isArray(usage) ? usage[0]?.timestamp || null : null,
+    lastError: null,
+  };
+  const recentUsage = usage?.recent || (Array.isArray(usage) ? usage : []);
+  const formatLatency = (ms?: number) => typeof ms === 'number' && ms > 0 ? `${ms.toLocaleString()}ms` : '-';
+  const formatTime = (value?: string) => value ? new Date(value).toLocaleString() : '-';
 
   return (
     <div className="h-full overflow-y-auto">
@@ -56,10 +91,11 @@ export const ApiManagementPage = () => {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-3 gap-3 mb-5">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
           <div className="border rounded-lg px-4 py-3"><p className="text-[11px] text-muted-foreground">Total Keys</p><p className="text-2xl font-semibold mt-0.5">{keys.length}</p></div>
           <div className="border rounded-lg px-4 py-3"><p className="text-[11px] text-muted-foreground">Active Keys</p><p className="text-2xl font-semibold mt-0.5">{keys.filter(k => k.isActive).length}</p></div>
-          <div className="border rounded-lg px-4 py-3"><p className="text-[11px] text-muted-foreground">Active Keys</p><p className="text-2xl font-semibold mt-0.5">{keys.filter(k => k.isActive).length}</p></div>
+          <div className="border rounded-lg px-4 py-3"><p className="text-[11px] text-muted-foreground">API Requests</p><p className="text-2xl font-semibold mt-0.5">{usageSummary.totalRequests.toLocaleString()}</p></div>
+          <div className="border rounded-lg px-4 py-3"><p className="text-[11px] text-muted-foreground">Avg Latency</p><p className="text-2xl font-semibold mt-0.5">{formatLatency(usageSummary.avgLatencyMs)}</p></div>
         </div>
 
         {/* Keys List */}
@@ -77,6 +113,9 @@ export const ApiManagementPage = () => {
                         <span className="text-[13px] font-medium">{key.name}</span>
                         <span className={`text-[10px] px-2 py-0.5 rounded-full ${key.isActive ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300' : 'bg-muted text-muted-foreground'}`}>{key.isActive ? 'Active' : 'Disabled'}</span>
                         <span className={`text-[10px] px-2 py-0.5 rounded-full ${key.chatMode === 'native' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300' : 'bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300'}`}>{key.chatMode === 'native' ? 'Native' : 'Webhook'}</span>
+                        {(key.scopes?.length ? key.scopes : ['chat']).map(scope => (
+                          <span key={scope} className="text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground">{scope}</span>
+                        ))}
                       </div>
                       <div className="flex items-center gap-2 mb-1">
                         <code className="text-xs bg-muted px-2 py-1 rounded">{visibleKeys.has(key._id) ? key.key : maskKey(key.key)}</code>
@@ -91,6 +130,9 @@ export const ApiManagementPage = () => {
                         </div>
                       )}
                       <p className="text-[10px] text-muted-foreground">User: {key.userEmail} · Created: {new Date(key.createdAt).toLocaleDateString()}{key.description && ` · ${key.description}`}</p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">
+                        Collections: {key.allowedCollectionIds?.length ? key.allowedCollectionIds.length : 'All'}
+                      </p>
                     </div>
                     <div className="flex gap-1 ml-4">
                       <button onClick={() => openEdit(key)} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"><Edit2 className="w-4 h-4" /></button>
@@ -104,6 +146,75 @@ export const ApiManagementPage = () => {
           )}
         </div>
 
+        {/* Usage */}
+        <div className="border rounded-lg overflow-hidden mb-5">
+          <div className="px-4 py-2.5 border-b flex items-center justify-between">
+            <p className="text-xs font-medium flex items-center gap-1.5"><Activity className="w-3.5 h-3.5" /> API Usage</p>
+            <button onClick={loadUsage} className="text-[11px] text-muted-foreground hover:text-foreground">Refresh</button>
+          </div>
+          <div className="p-4">
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+              <div className="rounded-lg bg-muted/40 px-3 py-2">
+                <p className="text-[10px] text-muted-foreground">Normal</p>
+                <p className="text-lg font-semibold">{usageSummary.normalRequests.toLocaleString()}</p>
+              </div>
+              <div className="rounded-lg bg-muted/40 px-3 py-2">
+                <p className="text-[10px] text-muted-foreground">Streaming</p>
+                <p className="text-lg font-semibold">{usageSummary.streamingRequests.toLocaleString()}</p>
+              </div>
+              <div className="rounded-lg bg-muted/40 px-3 py-2">
+                <p className="text-[10px] text-muted-foreground">Errors</p>
+                <p className="text-lg font-semibold">{usageSummary.totalErrors.toLocaleString()}</p>
+              </div>
+              <div className="rounded-lg bg-muted/40 px-3 py-2">
+                <p className="text-[10px] text-muted-foreground">Last Error</p>
+                <p className="text-xs font-medium truncate">{usageSummary.lastError?.code || (usageSummary.lastError?.status ? `${usageSummary.lastError.status}` : '-')}</p>
+              </div>
+            </div>
+
+            {recentUsage.length === 0 ? (
+              <div className="py-8 text-center text-sm text-muted-foreground">No API usage yet</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-[10px] uppercase text-muted-foreground border-b">
+                    <tr>
+                      <th className="text-left font-medium py-2 pr-3">Time</th>
+                      <th className="text-left font-medium py-2 pr-3">Key</th>
+                      <th className="text-left font-medium py-2 pr-3">Endpoint</th>
+                      <th className="text-left font-medium py-2 pr-3">Provider</th>
+                      <th className="text-left font-medium py-2 pr-3">Mode</th>
+                      <th className="text-left font-medium py-2 pr-3">Status</th>
+                      <th className="text-left font-medium py-2">Latency</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {recentUsage.slice(0, 12).map((item: any) => (
+                      <tr key={item._id} className="align-top">
+                        <td className="py-2 pr-3 text-muted-foreground whitespace-nowrap">{formatTime(item.timestamp)}</td>
+                        <td className="py-2 pr-3 max-w-[160px] truncate">{item.apiKeyName || 'Unknown key'}</td>
+                        <td className="py-2 pr-3"><code className="text-[11px] bg-muted px-1.5 py-0.5 rounded">{item.endpoint || '-'}</code></td>
+                        <td className="py-2 pr-3 text-muted-foreground">{item.provider || '-'}{item.model ? ` / ${item.model}` : ''}</td>
+                        <td className="py-2 pr-3">
+                          <span className="capitalize">{item.chatMode || '-'}</span>
+                          {item.streaming && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">stream</span>}
+                        </td>
+                        <td className="py-2 pr-3">
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${item.responseStatus >= 400 ? 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300' : 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300'}`}>
+                            {item.responseStatus || '-'}
+                          </span>
+                          {item.errorCode && <span className="ml-1 text-[10px] text-muted-foreground">{item.errorCode}</span>}
+                        </td>
+                        <td className="py-2">{formatLatency(item.latencyMs)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* API Docs */}
         <div className="border rounded-lg overflow-hidden">
           <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">API Usage Guide</p></div>
@@ -111,6 +222,14 @@ export const ApiManagementPage = () => {
             <div><p className="text-[11px] text-muted-foreground mb-1">Endpoint</p><code className="block text-xs bg-muted px-3 py-2 rounded">POST /api/v1/chat</code></div>
             <div><p className="text-[11px] text-muted-foreground mb-1">Streaming Endpoint</p><code className="block text-xs bg-muted px-3 py-2 rounded">POST /api/v1/chat/stream</code></div>
             <div><p className="text-[11px] text-muted-foreground mb-1">Headers</p><code className="block text-xs bg-muted px-3 py-2 rounded">x-api-key: YOUR_API_KEY</code></div>
+            <div><p className="text-[11px] text-muted-foreground mb-1">Normal Curl</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`curl https://YOUR_DOMAIN/api/v1/chat \\
+  -H "Content-Type: application/json" \\
+  -H "x-api-key: YOUR_API_KEY" \\
+  -d '{"message":"Your question","sessionId":"optional"}'`}</pre></div>
+            <div><p className="text-[11px] text-muted-foreground mb-1">Streaming Curl</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`curl -N https://YOUR_DOMAIN/api/v1/chat/stream \\
+  -H "Content-Type: application/json" \\
+  -H "x-api-key: YOUR_API_KEY" \\
+  -d '{"message":"Your question","sessionId":"optional"}'`}</pre></div>
             <div><p className="text-[11px] text-muted-foreground mb-1">Basic Request</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`{
   "message": "Your question",
   "sessionId": "optional"
@@ -128,6 +247,23 @@ event: token   // partial response text
 event: replace // replace streamed text if response is blocked
 event: done    // final response, sessionId, sources
 event: error   // request failed`}</pre></div>
+            <div><p className="text-[11px] text-muted-foreground mb-1">Postman Notes</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`Normal chat:
+- Method: POST
+- Body: raw JSON
+- Header: x-api-key
+
+Streaming chat:
+- Use Postman Send and Download / stream-capable clients for best results.
+- Response is Server-Sent Events. Watch event lines: status, token, done, error.`}</pre></div>
+            <div><p className="text-[11px] text-muted-foreground mb-1">Error Codes</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`400 BAD_REQUEST              Missing/invalid request body
+401 Unauthorized             Missing/invalid API key
+403 API_SCOPE_DENIED         API key lacks chat/ingest scope
+403 API_COLLECTION_DENIED    API key cannot access collection
+429 Too Many Requests        API rate limit hit
+502 LLM_AUTH_ERROR           Provider key rejected
+503 LLM_RATE_LIMIT           Provider quota/rate limit
+504 LLM_TIMEOUT              Provider timeout
+500 SERVER_ERROR             Unexpected server error`}</pre></div>
             <div><p className="text-[11px] text-muted-foreground mb-1">Streaming Fetch Example</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`const res = await fetch('/api/v1/chat/stream', {
   method: 'POST',
   headers: {
@@ -196,6 +332,35 @@ while (true) {
                 <label className="text-[11px] text-muted-foreground">Description</label>
                 <input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="e.g., Robot kiosk at lobby"
                   className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+
+              <div>
+                <label className="text-[11px] text-muted-foreground">Scopes</label>
+                <div className="grid grid-cols-2 gap-2 mt-1">
+                  {[
+                    { id: 'chat', label: 'Chat' },
+                    { id: 'ingest', label: 'Ingest' },
+                  ].map(scope => (
+                    <label key={scope.id} className="flex items-center gap-2 text-xs border rounded-lg px-3 py-2 cursor-pointer hover:bg-muted">
+                      <input type="checkbox" checked={form.scopes.includes(scope.id)} onChange={() => toggleScope(scope.id)} className="w-3.5 h-3.5 rounded" />
+                      {scope.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] text-muted-foreground">Collection Access</label>
+                <div className="mt-1 max-h-28 overflow-y-auto border rounded-lg p-2 space-y-1.5">
+                  {collections.map(col => (
+                    <label key={col._id} className="flex items-center gap-2 text-xs cursor-pointer">
+                      <input type="checkbox" checked={form.allowedCollectionIds.includes(col._id)} onChange={() => toggleCollection(col._id)} className="w-3.5 h-3.5 rounded" />
+                      <span className="truncate">{col.name}</span>
+                    </label>
+                  ))}
+                  {collections.length === 0 && <p className="text-[11px] text-muted-foreground">No external collections yet</p>}
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-1">Leave empty to allow all collections. Select one or more to restrict chat and ingest.</p>
               </div>
 
               {/* Chat Mode */}

@@ -1,6 +1,56 @@
-hasmil@ip-10-50-2-38:~$ cat /etc/cloudflared/config.yml
+# /etc/cloudflared/config.yml
+#
+# Cloudflared should point to Nginx, not directly to Node.
+# Nginx owns the SSE-safe proxy settings:
+#   proxy_buffering off;
+#   proxy_cache off;
+#   proxy_read_timeout 3600s;
+#
+# If streaming becomes chunked again, check Nginx first.
+
 tunnel: 0faa563c-5b0b-4d0f-82e9-90552aa9b051
 credentials-file: /home/hasmil/.cloudflared/0faa563c-5b0b-4d0f-82e9-90552aa9b051.json
+
+ingress:
+  - hostname: genia.gencode.com.my
+    service: http://localhost:1224
+    originRequest:
+      connectTimeout: 30s
+      tcpKeepAlive: 30s
+      keepAliveConnections: 100
+      keepAliveTimeout: 90s
+
+  - hostname: genia-stag.gencode.com.my
+    service: http://localhost:1227
+    originRequest:
+      connectTimeout: 30s
+      tcpKeepAlive: 30s
+      keepAliveConnections: 100
+      keepAliveTimeout: 90s
+
+  - hostname: itsm.gencode.com.my
+    service: http://localhost:1226
+    originRequest:
+      connectTimeout: 30s
+      tcpKeepAlive: 30s
+      keepAliveConnections: 100
+      keepAliveTimeout: 90s
+
+  - hostname: mqtt.gencode.com.my
+    service: http://localhost:8083
+
+  - service: http_status:404
+
+# After copying:
+# sudo cloudflared tunnel ingress validate
+# sudo systemctl restart cloudflared
+# sudo systemctl status cloudflared --no-pager
+
+
+
+#old
+tunnel: 0faa563c-5b0b-4d0f-82e9-90552aa9b051
+credentials-file: /home/hasmil/.cloudflared/0faa563c-5b0b-4d0f-82e9-90552>
 
 ingress:
   - hostname: genia.gencode.com.my
