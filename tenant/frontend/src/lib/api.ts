@@ -567,18 +567,18 @@ class API {
     return json
   }
 
-  async createApiKey(name: string, userId: string, generateShortKey: boolean = false, _robotSettingId: string | null = null, description: string = '', webhookUrl: string = '', chatMode: string = 'native', systemPrompt: string = '', scopes: string[] = ['chat'], allowedCollectionIds: string[] = []) {
+  async createApiKey(name: string, userId: string, generateShortKey: boolean = false, _robotSettingId: string | null = null, description: string = '', webhookUrl: string = '', chatMode: string = 'native', systemPrompt: string = '', scopes: string[] = ['chat'], allowedCollectionIds: string[] = [], streamChunkSize: number = 10, streamDelayMs: number = 22) {
     const res = await fetchWithAuth(`${API_BASE}/keys`, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({ name, userId, generateShortKey, description, webhookUrl, chatMode, systemPrompt, scopes, allowedCollectionIds }),
+      body: JSON.stringify({ name, userId, generateShortKey, description, webhookUrl, chatMode, systemPrompt, scopes, allowedCollectionIds, streamChunkSize, streamDelayMs }),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to create API key')
     return json
   }
 
-  async updateApiKeyDetails(id: string, data: { name: string; description: string; chatMode: string; webhookUrl: string; systemPrompt: string; scopes?: string[]; allowedCollectionIds?: string[] }) {
+  async updateApiKeyDetails(id: string, data: { name: string; description: string; chatMode: string; webhookUrl: string; systemPrompt: string; scopes?: string[]; allowedCollectionIds?: string[]; streamChunkSize?: number; streamDelayMs?: number }) {
     const res = await fetchWithAuth(`${API_BASE}/keys/${id}/details`, {
       method: 'PUT', headers: this.getHeaders(), body: JSON.stringify(data),
     })

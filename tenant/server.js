@@ -2049,6 +2049,13 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
   let llmModel = null;
   let botContent = '';
   let blocked = false;
+  const streamFormat = String(req.query.format || req.headers['x-stream-format'] || '').toLowerCase();
+  const wantsSse = streamFormat === 'sse';
+  let rawWroteAny = false;
+  let deferWebhookStream = false;
+  let rawWriteQueue = Promise.resolve();
+  const apiStreamChunkSize = Math.min(40, Math.max(2, Math.round(Number(req.apiKey.streamChunkSize) || 10)));
+  const apiStreamDelayMs = Math.min(250, Math.max(0, Math.round(Number(req.apiKey.streamDelayMs) || 22)));
 
   const recordUsage = async (extra = {}) => {
     if (usageLogged) return;
@@ -2080,6 +2087,55 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
     res.write(`event: ${event}\n`);
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
+  const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  const splitApiStreamText = (text) => {
+    const parts = String(text || '').match(/\s+|[^\s]+/g) || [];
+    const chunks = [];
+    let chunk = '';
+    for (const part of parts) {
+      if (chunk && (chunk + part).length > apiStreamChunkSize) {
+        chunks.push(chunk);
+        chunk = part;
+      } else {
+        chunk += part;
+      }
+    }
+    if (chunk) chunks.push(chunk);
+    return chunks;
+  };
+  const queueRawText = (text) => {
+    const chunks = splitApiStreamText(text);
+    rawWriteQueue = rawWriteQueue.then(async () => {
+      for (const chunk of chunks) {
+        if (res.writableEnded) break;
+        rawWroteAny = true;
+        res.write(chunk);
+        if (apiStreamDelayMs > 0) await wait(apiStreamDelayMs);
+      }
+    });
+    return rawWriteQueue;
+  };
+  const sendStatus = (status) => {
+    if (wantsSse) sendEvent('status', { status });
+  };
+  const sendToken = (token) => {
+    if (!token || res.writableEnded) return;
+    if (wantsSse) sendEvent('token', { token });
+    else queueRawText(token);
+  };
+  const sendReplace = (content) => {
+    if (wantsSse) sendEvent('replace', { content });
+    else if (!rawWroteAny && content) {
+      queueRawText(content);
+    }
+  };
+  const sendDone = (data) => {
+    if (wantsSse) sendEvent('done', data);
+  };
+  const sendStreamError = (data) => {
+    if (wantsSse) sendEvent('error', data);
+    else if (!res.writableEnded) queueRawText(`\n${data.error || 'Stream failed'}`);
+  };
 
   try {
     const { organizationId, filter } = req.body;
@@ -2089,15 +2145,18 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
       return res.status(400).json({ error: 'Message is required' });
     }
 
+    chatSessionId = sessionId || new ObjectId().toString();
+
     streamStarted = true;
-    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Content-Type', wantsSse ? 'text/event-stream' : 'text/plain; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('X-Stream-Format', wantsSse ? 'sse' : 'raw');
+    res.setHeader('X-Session-ID', chatSessionId);
     res.flushHeaders?.();
-    res.write(': connected\n\n');
+    if (wantsSse) res.write(': connected\n\n');
 
-    chatSessionId = sessionId || new ObjectId().toString();
     const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
     const startedByEmail = user?.email || 'API User';
     const startedByName = startedByEmail.split('@')[0];
@@ -2132,15 +2191,16 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
     let sources = [];
 
     if (settings.guardrailEnabled) {
-      sendEvent('status', { status: 'Checking safety...' });
+      sendStatus('Checking safety...');
       const inputCheck = await checkGuardrail(message, settings.guardrailInputPrompt, settings, db);
       if (!inputCheck.safe) {
         blocked = true;
         botContent = 'Sorry, I\'m unable to process this request.\n\nMaaf, saya tidak dapat memproses permintaan ini.\n\nமன்னிக்கவும், இந்தக் கோரிக்கையை செயல்படுத்த இயலவில்லை.\n\n抱歉，无法处理此请求。';
         await db.collection('guardrail_logs').insertOne({ userId: req.user.id, sessionId: chatSessionId, type: 'input', source: 'api', message, reason: inputCheck.reason, createdAt: new Date() });
-        sendEvent('replace', { content: botContent });
-        sendEvent('done', { response: { text: botContent, speak: '' }, sessionId: chatSessionId, blocked: true });
+        sendReplace(botContent);
+        sendDone({ response: { text: botContent, speak: '' }, sessionId: chatSessionId, blocked: true });
         await recordUsage({ guardrailType: 'input', responseLength: botContent.length });
+        await rawWriteQueue;
         return res.end();
       }
     }
@@ -2148,7 +2208,7 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
     if (chatMode === 'native') {
       const pk = await resolveProviderKeys(currentOrganizationId?.toString());
 
-      sendEvent('status', { status: 'Searching knowledge base...' });
+      sendStatus('Searching knowledge base...');
       const embProvider = settings.embeddingProvider || 'gemini';
       const embModel = settings.embeddingModel || 'gemini-embedding-001';
       const embKey = settings.embeddingApiKey || pk[embProvider] || '';
@@ -2218,39 +2278,46 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
         { role: 'user', content: message }
       ];
 
-      sendEvent('status', { status: 'Generating answer...' });
+      sendStatus('Generating answer...');
       botContent = await streamLLM(messages, {
         ...settings,
         chatLlmProvider: llmProvider,
         chatLlmModel: llmModel,
         chatLlmApiKey: llmKey,
         [`chatLlmApiKey_${llmProvider}`]: llmKey,
-      }, (token) => sendEvent('token', { token }), db, 'api_v1_stream');
+      }, sendToken, db, 'api_v1_stream');
     } else {
       const webhookUrl = req.apiKey.webhookUrl;
       if (!webhookUrl) {
-        sendEvent('error', { error: 'No webhook URL configured for this API key' });
+        sendStreamError({ error: 'No webhook URL configured for this API key' });
         await recordUsage({ responseStatus: 400, errorCode: 'WEBHOOK_NOT_CONFIGURED', errorMessage: 'No webhook URL configured for this API key' });
+        await rawWriteQueue;
         return res.end();
       }
-      sendEvent('status', { status: 'Calling webhook...' });
+      sendStatus('Calling webhook...');
       const { data } = await axios.post(webhookUrl, {
         message, userId: req.user.id.toString(), currentOrganizationId, sessionId: chatSessionId, fileId: null, chatType: 'API', chatName: req.apiKey.name
       }, { timeout: 60000 });
       botContent = typeof data.response === 'object' ? data.response.text : data.response;
-      sendEvent('token', { token: botContent || '' });
+      deferWebhookStream = true;
     }
 
     if (settings.guardrailEnabled && botContent) {
-      sendEvent('status', { status: 'Checking response...' });
+      sendStatus('Checking response...');
       const outputCheck = await checkGuardrail(botContent, settings.guardrailOutputPrompt, settings, db);
       if (!outputCheck.safe) {
         blocked = true;
         await db.collection('guardrail_logs').insertOne({ userId: req.user.id, sessionId: chatSessionId, type: 'output', source: 'api', message: botContent.substring(0, 500), reason: outputCheck.reason, createdAt: new Date() });
         botContent = 'Sorry, I\'m unable to provide that information.\n\nMaaf, saya tidak dapat memberikan maklumat tersebut.\n\nமன்னிக்கவும், அந்தத் தகவலை வழங்க இயலவில்லை.\n\n抱歉，无法提供此请求。';
-        sendEvent('replace', { content: botContent });
+        sendReplace(botContent);
+        deferWebhookStream = false;
       }
     }
+
+    if (deferWebhookStream && botContent) {
+      sendToken(botContent);
+    }
+    await rawWriteQueue;
 
     await db.collection('messages').insertOne({
       userId: req.user.id,
@@ -2267,7 +2334,7 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
       createdAt: new Date()
     });
 
-    sendEvent('done', {
+    sendDone({
       response: {
         text: (botContent.match(/\[TEXT\]([\s\S]*?)\[\/TEXT\]/)?.[1] || botContent).trim(),
         speak: (botContent.match(/\[SPEAK\]([\s\S]*?)\[\/SPEAK\]/)?.[1] || botContent).trim(),
@@ -2282,7 +2349,8 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
     const apiError = classifyApiChatError(error);
     await recordUsage({ responseStatus: apiError.status, errorCode: apiError.code, errorMessage: error.message });
     if (streamStarted && !res.writableEnded) {
-      sendEvent('error', { error: apiError.message, code: apiError.code });
+      sendStreamError({ error: apiError.message, code: apiError.code });
+      await rawWriteQueue;
       return res.end();
     }
     res.status(apiError.status).json({ error: apiError.message, code: apiError.code });

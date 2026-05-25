@@ -5,7 +5,7 @@ import { useConfirm } from "./ConfirmDialog";
 import { api } from "@/lib/api";
 import { Plus, Copy, Power, Trash2, Eye, EyeOff, Key, X, Edit2, Activity } from "lucide-react";
 
-interface ApiKey { _id: string; key: string; shortKey?: string; hasShortKey?: boolean; name: string; description?: string; userId: string; userEmail: string; chatMode?: string; webhookUrl?: string; systemPrompt?: string; scopes?: string[]; allowedCollectionIds?: string[]; isActive: boolean; createdAt: string; lastUsedAt: string | null; }
+interface ApiKey { _id: string; key: string; shortKey?: string; hasShortKey?: boolean; name: string; description?: string; userId: string; userEmail: string; chatMode?: string; webhookUrl?: string; systemPrompt?: string; scopes?: string[]; allowedCollectionIds?: string[]; streamChunkSize?: number; streamDelayMs?: number; isActive: boolean; createdAt: string; lastUsedAt: string | null; }
 interface ApiUsageSummary {
   totalRequests: number;
   totalErrors: number;
@@ -23,7 +23,7 @@ export const ApiManagementPage = () => {
   const [usage, setUsage] = useState<any>(null);
   const [showModal, setShowModal] = useState(false);
   const [editingKey, setEditingKey] = useState<ApiKey | null>(null);
-  const [form, setForm] = useState({ name: "", description: "", userId: "", chatMode: "native", webhookUrl: "", systemPrompt: "", generateShortKey: false, scopes: ["chat"] as string[], allowedCollectionIds: [] as string[] });
+  const [form, setForm] = useState({ name: "", description: "", userId: "", chatMode: "native", webhookUrl: "", systemPrompt: "", generateShortKey: false, scopes: ["chat"] as string[], allowedCollectionIds: [] as string[], streamChunkSize: 10, streamDelayMs: 22 });
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
   const confirm = useConfirm();
 
@@ -34,17 +34,17 @@ export const ApiManagementPage = () => {
   const loadUsage = async () => { try { setUsage(await api.getApiUsage()); } catch (e) { setUsage(null); } };
   const loadCollections = async () => { try { setCollections(await api.getExternalCollections()); } catch (e) { setCollections([]); } };
 
-  const openCreate = () => { setEditingKey(null); setForm({ name: "", description: "", userId: "", chatMode: "native", webhookUrl: "", systemPrompt: "", generateShortKey: false, scopes: ["chat"], allowedCollectionIds: [] }); setShowModal(true); };
-  const openEdit = (k: ApiKey) => { setEditingKey(k); setForm({ name: k.name, description: k.description || "", userId: k.userId, chatMode: k.chatMode || "webhook", webhookUrl: k.webhookUrl || "", systemPrompt: k.systemPrompt || "", generateShortKey: false, scopes: k.scopes?.length ? k.scopes : ["chat"], allowedCollectionIds: k.allowedCollectionIds || [] }); setShowModal(true); };
+  const openCreate = () => { setEditingKey(null); setForm({ name: "", description: "", userId: "", chatMode: "native", webhookUrl: "", systemPrompt: "", generateShortKey: false, scopes: ["chat"], allowedCollectionIds: [], streamChunkSize: 10, streamDelayMs: 22 }); setShowModal(true); };
+  const openEdit = (k: ApiKey) => { setEditingKey(k); setForm({ name: k.name, description: k.description || "", userId: k.userId, chatMode: k.chatMode || "webhook", webhookUrl: k.webhookUrl || "", systemPrompt: k.systemPrompt || "", generateShortKey: false, scopes: k.scopes?.length ? k.scopes : ["chat"], allowedCollectionIds: k.allowedCollectionIds || [], streamChunkSize: k.streamChunkSize || 10, streamDelayMs: k.streamDelayMs ?? 22 }); setShowModal(true); };
 
   const handleSubmit = async () => {
     if (!form.name || (!editingKey && !form.userId)) { toast.error("Fill required fields"); return; }
     if (form.chatMode === "webhook" && !form.webhookUrl) { toast.error("Webhook URL required for webhook mode"); return; }
     try {
       if (editingKey) {
-        await api.updateApiKeyDetails(editingKey._id, { name: form.name, description: form.description, chatMode: form.chatMode, webhookUrl: form.webhookUrl, systemPrompt: form.systemPrompt, scopes: form.scopes, allowedCollectionIds: form.allowedCollectionIds });
+        await api.updateApiKeyDetails(editingKey._id, { name: form.name, description: form.description, chatMode: form.chatMode, webhookUrl: form.webhookUrl, systemPrompt: form.systemPrompt, scopes: form.scopes, allowedCollectionIds: form.allowedCollectionIds, streamChunkSize: form.streamChunkSize, streamDelayMs: form.streamDelayMs });
       } else {
-        await api.createApiKey(form.name, form.userId, form.generateShortKey, null, form.description, form.webhookUrl, form.chatMode, form.systemPrompt, form.scopes, form.allowedCollectionIds);
+        await api.createApiKey(form.name, form.userId, form.generateShortKey, null, form.description, form.webhookUrl, form.chatMode, form.systemPrompt, form.scopes, form.allowedCollectionIds, form.streamChunkSize, form.streamDelayMs);
       }
       setShowModal(false); loadKeys(); loadUsage(); toast.success(editingKey ? "Updated" : "Created");
     } catch (e: any) { toast.error(e.message); }
@@ -132,6 +132,7 @@ export const ApiManagementPage = () => {
                       <p className="text-[10px] text-muted-foreground">User: {key.userEmail} · Created: {new Date(key.createdAt).toLocaleDateString()}{key.description && ` · ${key.description}`}</p>
                       <p className="text-[10px] text-muted-foreground mt-0.5">
                         Collections: {key.allowedCollectionIds?.length ? key.allowedCollectionIds.length : 'All'}
+                        {' '}· Stream: {key.streamChunkSize || 10} chars / {key.streamDelayMs ?? 22}ms
                       </p>
                     </div>
                     <div className="flex gap-1 ml-4">
@@ -242,11 +243,14 @@ export const ApiManagementPage = () => {
     "company": "ABC Sdn Bhd"
   }
 }`}</pre></div>
-            <div><p className="text-[11px] text-muted-foreground mb-1">Streaming Events</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`event: status  // processing state
-event: token   // partial response text
-event: replace // replace streamed text if response is blocked
-event: done    // final response, sessionId, sources
-event: error   // request failed`}</pre></div>
+            <div><p className="text-[11px] text-muted-foreground mb-1">Streaming Response</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`Default response is raw text chunks only:
+Hello, how can I help you today?
+
+Chunk size and delay are configurable per API key in API Stream Timing.
+
+Legacy SSE is still available with:
+POST /api/v1/chat/stream?format=sse
+or header: X-Stream-Format: sse`}</pre></div>
             <div><p className="text-[11px] text-muted-foreground mb-1">Postman Notes</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`Normal chat:
 - Method: POST
 - Body: raw JSON
@@ -254,7 +258,9 @@ event: error   // request failed`}</pre></div>
 
 Streaming chat:
 - Use Postman Send and Download / stream-capable clients for best results.
-- Response is Server-Sent Events. Watch event lines: status, token, done, error.`}</pre></div>
+- Response body is plain text chunks, no event/data wrapper.
+- Native mode streams while the LLM generates. Webhook mode streams after the webhook returns its response.
+- Add ?format=sse only if your client needs Server-Sent Events metadata.`}</pre></div>
             <div><p className="text-[11px] text-muted-foreground mb-1">Error Codes</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`400 BAD_REQUEST              Missing/invalid request body
 401 Unauthorized             Missing/invalid API key
 403 API_SCOPE_DENIED         API key lacks chat/ingest scope
@@ -275,19 +281,11 @@ Streaming chat:
 
 const reader = res.body.getReader();
 const decoder = new TextDecoder();
-let buffer = '';
 
 while (true) {
   const { done, value } = await reader.read();
   if (done) break;
-  buffer += decoder.decode(value, { stream: true });
-  for (const eventBlock of buffer.split('\\n\\n')) {
-    if (!eventBlock.includes('data:')) continue;
-    const event = eventBlock.match(/^event: (.+)$/m)?.[1];
-    const data = JSON.parse(eventBlock.match(/^data: (.+)$/m)?.[1] || '{}');
-    if (event === 'token') process.stdout.write(data.token);
-    if (event === 'done') console.log(data.sessionId);
-  }
+  process.stdout.write(decoder.decode(value, { stream: true }));
 }`}</pre></div>
             <div className="pt-1">
               <p className="text-[11px] text-muted-foreground mb-1">Filter Notes</p>
@@ -375,6 +373,35 @@ while (true) {
                   ))}
                 </div>
                 <p className="text-[10px] text-muted-foreground mt-1">{form.chatMode === 'native' ? 'Server handles RAG search and LLM response directly.' : 'Forwards to n8n webhook for processing.'}</p>
+              </div>
+
+              <div>
+                <label className="text-[11px] text-muted-foreground">API Stream Timing</label>
+                <div className="mt-2 space-y-3">
+                  <div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-xs">Chunk size</span>
+                      <input type="number" min={2} max={40} value={form.streamChunkSize}
+                        onChange={e => setForm({ ...form, streamChunkSize: Math.min(40, Math.max(2, Number(e.target.value) || 10)) })}
+                        className="w-20 h-8 px-2 text-xs rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+                    </div>
+                    <input type="range" min={2} max={40} value={form.streamChunkSize}
+                      onChange={e => setForm({ ...form, streamChunkSize: Number(e.target.value) })}
+                      className="w-full mt-1" />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-xs">Delay</span>
+                      <input type="number" min={0} max={250} value={form.streamDelayMs}
+                        onChange={e => setForm({ ...form, streamDelayMs: Math.min(250, Math.max(0, Number(e.target.value) || 0)) })}
+                        className="w-20 h-8 px-2 text-xs rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+                    </div>
+                    <input type="range" min={0} max={250} step={5} value={form.streamDelayMs}
+                      onChange={e => setForm({ ...form, streamDelayMs: Number(e.target.value) })}
+                      className="w-full mt-1" />
+                  </div>
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-1">Applies only to external API stream. Lower chunk size and higher delay make short replies visibly smoother.</p>
               </div>
 
               {form.chatMode === 'webhook' && (

@@ -21,11 +21,14 @@ export function registerApiKeyRoutes(app, { auth, hasPermission, db, logAudit, v
     generateShortKey: { type: 'boolean' },
     scopes: { type: 'array', arrayOf: 'string' },
     allowedCollectionIds: { type: 'array', objectIdArray: true },
+    streamChunkSize: { type: 'number' },
+    streamDelayMs: { type: 'number' },
   }), async (req, res) => {
     try {
-      const { name, userId, generateShortKey, description, webhookUrl, chatMode, systemPrompt, scopes, allowedCollectionIds } = req.body;
+      const { name, userId, generateShortKey, description, webhookUrl, chatMode, systemPrompt, scopes, allowedCollectionIds, streamChunkSize, streamDelayMs } = req.body;
       const cleanScopes = cleanApiScopes(scopes);
       const cleanCollectionIds = cleanAllowedCollectionIds(allowedCollectionIds);
+      const streamSettings = cleanStreamSettings(streamChunkSize, streamDelayMs);
       const key = 'gk_' + crypto.randomBytes(32).toString('hex');
       const shortKey = generateShortKey ? await generateUniqueShortKey(db) : null;
       const apiKey = {
@@ -39,6 +42,7 @@ export function registerApiKeyRoutes(app, { auth, hasPermission, db, logAudit, v
         systemPrompt: systemPrompt || '',
         scopes: cleanScopes,
         allowedCollectionIds: cleanCollectionIds,
+        ...streamSettings,
         userId: new ObjectId(userId),
         isActive: true,
         createdAt: new Date(),
@@ -71,9 +75,12 @@ export function registerApiKeyRoutes(app, { auth, hasPermission, db, logAudit, v
     name: { required: true, type: 'string', minLength: 1, maxLength: 120 },
     scopes: { type: 'array', arrayOf: 'string' },
     allowedCollectionIds: { type: 'array', objectIdArray: true },
+    streamChunkSize: { type: 'number' },
+    streamDelayMs: { type: 'number' },
   }), async (req, res) => {
     try {
-      const { name, description, chatMode, webhookUrl, systemPrompt, scopes, allowedCollectionIds } = req.body;
+      const { name, description, chatMode, webhookUrl, systemPrompt, scopes, allowedCollectionIds, streamChunkSize, streamDelayMs } = req.body;
+      const streamSettings = cleanStreamSettings(streamChunkSize, streamDelayMs);
       await db.collection('api_keys').updateOne(
         { _id: new ObjectId(req.params.id) },
         {
@@ -85,6 +92,7 @@ export function registerApiKeyRoutes(app, { auth, hasPermission, db, logAudit, v
             systemPrompt,
             scopes: cleanApiScopes(scopes),
             allowedCollectionIds: cleanAllowedCollectionIds(allowedCollectionIds),
+            ...streamSettings,
             updatedAt: new Date()
           }
         }
@@ -196,6 +204,19 @@ function cleanAllowedCollectionIds(allowedCollectionIds) {
   return Array.isArray(allowedCollectionIds)
     ? allowedCollectionIds.map(id => id?.toString?.() || id).filter(id => ObjectId.isValid(id))
     : [];
+}
+
+function cleanStreamSettings(streamChunkSize, streamDelayMs) {
+  const clamp = (value, fallback, min, max) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, Math.round(parsed)));
+  };
+
+  return {
+    streamChunkSize: clamp(streamChunkSize, 10, 2, 40),
+    streamDelayMs: clamp(streamDelayMs, 22, 0, 250),
+  };
 }
 
 async function generateUniqueShortKey(db) {

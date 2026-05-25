@@ -20,13 +20,17 @@ echo "== API stream: ${BASE_URL}/api/v1/chat/stream"
 curl -N -sS --max-time "${SMOKE_STREAM_MAX_TIME:-45}" \
   -H "x-api-key: ${API_KEY}" \
   -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
   -H "X-Request-ID: smoke-api-stream" \
   -d "$payload" \
   "${BASE_URL}/api/v1/chat/stream" | tee "$tmp"
 
-if ! grep -Eq '^event: (status|token|done|error)' "$tmp"; then
-  echo "No SSE events detected." >&2
+if [ ! -s "$tmp" ]; then
+  echo "No streamed text received." >&2
+  exit 1
+fi
+
+if grep -Eq '^(event|data): ' "$tmp"; then
+  echo "Unexpected SSE wrapper detected; expected raw streamed text." >&2
   exit 1
 fi
 
