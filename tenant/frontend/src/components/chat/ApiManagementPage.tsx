@@ -131,7 +131,7 @@ export const ApiManagementPage = () => {
                       )}
                       <p className="text-[10px] text-muted-foreground">User: {key.userEmail} · Created: {new Date(key.createdAt).toLocaleDateString()}{key.description && ` · ${key.description}`}</p>
                       <p className="text-[10px] text-muted-foreground mt-0.5">
-                        Collections: {key.allowedCollectionIds?.length ? key.allowedCollectionIds.length : 'All'}
+                        Collections: {key.allowedCollectionIds?.length ? key.allowedCollectionIds.length : 'All accessible'}
                         {' '}· Stream: {key.streamChunkSize || 10} chars / {key.streamDelayMs ?? 22}ms
                       </p>
                     </div>
@@ -358,7 +358,7 @@ while (true) {
                   ))}
                   {collections.length === 0 && <p className="text-[11px] text-muted-foreground">No external collections yet</p>}
                 </div>
-                <p className="text-[10px] text-muted-foreground mt-1">Leave empty to allow all collections. Select one or more to restrict chat and ingest.</p>
+                <p className="text-[10px] text-muted-foreground mt-1">Leave empty to allow all collections in this API user's accessible organizations. Select one or more to restrict chat and ingest further.</p>
               </div>
 
               {/* Chat Mode */}

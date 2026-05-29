@@ -1792,6 +1792,95 @@ function collectionMatchFilter(collectionIds) {
   return { key: 'collection_id', match: { any: collectionIds } };
 }
 
+function sharedWithMatchFilter(values) {
+  const cleanValues = [...new Set((values || []).map(value => value?.toString?.() || value).filter(Boolean))];
+  if (cleanValues.length === 0) return null;
+  if (cleanValues.length === 1) return { key: 'shared_with', match: { value: cleanValues[0] } };
+  return { key: 'shared_with', match: { any: cleanValues } };
+}
+
+async function getApiAccessibleOrgIds(userId) {
+  const userIdString = userId?.toString?.() || userId;
+  const userObjectId = ObjectId.isValid(userIdString) ? new ObjectId(userIdString) : null;
+  const userQuery = userObjectId ? { $or: [{ userId: userObjectId }, { userId: userIdString }] } : { userId: userIdString };
+  const assignments = await db.collection('user_organization_assignments').find(userQuery).toArray();
+  if (assignments.length === 0) return [];
+
+  const assignedOrgIds = assignments
+    .map(a => a.organizationId?.toString?.() || a.organizationId)
+    .filter(id => id && ObjectId.isValid(id));
+  const allOrgIds = new Set(assignedOrgIds);
+  const orgs = await db.collection('organizations')
+    .find({ _id: { $in: assignedOrgIds.map(id => new ObjectId(id)) } })
+    .toArray();
+
+  for (const org of orgs) {
+    if (org.name) {
+      const childrenByPath = await db.collection('organizations').find({ path: org.name }).toArray();
+      childrenByPath.forEach(child => allOrgIds.add(child._id.toString()));
+    }
+    const childrenByParent = await db.collection('organizations').find({ parentId: org._id }).toArray();
+    childrenByParent.forEach(child => allOrgIds.add(child._id.toString()));
+  }
+
+  return [...allOrgIds];
+}
+
+async function resolveApiOrganizationScope(userId, requestedOrganizationId = null) {
+  const accessibleOrgIds = await getApiAccessibleOrgIds(userId);
+  const requestedId = requestedOrganizationId?.toString?.() || requestedOrganizationId || null;
+
+  if (accessibleOrgIds.length === 0) {
+    return {
+      allowed: false,
+      status: 403,
+      code: 'API_ORG_REQUIRED',
+      message: 'API user has no organization assignment.',
+      accessibleOrgIds,
+      currentOrganizationId: null,
+    };
+  }
+
+  if (requestedId && !accessibleOrgIds.includes(requestedId)) {
+    return {
+      allowed: false,
+      status: 403,
+      code: 'API_ORG_DENIED',
+      message: 'API key user cannot access the requested organization.',
+      accessibleOrgIds,
+      currentOrganizationId: null,
+    };
+  }
+
+  return {
+    allowed: true,
+    accessibleOrgIds,
+    currentOrganizationId: requestedId || accessibleOrgIds[0],
+  };
+}
+
+function buildApiRagFilter(apiKey, accessibleOrgIds, requestFilter) {
+  const must = [];
+  const orgFilter = sharedWithMatchFilter(accessibleOrgIds);
+  if (orgFilter) must.push(orgFilter);
+
+  const allowedCollectionFilter = collectionMatchFilter(getApiKeyCollectionIds(apiKey));
+  if (allowedCollectionFilter) must.push(allowedCollectionFilter);
+
+  if (requestFilter && typeof requestFilter === 'object' && !Array.isArray(requestFilter)) {
+    for (const [key, value] of Object.entries(requestFilter)) {
+      if (value === undefined || value === null || value === '') continue;
+      if (key === 'externalUserId') {
+        must.push({ key: 'shared_with', match: { value: `ext_${value}` } });
+      } else {
+        must.push({ key, match: { value } });
+      }
+    }
+  }
+
+  return must.length > 0 ? { must } : undefined;
+}
+
 function requireApiScope(scope) {
   return (req, res, next) => {
     if (!apiKeyHasScope(req.apiKey, scope)) {
@@ -1857,18 +1946,12 @@ app.post('/api/v1/chat', authenticateApiKey, requireApiScope('chat'), apiRateLim
     const startedByEmail = user?.email || 'API User';
     const startedByName = startedByEmail.split('@')[0];
     
-    // Use provided organizationId or get from user's assignments
-    currentOrganizationId = organizationId || null;
-    
-    if (!currentOrganizationId) {
-      const userAssignments = await db.collection('user_organization_assignments').find({ 
-        userId: req.user.id.toString() 
-      }).toArray();
-      
-      if (userAssignments.length > 0) {
-        currentOrganizationId = userAssignments[0].organizationId;
-      }
+    const orgScope = await resolveApiOrganizationScope(req.user.id, organizationId || null);
+    if (!orgScope.allowed) {
+      await recordUsage({ responseStatus: orgScope.status, errorCode: orgScope.code, errorMessage: orgScope.message });
+      return res.status(orgScope.status).json({ error: orgScope.message, code: orgScope.code });
     }
+    currentOrganizationId = orgScope.currentOrganizationId;
 
     // Save user message
     await db.collection('messages').insertOne({
@@ -1930,20 +2013,7 @@ app.post('/api/v1/chat', authenticateApiKey, requireApiScope('chat'), apiRateLim
       const maxChunks = settings.chatMaxChunks || 5;
       let context = '';
       try {
-        // Build Qdrant filter from request filter object
-        const must = [];
-        const allowedCollectionFilter = collectionMatchFilter(getApiKeyCollectionIds(req.apiKey));
-        if (allowedCollectionFilter) must.push(allowedCollectionFilter);
-        if (filter && typeof filter === 'object') {
-          for (const [key, value] of Object.entries(filter)) {
-            if (key === 'externalUserId') {
-              must.push({ key: 'shared_with', match: { value: `ext_${value}` } });
-            } else {
-              must.push({ key, match: { value } });
-            }
-          }
-        }
-        const searchFilter = must.length > 0 ? { must } : undefined;
+        const searchFilter = buildApiRagFilter(req.apiKey, orgScope.accessibleOrgIds, filter);
         const results = await qdrant.search('documents', { vector: queryVector, limit: maxChunks, with_payload: true, filter: searchFilter });
         context = results.map(r => r.payload?.content || '').filter(Boolean).join('\n\n---\n\n');
       } catch (e) { console.error('Qdrant search error:', e.message); }
@@ -2147,6 +2217,16 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
 
     chatSessionId = sessionId || new ObjectId().toString();
 
+    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const startedByEmail = user?.email || 'API User';
+    const startedByName = startedByEmail.split('@')[0];
+    const orgScope = await resolveApiOrganizationScope(req.user.id, organizationId || null);
+    if (!orgScope.allowed) {
+      await recordUsage({ responseStatus: orgScope.status, errorCode: orgScope.code, errorMessage: orgScope.message });
+      return res.status(orgScope.status).json({ error: orgScope.message, code: orgScope.code });
+    }
+    currentOrganizationId = orgScope.currentOrganizationId;
+
     streamStarted = true;
     res.setHeader('Content-Type', wantsSse ? 'text/event-stream' : 'text/plain; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -2156,21 +2236,6 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
     res.setHeader('X-Session-ID', chatSessionId);
     res.flushHeaders?.();
     if (wantsSse) res.write(': connected\n\n');
-
-    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
-    const startedByEmail = user?.email || 'API User';
-    const startedByName = startedByEmail.split('@')[0];
-
-    currentOrganizationId = organizationId || null;
-    if (!currentOrganizationId) {
-      const userAssignments = await db.collection('user_organization_assignments').find({
-        userId: req.user.id.toString()
-      }).toArray();
-
-      if (userAssignments.length > 0) {
-        currentOrganizationId = userAssignments[0].organizationId;
-      }
-    }
 
     await db.collection('messages').insertOne({
       userId: req.user.id,
@@ -2234,19 +2299,7 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
       const maxChunks = settings.chatMaxChunks || 5;
       let context = '';
       try {
-        const must = [];
-        const allowedCollectionFilter = collectionMatchFilter(getApiKeyCollectionIds(req.apiKey));
-        if (allowedCollectionFilter) must.push(allowedCollectionFilter);
-        if (filter && typeof filter === 'object') {
-          for (const [key, value] of Object.entries(filter)) {
-            if (key === 'externalUserId') {
-              must.push({ key: 'shared_with', match: { value: `ext_${value}` } });
-            } else {
-              must.push({ key, match: { value } });
-            }
-          }
-        }
-        const searchFilter = must.length > 0 ? { must } : undefined;
+        const searchFilter = buildApiRagFilter(req.apiKey, orgScope.accessibleOrgIds, filter);
         const results = await qdrant.search('documents', { vector: queryVector, limit: maxChunks, with_payload: true, filter: searchFilter });
         context = results.map(r => r.payload?.content || '').filter(Boolean).join('\n\n---\n\n');
         const seen = new Set();
