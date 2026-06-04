@@ -226,6 +226,19 @@ const Index = () => {
     try {
       const data = await api.login({ email, password });
 
+      if (data.isGatewayDev) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("userId");
+        localStorage.removeItem("userEmail");
+        localStorage.removeItem("userRole");
+        localStorage.removeItem("userFullName");
+        localStorage.removeItem("currentOrganizationId");
+        localStorage.removeItem("gatewayUrl");
+        localStorage.setItem("gw_token", data.token);
+        window.location.href = "/";
+        return;
+      }
+
       // Check if user must change password
       if (data.mustChangePassword) {
         setTempToken(data.tempToken);
@@ -305,6 +318,7 @@ const Index = () => {
 
   const handleLogout = useCallback(async () => {
     const gatewayUrl = localStorage.getItem("gatewayUrl");
+    try { await fetch('/api/logout', { method: 'POST' }); } catch {}
     localStorage.removeItem("token");
     localStorage.removeItem("userEmail");
     localStorage.removeItem("userRole");

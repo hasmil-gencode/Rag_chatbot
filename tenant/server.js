@@ -54,6 +54,127 @@ app.use(express.static(join(__dirname, 'frontend/dist')));
 
 const MONGODB_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
+const MIN_INTERNAL_KEY_LENGTH = 24;
+const TENANT_AUTH_COOKIE = 'tenant_auth';
+const TENANT_AUTH_COOKIE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function parseInternalKeys() {
+  return [
+    process.env.INTERNAL_KEY,
+    process.env.INTERNAL_KEY_NEXT,
+  ]
+    .flatMap((value) => String(value || '').split(','))
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function isWeakInternalKey(key) {
+  return (
+    !key ||
+    key.length < MIN_INTERNAL_KEY_LENGTH ||
+    key === 'change-this-to-a-long-random-internal-key' ||
+    key === 'change-this-internal-key'
+  );
+}
+
+const INTERNAL_KEYS = parseInternalKeys();
+
+if (process.env.NODE_ENV === 'production') {
+  const weakKeys = INTERNAL_KEYS.filter(isWeakInternalKey);
+  if (!INTERNAL_KEYS.length || weakKeys.length) {
+    throw new Error(`INTERNAL_KEY must be set to a random secret with at least ${MIN_INTERNAL_KEY_LENGTH} characters`);
+  }
+}
+
+function timingSafeSecretEqual(input, expected) {
+  if (typeof input !== 'string' || typeof expected !== 'string') return false;
+  const inputHash = crypto.createHash('sha256').update(input).digest();
+  const expectedHash = crypto.createHash('sha256').update(expected).digest();
+  return crypto.timingSafeEqual(inputHash, expectedHash);
+}
+
+function isValidInternalKey(key) {
+  if (Array.isArray(key)) return key.some(isValidInternalKey);
+  if (typeof key !== 'string' || !key.trim()) return false;
+  return INTERNAL_KEYS.some((expected) => timingSafeSecretEqual(key.trim(), expected));
+}
+
+function parseCookies(cookieHeader = '') {
+  return String(cookieHeader)
+    .split(';')
+    .reduce((cookies, part) => {
+      const index = part.indexOf('=');
+      if (index === -1) return cookies;
+      const key = part.slice(0, index).trim();
+      const value = part.slice(index + 1).trim();
+      if (!key) return cookies;
+      try {
+        cookies[key] = decodeURIComponent(value);
+      } catch {
+        cookies[key] = value;
+      }
+      return cookies;
+    }, {});
+}
+
+function serializeCookie(name, value, options = {}) {
+  const parts = [`${name}=${encodeURIComponent(value)}`];
+  if (options.maxAge !== undefined) parts.push(`Max-Age=${Math.floor(options.maxAge / 1000)}`);
+  if (options.path) parts.push(`Path=${options.path}`);
+  if (options.httpOnly) parts.push('HttpOnly');
+  if (options.secure) parts.push('Secure');
+  if (options.sameSite) parts.push(`SameSite=${options.sameSite}`);
+  return parts.join('; ');
+}
+
+function getRequestHost(req) {
+  const forwardedHost = req.headers['x-forwarded-host'];
+  const host = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost || req.headers.host || '';
+  return String(host).split(',')[0].trim().split(':')[0].toLowerCase();
+}
+
+function isLocalhostRequest(req) {
+  const host = getRequestHost(req);
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.localhost');
+}
+
+function shouldUseSecureCookies(req) {
+  if (process.env.COOKIE_SECURE === 'true') return true;
+  if (process.env.COOKIE_SECURE === 'false') return false;
+  if (isLocalhostRequest(req)) return false;
+  return process.env.NODE_ENV === 'production' || req.secure || req.headers['x-forwarded-proto'] === 'https';
+}
+
+function tenantAuthCookieOptions(req, options = {}) {
+  return {
+    httpOnly: true,
+    secure: shouldUseSecureCookies(req),
+    sameSite: 'Lax',
+    path: '/',
+    ...options,
+  };
+}
+
+function setTenantAuthCookie(req, res, token) {
+  res.setHeader('Set-Cookie', serializeCookie(
+    TENANT_AUTH_COOKIE,
+    token,
+    tenantAuthCookieOptions(req, { maxAge: TENANT_AUTH_COOKIE_MAX_AGE_MS })
+  ));
+}
+
+function clearTenantAuthCookie(req, res) {
+  res.setHeader('Set-Cookie', serializeCookie(
+    TENANT_AUTH_COOKIE,
+    '',
+    tenantAuthCookieOptions(req, { maxAge: 0 })
+  ));
+}
+
+function getRequestAuthToken(req) {
+  const headerToken = req.headers.authorization?.split(' ')[1];
+  return headerToken || req.cookies?.[TENANT_AUTH_COOKIE] || req.query?.token;
+}
 
 let db;
 const client = new MongoClient(MONGODB_URI);
@@ -267,6 +388,10 @@ async function logAiCall(provider, model, type, source, latency, status = 'ok') 
 // Middleware
 app.set('trust proxy', true); // Trust Cloudflare/reverse proxy headers
 app.use(express.json());
+app.use((req, res, next) => {
+  req.cookies = parseCookies(req.headers.cookie || '');
+  next();
+});
 app.use((error, req, res, next) => {
   if (error instanceof SyntaxError && 'body' in error) {
     return res.status(400).json({
@@ -324,7 +449,7 @@ const upload = multer({ storage });
 
 // Auth middleware
 const auth = async (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1] || req.query?.token;
+  const token = getRequestAuthToken(req);
   if (!token) return res.status(401).json({ error: 'No token' });
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
@@ -642,6 +767,8 @@ app.post('/api/login', loginRateLimit, validateRequestBody({
       } 
     }
   );
+
+  setTenantAuthCookie(req, res, token);
   
   res.json({ 
     success: true, 
@@ -719,6 +846,19 @@ app.post('/api/change-password-first-login', validateRequestBody({
       email: user.email,
       role: user.role
     }, JWT_SECRET, { expiresIn: '24h' });
+
+    await db.collection('users').updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          activeSessionToken: token,
+          lastLoginAt: new Date(),
+          lastLoginIP: req.ip,
+        },
+      }
+    );
+
+    setTenantAuthCookie(req, res, token);
     
     res.json({ 
       success: true, 
@@ -734,6 +874,23 @@ app.post('/api/change-password-first-login', validateRequestBody({
     console.error('Change password error:', error.message);
     res.status(500).json({ error: 'Failed to change password' });
   }
+});
+
+app.post('/api/logout', async (req, res) => {
+  const token = getRequestAuthToken(req);
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      await db.collection('users').updateOne(
+        { _id: new ObjectId(decoded.id), activeSessionToken: token },
+        { $unset: { activeSessionToken: '' }, $set: { lastLogoutAt: new Date() } }
+      );
+    } catch {
+      // Still clear the browser cookie even if the token is already invalid.
+    }
+  }
+  clearTenantAuthCookie(req, res);
+  res.json({ success: true });
 });
 
 // Get current user info
@@ -2612,6 +2769,49 @@ app.get('/api/deleted-messages', auth, async (req, res) => {
     console.error('Get deleted messages error:', error.message);
     res.status(500).json({ error: error.message });
   }
+});
+
+// Check duplicate file name
+app.get('/api/files/check-duplicate', auth, async (req, res) => {
+  try {
+    const name = req.query.name;
+    if (!name) return res.status(400).json({ error: 'name required' });
+    const userAssignments = await db.collection('user_organization_assignments').find({ userId: new ObjectId(req.user.id) }).toArray();
+    const orgIds = userAssignments.map(a => a.organizationId);
+    const existing = await db.collection('files').findOne({ name, organizationId: { $in: orgIds } });
+    if (existing) {
+      return res.json({ exists: true, existingFile: { id: existing._id.toString(), name: existing.name, uploadedAt: existing.uploadedAt, size: existing.size } });
+    }
+    res.json({ exists: false });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Rename old file (keep both) — renames file + updates vectors
+app.post('/api/files/:id/rename-old', auth, async (req, res) => {
+  try {
+    const file = await db.collection('files').findOne({ _id: new ObjectId(req.params.id) });
+    if (!file) return res.status(404).json({ error: 'File not found' });
+    const ext = file.name.includes('.') ? '.' + file.name.split('.').pop() : '';
+    const baseName = file.name.replace(ext, '');
+    const d = new Date(file.uploadedAt);
+    const dateStr = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+    // Check if name with this date already exists, add counter
+    let newName = `${baseName}_${dateStr}${ext}`;
+    let counter = 1;
+    while (await db.collection('files').findOne({ name: newName, _id: { $ne: file._id } })) {
+      newName = `${baseName}_${dateStr}_${counter}${ext}`;
+      counter++;
+    }
+    // Update MongoDB
+    await db.collection('files').updateOne({ _id: file._id }, { $set: { name: newName } });
+    // Update Qdrant vectors file_name payload
+    try {
+      const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
+      const qdrant = new QdrantClient({ host: settings.qdrantHost || 'qdrant', port: settings.qdrantPort || 6333 });
+      await qdrant.setPayload('documents', { file_name: newName }, { filter: { must: [{ key: 'file_id', match: { value: file._id.toString() } }] } });
+    } catch (vecErr) { console.error('Vector rename error:', vecErr.message); }
+    res.json({ success: true, newName });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Upload file
@@ -5439,11 +5639,8 @@ app.post('/api/embed-widgets/upload-logo', auth, hasPermission(), upload.single(
 
 // ─── Internal API (called by Gateway Server) ──────────────────
 
-const INTERNAL_KEY = process.env.INTERNAL_KEY || '';
-
 function authenticateInternal(req, res, next) {
-  const key = req.headers['x-internal-key'];
-  if (!INTERNAL_KEY || key !== INTERNAL_KEY) return res.status(401).json({ error: 'Unauthorized' });
+  if (!isValidInternalKey(req.headers['x-internal-key'])) return res.status(401).json({ error: 'Unauthorized' });
   next();
 }
 
@@ -5599,6 +5796,32 @@ app.post('/api/internal/dev-token', authenticateInternal, async (req, res) => {
     await db.collection('users').updateOne({ _id: dev._id }, { $set: { activeSessionToken: token } });
     res.json({ token, user: { id: dev._id.toString(), email: dev.email, fullName: dev.fullName } });
   } catch (error) { res.status(500).json({ error: 'Failed to generate token' }); }
+});
+
+// Verify developer credentials without creating a tenant session.
+app.post('/api/internal/verify-developer-login', authenticateInternal, async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+    if (!email || !password) return res.status(400).json({ error: 'Missing fields' });
+
+    const dev = await db.collection('users').findOne({ email, role: 'developer', status: 'active' });
+    if (!dev || !await bcrypt.compare(password, dev.password)) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    res.json({
+      success: true,
+      user: {
+        id: dev._id.toString(),
+        email: dev.email,
+        fullName: dev.fullName || dev.email,
+        role: dev.role,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to verify developer login' });
+  }
 });
 
 // Create client (called by Gateway when creating new tenant)
@@ -6018,7 +6241,7 @@ app.post('/api/ingest', validateRequestBody({
     const apiKey = req.headers['x-api-key'];
     // Auth: internal key OR API key OR JWT developer
     let authed = false;
-    if (internalKey && internalKey === process.env.INTERNAL_KEY) {
+    if (isValidInternalKey(internalKey)) {
       authed = true;
       authType = 'internal';
     }

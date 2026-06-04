@@ -13,6 +13,7 @@ export function ServersPage() {
 
   const handleAdd = async () => {
     if (!form.name || !form.url || !form.internalKey) { setMsg('All fields required'); return; }
+    if (form.internalKey.trim().length < 24) { setMsg('Internal key must be at least 24 characters'); return; }
     try { await api.addServer(form); setShowModal(false); setForm({ name: '', url: '', internalKey: '', maxTenants: 5 }); setMsg(''); load(); } catch (e: any) { setMsg(e.message); }
   };
 
@@ -81,7 +82,7 @@ export function ServersPage() {
             <div className="space-y-3">
               <div><label className="text-[11px] text-muted-foreground">Server Name</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g., Server A" className="w-full h-9 px-3 mt-1 text-sm rounded-lg bg-secondary border border text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500" /></div>
               <div><label className="text-[11px] text-muted-foreground">Server URL (internal)</label><input value={form.url} onChange={e => setForm({ ...form, url: e.target.value })} placeholder="http://10.0.0.1:3000" className="w-full h-9 px-3 mt-1 text-sm rounded-lg bg-secondary border border text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500" /></div>
-              <div><label className="text-[11px] text-muted-foreground">Internal Key</label><input value={form.internalKey} onChange={e => setForm({ ...form, internalKey: e.target.value })} placeholder="Shared secret with tenant server" className="w-full h-9 px-3 mt-1 text-sm rounded-lg bg-secondary border border text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500" /></div>
+              <div><label className="text-[11px] text-muted-foreground">Internal Key</label><input value={form.internalKey} onChange={e => setForm({ ...form, internalKey: e.target.value })} placeholder="Shared secret with tenant server" className="w-full h-9 px-3 mt-1 text-sm rounded-lg bg-secondary border border text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500" /><p className="mt-1 text-[10px] text-muted-foreground">Use the same key as tenant INTERNAL_KEY. Recommended: openssl rand -hex 32.</p></div>
               <div><label className="text-[11px] text-muted-foreground">Max Tenants</label><input type="number" min={1} value={form.maxTenants} onChange={e => setForm({ ...form, maxTenants: parseInt(e.target.value) || 5 })} className="w-full h-9 px-3 mt-1 text-sm rounded-lg bg-secondary border border text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500" /></div>
               {msg && <p className="text-xs text-red-400">{msg}</p>}
               <div className="flex gap-2 pt-2">

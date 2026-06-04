@@ -328,6 +328,18 @@ class API {
     return res.json()
   }
 
+  async checkDuplicateFile(name: string): Promise<{ exists: boolean; existingFile?: { id: string; name: string; uploadedAt: string; size: number } }> {
+    const res = await fetchWithAuth(`${API_BASE}/files/check-duplicate?name=${encodeURIComponent(name)}`, { headers: this.getHeaders() })
+    if (!res.ok) throw new Error('Failed to check duplicate')
+    return res.json()
+  }
+
+  async renameOldFile(fileId: string): Promise<{ success: boolean; newName: string }> {
+    const res = await fetchWithAuth(`${API_BASE}/files/${fileId}/rename-old`, { method: 'POST', headers: this.getHeaders() })
+    if (!res.ok) throw new Error('Failed to rename file')
+    return res.json()
+  }
+
   async deleteFile(fileId: string) {
     const res = await fetchWithAuth(`${API_BASE}/files/${fileId}`, {
       method: 'DELETE',

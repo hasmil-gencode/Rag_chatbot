@@ -50,7 +50,12 @@ export function App() {
     setIsLoading(false);
   };
 
-  const logout = () => { localStorage.removeItem('gw_token'); setToken(null); setDevName(''); };
+  const logout = () => {
+    fetch('/api/gateway/logout', { method: 'POST' }).catch(() => {});
+    localStorage.removeItem('gw_token');
+    setToken(null);
+    setDevName('');
+  };
 
   if (!token) return (
     <div className="min-h-screen flex bg-white">

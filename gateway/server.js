@@ -1,6 +1,5 @@
 import express from 'express';
 import { MongoClient, ObjectId } from 'mongodb';
-import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import axios from 'axios';
 import cookieParser from 'cookie-parser';
@@ -46,26 +45,218 @@ function sanitizeInput(obj) {
 }
 app.use((req, res, next) => { if (req.body && typeof req.body === 'object') req.body = sanitizeInput(req.body); next(); });
 
-// Login rate limit (5 attempts / 5 min lock)
-const loginAttempts = new Map();
-function loginRateLimit(req, res, next) {
-  const ip = req.ip;
-  const entry = loginAttempts.get(ip);
-  if (entry?.lockedUntil > Date.now()) {
-    const sec = Math.ceil((entry.lockedUntil - Date.now()) / 1000);
-    return res.status(429).json({ error: `Too many login attempts. Try again in ${sec} seconds.` });
+// Persistent login rate limit (5 failed attempts in 5 min = 5 min lock).
+const LOGIN_RATE_LIMIT_PREFIX = 'gateway_login';
+const LOGIN_MAX_FAILS = 5;
+const LOGIN_FAIL_WINDOW_MS = 5 * 60 * 1000;
+const LOGIN_LOCK_MS = 5 * 60 * 1000;
+const LOGIN_DOC_TTL_MS = 30 * 60 * 1000;
+
+function getLoginRateKey(ip) {
+  return `${LOGIN_RATE_LIMIT_PREFIX}:${ip || 'unknown'}`;
+}
+
+async function loginRateLimit(req, res, next) {
+  try {
+    const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+    const key = getLoginRateKey(ip);
+    req._loginIp = ip;
+    req._loginRateKey = key;
+
+    const entry = await db.collection('rate_limits').findOne({ key });
+    const lockedUntil = entry?.lockedUntil ? new Date(entry.lockedUntil).getTime() : 0;
+    if (lockedUntil > Date.now()) {
+      const sec = Math.ceil((lockedUntil - Date.now()) / 1000);
+      return res.status(429).json({ error: `Too many login attempts. Try again in ${sec} seconds.` });
+    }
+
+    next();
+  } catch (error) {
+    console.error('Gateway login rate limit error:', error.message);
+    res.status(503).json({ error: 'Login temporarily unavailable. Please try again shortly.' });
   }
-  req._loginIp = ip;
-  next();
 }
-function recordLoginFail(ip) {
-  const entry = loginAttempts.get(ip) || { count: 0, lockedUntil: 0 };
-  entry.count++;
-  if (entry.count >= 5) { entry.lockedUntil = Date.now() + 5 * 60 * 1000; entry.count = 0; }
-  loginAttempts.set(ip, entry);
+
+async function recordLoginFail(ip) {
+  const key = getLoginRateKey(ip);
+  const now = Date.now();
+  const nowDate = new Date(now);
+  const entry = await db.collection('rate_limits').findOne({ key });
+  const firstFailedAt = entry?.firstFailedAt ? new Date(entry.firstFailedAt).getTime() : 0;
+  const currentCount = firstFailedAt && now - firstFailedAt <= LOGIN_FAIL_WINDOW_MS ? (entry.count || 0) : 0;
+  const count = currentCount + 1;
+  const shouldLock = count >= LOGIN_MAX_FAILS;
+  const lockedUntil = shouldLock ? new Date(now + LOGIN_LOCK_MS) : null;
+
+  await db.collection('rate_limits').updateOne(
+    { key },
+    {
+      $set: {
+        key,
+        scope: LOGIN_RATE_LIMIT_PREFIX,
+        count: shouldLock ? 0 : count,
+        firstFailedAt: shouldLock || !currentCount ? nowDate : entry.firstFailedAt,
+        lockedUntil,
+        expireAt: new Date(now + LOGIN_DOC_TTL_MS),
+        updatedAt: nowDate,
+      },
+      $setOnInsert: { createdAt: nowDate },
+    },
+    { upsert: true }
+  );
 }
-function recordLoginSuccess(ip) { loginAttempts.delete(ip); }
-setInterval(() => { const now = Date.now(); for (const [k, v] of loginAttempts) { if (v.lockedUntil < now && v.count === 0) loginAttempts.delete(k); } }, 600000);
+
+async function recordLoginSuccess(ip) {
+  await db.collection('rate_limits').deleteOne({ key: getLoginRateKey(ip) });
+}
+
+const TENANT_SERVER_COOKIE = '__gw_server';
+const TENANT_AUTH_COOKIE = 'tenant_auth';
+const GATEWAY_AUTH_COOKIE = 'gw_auth';
+const TENANT_SERVER_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const TENANT_AUTH_COOKIE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const GATEWAY_AUTH_COOKIE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function getRequestHost(req) {
+  const forwardedHost = req.headers['x-forwarded-host'];
+  const host = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost || req.headers.host || '';
+  return String(host).split(',')[0].trim().split(':')[0].toLowerCase();
+}
+
+function isLocalhostRequest(req) {
+  const host = getRequestHost(req);
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.localhost');
+}
+
+function shouldUseSecureCookies(req) {
+  if (process.env.COOKIE_SECURE === 'true') return true;
+  if (process.env.COOKIE_SECURE === 'false') return false;
+  if (isLocalhostRequest(req)) return false;
+  return process.env.NODE_ENV === 'production' || req.secure || req.headers['x-forwarded-proto'] === 'https';
+}
+
+function gatewayCookieOptions(req, options = {}) {
+  return {
+    httpOnly: true,
+    secure: shouldUseSecureCookies(req),
+    sameSite: 'lax',
+    path: '/',
+    ...options,
+  };
+}
+
+function setTenantServerCookie(req, res, serverUrl) {
+  res.cookie(
+    TENANT_SERVER_COOKIE,
+    serverUrl,
+    gatewayCookieOptions(req, { maxAge: TENANT_SERVER_COOKIE_MAX_AGE_MS })
+  );
+}
+
+function clearTenantServerCookie(req, res) {
+  res.clearCookie(TENANT_SERVER_COOKIE, gatewayCookieOptions(req));
+}
+
+function setTenantAuthCookie(req, res, token) {
+  res.cookie(
+    TENANT_AUTH_COOKIE,
+    token,
+    gatewayCookieOptions(req, { maxAge: TENANT_AUTH_COOKIE_MAX_AGE_MS })
+  );
+}
+
+function clearTenantAuthCookie(req, res) {
+  res.clearCookie(TENANT_AUTH_COOKIE, gatewayCookieOptions(req));
+}
+
+function getTenantProxyCookieHeader(req) {
+  const token = req.cookies?.[TENANT_AUTH_COOKIE];
+  return token ? `${TENANT_AUTH_COOKIE}=${encodeURIComponent(token)}` : undefined;
+}
+
+function setGatewayAuthCookie(req, res, token) {
+  res.cookie(
+    GATEWAY_AUTH_COOKIE,
+    token,
+    gatewayCookieOptions(req, { maxAge: GATEWAY_AUTH_COOKIE_MAX_AGE_MS })
+  );
+}
+
+function clearGatewayAuthCookie(req, res) {
+  res.clearCookie(GATEWAY_AUTH_COOKIE, gatewayCookieOptions(req));
+}
+
+const MIN_INTERNAL_KEY_LENGTH = 24;
+
+function validateInternalKeyValue(key) {
+  const value = String(key || '').trim();
+  if (!value) return 'Internal key required';
+  if (value.length < MIN_INTERNAL_KEY_LENGTH) return `Internal key must be at least ${MIN_INTERNAL_KEY_LENGTH} characters`;
+  if (
+    value === 'change-this-to-a-long-random-internal-key' ||
+    value === 'change-this-internal-key'
+  ) {
+    return 'Internal key must be changed from the default value';
+  }
+  return null;
+}
+
+async function verifyTenantDeveloperLogin(email, password) {
+  const servers = await db.collection('servers').find({ status: 'active' }).toArray();
+  for (const server of servers) {
+    try {
+      const resp = await axios.post(
+        `${server.url}/api/internal/verify-developer-login`,
+        { email, password },
+        {
+          headers: { 'x-internal-key': server.internalKey },
+          timeout: 10000,
+          validateStatus: () => true,
+        }
+      );
+      if (resp.status === 200 && resp.data?.success) {
+        return { user: resp.data.user, server };
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function signGatewayDeveloperToken(user) {
+  return jwt.sign(
+    {
+      id: user.id || user._id,
+      email: user.email,
+      name: user.fullName || user.name || user.email,
+    },
+    JWT_SECRET,
+    { expiresIn: '24h' }
+  );
+}
+
+function isDeveloperLoginData(data) {
+  return data?.user?.role === 'developer';
+}
+
+function sendGatewayDeveloperLogin(req, res, user) {
+  const normalizedUser = {
+    id: user.id || user._id,
+    email: user.email,
+    fullName: user.fullName || user.name || user.email,
+  };
+  const token = signGatewayDeveloperToken(normalizedUser);
+  clearTenantServerCookie(req, res);
+  clearTenantAuthCookie(req, res);
+  setGatewayAuthCookie(req, res, token);
+  return res.json({
+    token,
+    user: { email: normalizedUser.email, name: normalizedUser.fullName },
+    isGatewayDev: true,
+  });
+}
+
 // Serve gateway static files only if NOT a tenant session
 app.use((req, res, next) => {
   if (req.cookies?.__gw_server) return next();
@@ -78,9 +269,24 @@ const PORT = process.env.PORT || 4000;
 
 let db;
 
+async function ensureMongoIndexes() {
+  const indexes = [
+    ['rate_limits', { key: 1 }, { unique: true }],
+    ['rate_limits', { expireAt: 1 }, { expireAfterSeconds: 0 }],
+  ];
+
+  for (const [collection, spec, options] of indexes) {
+    try {
+      await db.collection(collection).createIndex(spec, options);
+    } catch (error) {
+      console.warn(`Failed to ensure index ${collection} ${JSON.stringify(spec)}: ${error.message}`);
+    }
+  }
+}
+
 // ─── Auth Middleware ────────────────────────────────────────────
 function auth(req, res, next) {
-  const token = req.headers.authorization?.replace('Bearer ', '');
+  const token = req.headers.authorization?.replace('Bearer ', '') || req.cookies?.[GATEWAY_AUTH_COOKIE];
   if (!token) return res.status(401).json({ error: 'No token' });
   try {
     req.user = jwt.verify(token, JWT_SECRET);
@@ -93,19 +299,29 @@ app.post('/api/gateway/login', loginRateLimit, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Missing fields' });
-    const dev = await db.collection('developers').findOne({ email });
-    if (!dev || !await bcrypt.compare(password, dev.password)) {
-      recordLoginFail(req._loginIp);
-      return res.status(401).json({ error: 'Invalid credentials' });
+    const normalizedEmail = String(email).trim().toLowerCase();
+
+    const tenantDev = await verifyTenantDeveloperLogin(normalizedEmail, password);
+    if (tenantDev) {
+      await recordLoginSuccess(req._loginIp);
+      const response = sendGatewayDeveloperLogin(req, res, tenantDev.user);
+      return response;
     }
-    recordLoginSuccess(req._loginIp);
-    const token = jwt.sign({ id: dev._id, email: dev.email, name: dev.name }, JWT_SECRET, { expiresIn: '24h' });
-    res.json({ token, user: { email: dev.email, name: dev.name } });
+
+    await recordLoginFail(req._loginIp);
+    return res.status(401).json({ error: 'Invalid credentials' });
   } catch (error) { res.status(500).json({ error: 'Login failed' }); }
 });
 
 app.get('/api/gateway/me', auth, async (req, res) => {
   res.json({ email: req.user.email, name: req.user.name });
+});
+
+app.post('/api/gateway/logout', (req, res) => {
+  clearGatewayAuthCookie(req, res);
+  clearTenantServerCookie(req, res);
+  clearTenantAuthCookie(req, res);
+  res.json({ success: true });
 });
 
 // ─── Servers ───────────────────────────────────────────────────
@@ -124,13 +340,15 @@ app.post('/api/gateway/servers', auth, async (req, res) => {
   try {
     const { name, url, internalKey, maxTenants } = req.body;
     if (!name || !url || !internalKey) return res.status(400).json({ error: 'Name, URL, and internal key required' });
+    const internalKeyError = validateInternalKeyValue(internalKey);
+    if (internalKeyError) return res.status(400).json({ error: internalKeyError });
     // Health check
     try {
       const health = await axios.get(`${url}/api/health`, { timeout: 10000 });
       if (health.data.status !== 'ok') throw new Error('Bad status');
     } catch { return res.status(400).json({ error: 'Cannot connect to server. Check URL and ensure server is running.' }); }
     const result = await db.collection('servers').insertOne({
-      name, url, internalKey, maxTenants: maxTenants || 5, status: 'active', createdAt: new Date()
+      name, url, internalKey: String(internalKey).trim(), maxTenants: maxTenants || 5, status: 'active', createdAt: new Date()
     });
     res.json({ success: true, serverId: result.insertedId });
   } catch (error) { res.status(500).json({ error: 'Failed to add server' }); }
@@ -167,7 +385,8 @@ app.post('/api/gateway/servers/:id/manage', auth, async (req, res) => {
     const resp = await axios.post(`${server.url}/api/internal/dev-token`, {}, {
       headers: { 'x-internal-key': server.internalKey }, timeout: 10000
     });
-    res.cookie('__gw_server', server.url, { httpOnly: true, secure: false, sameSite: 'lax', maxAge: 30 * 24 * 60 * 60 * 1000 });
+    setTenantAuthCookie(req, res, resp.data.token);
+    setTenantServerCookie(req, res, server.url);
     res.json({ token: resp.data.token, serverUrl: server.url });
   } catch (error) { res.status(500).json({ error: 'Failed to get access' }); }
 });
@@ -263,7 +482,8 @@ app.post('/api/gateway/tenants/:id/manage', auth, async (req, res) => {
     const resp = await axios.post(`${server.url}/api/internal/dev-token`, {}, {
       headers: { 'x-internal-key': server.internalKey }, timeout: 10000
     });
-    res.cookie('__gw_server', server.url, { httpOnly: true, secure: false, sameSite: 'lax', maxAge: 30 * 24 * 60 * 60 * 1000 });
+    setTenantAuthCookie(req, res, resp.data.token);
+    setTenantServerCookie(req, res, server.url);
     res.json({ token: resp.data.token, serverUrl: server.url, user: resp.data.user });
   } catch (error) { res.status(500).json({ error: 'Failed to get access: ' + error.message }); }
 });
@@ -314,18 +534,18 @@ app.post('/api/login', loginRateLimit, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email) return res.status(400).json({ error: 'Email required' });
+    const normalizedEmail = String(email).trim().toLowerCase();
 
-    // Check if this is a gateway developer login first
-    const dev = await db.collection('developers').findOne({ email });
-    if (dev && password && await bcrypt.compare(password, dev.password)) {
-      recordLoginSuccess(req._loginIp);
-      const token = jwt.sign({ id: dev._id, email: dev.email, name: dev.name }, JWT_SECRET, { expiresIn: '24h' });
-      // Don't set __gw_server cookie — stay on gateway UI
-      return res.json({ token, user: { email: dev.email, name: dev.name }, isGatewayDev: true });
+    // Developer credentials always belong to the gateway. When someone submits
+    // them from a tenant page, clear the tenant cookie and let the frontend
+    // switch back to the gateway shell using gw_token, not the tenant token.
+    const tenantDev = await verifyTenantDeveloperLogin(normalizedEmail, password);
+    if (tenantDev) {
+      await recordLoginSuccess(req._loginIp);
+      return sendGatewayDeveloperLogin(req, res, tenantDev.user);
     }
 
-    // Not a gateway developer — proxy to tenant
-    const tenant = await db.collection('tenants').findOne({ adminEmail: email });
+    const tenant = await db.collection('tenants').findOne({ adminEmail: normalizedEmail });
     let serverUrl = null;
 
     if (tenant) {
@@ -338,20 +558,38 @@ app.post('/api/login', loginRateLimit, async (req, res) => {
         try {
           const resp = await axios.post(`${s.url}/api/login`, req.body, { timeout: 10000, validateStatus: () => true });
           if (resp.status === 200) {
-            res.cookie('__gw_server', s.url, { httpOnly: true, secure: false, sameSite: 'lax', maxAge: 30 * 24 * 60 * 60 * 1000 });
+            if (isDeveloperLoginData(resp.data)) {
+              await recordLoginSuccess(req._loginIp);
+              return sendGatewayDeveloperLogin(req, res, resp.data.user);
+            }
+            await recordLoginSuccess(req._loginIp);
+            if (resp.data?.token) setTenantAuthCookie(req, res, resp.data.token);
+            setTenantServerCookie(req, res, s.url);
             return res.json(resp.data);
           }
         } catch { continue; }
       }
+      await recordLoginFail(req._loginIp);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    if (!serverUrl) return res.status(401).json({ error: 'Server not found for this account' });
+    if (!serverUrl) {
+      await recordLoginFail(req._loginIp);
+      return res.status(401).json({ error: 'Server not found for this account' });
+    }
 
     // Proxy login to tenant server
     const resp = await axios.post(`${serverUrl}/api/login`, req.body, { timeout: 10000, validateStatus: () => true });
+    if (resp.status === 200 && isDeveloperLoginData(resp.data)) {
+      await recordLoginSuccess(req._loginIp);
+      return sendGatewayDeveloperLogin(req, res, resp.data.user);
+    }
     if (resp.status === 200) {
-      res.cookie('__gw_server', serverUrl, { httpOnly: true, secure: false, sameSite: 'lax', maxAge: 30 * 24 * 60 * 60 * 1000 });
+      await recordLoginSuccess(req._loginIp);
+      if (resp.data?.token) setTenantAuthCookie(req, res, resp.data.token);
+      setTenantServerCookie(req, res, serverUrl);
+    } else if (resp.status === 401 || resp.status === 403) {
+      await recordLoginFail(req._loginIp);
     }
     res.status(resp.status).json(resp.data);
   } catch (error) { res.status(500).json({ error: 'Login failed' }); }
@@ -359,7 +597,8 @@ app.post('/api/login', loginRateLimit, async (req, res) => {
 
 // Clear tenant cookie on logout
 app.post('/api/gateway/tenant-logout', (req, res) => {
-  res.clearCookie('__gw_server');
+  clearTenantServerCookie(req, res);
+  clearTenantAuthCookie(req, res);
   res.json({ success: true });
 });
 
@@ -367,6 +606,7 @@ app.post('/api/gateway/tenant-logout', (req, res) => {
 app.all('/api/*', async (req, res) => {
   // Don't proxy gateway routes
   if (req.path.startsWith('/api/gateway/')) return res.status(404).json({ error: 'Not found' });
+  if (req.path.startsWith('/api/internal/')) return res.status(404).json({ error: 'Not found' });
 
   let serverUrl = req.cookies?.__gw_server;
 
@@ -390,7 +630,7 @@ app.all('/api/*', async (req, res) => {
   const isMultipart = (req.headers['content-type'] || '').includes('multipart');
   const proxyConfig = {
     method: req.method, url: `${serverUrl}${req.path}`,
-    headers: { ...req.headers, host: undefined, cookie: undefined },
+    headers: { ...req.headers, host: undefined, cookie: getTenantProxyCookieHeader(req), 'x-internal-key': undefined },
     params: req.query, timeout: 300000, responseType: 'stream', validateStatus: () => true,
     maxContentLength: Infinity, maxBodyLength: Infinity,
   };
@@ -438,14 +678,7 @@ async function start() {
   await client.connect();
   db = client.db();
   console.log('Connected to MongoDB');
-
-  // Seed developer if none exists
-  const devCount = await db.collection('developers').countDocuments();
-  if (devCount === 0) {
-    const hash = await bcrypt.hash('Developer@123', 10);
-    await db.collection('developers').insertOne({ email: 'developer@gencode.com.my', password: hash, name: 'Developer', createdAt: new Date() });
-    console.log('Seeded developer: developer@gencode.com.my / Developer@123');
-  }
+  await ensureMongoIndexes();
 
   app.listen(PORT, () => console.log(`Gateway running on port ${PORT}`));
 }

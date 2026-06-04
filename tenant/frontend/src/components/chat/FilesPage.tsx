@@ -41,6 +41,29 @@ export const FilesPage = () => {
     const total = files.length;
     for (let i = 0; i < total; i++) {
       const file = files[i];
+      // Check duplicate
+      try {
+        const dup = await api.checkDuplicateFile(file.name);
+        if (dup.exists && dup.existingFile) {
+          const uploadedDate = new Date(dup.existingFile.uploadedAt).toLocaleDateString();
+          const action = await confirm({
+            title: 'File Already Exists',
+            message: `"${file.name}" already exists (uploaded ${uploadedDate}). What would you like to do?`,
+            confirmText: 'Replace',
+            cancelText: 'Cancel',
+            extraAction: { text: 'Keep Both', value: 'keep' }
+          });
+          if (action === false) { continue; } // Cancel — skip this file
+          if (action === 'keep') {
+            // Rename old file with date suffix
+            await api.renameOldFile(dup.existingFile.id);
+          } else {
+            // Replace — delete old file first
+            await api.deleteFile(dup.existingFile.id);
+          }
+        }
+      } catch (dupErr: any) { console.error('Duplicate check failed:', dupErr.message); }
+
       setUploadStep(`Uploading ${i + 1}/${total}: ${file.name}`);
       try {
         await api.uploadFile(file, selectedOrgs, (_step, detail) => {
