@@ -9,8 +9,48 @@ import OpenAI from 'openai';
 
 const QDRANT_COLLECTION = 'documents';
 
+// MySQL pool reference (set from server.js)
+let _mysqlPool = null;
+export function setMysqlPool(pool) { _mysqlPool = pool; }
+
 async function logAiCall(db, provider, model, type, source, latency, status = 'ok') {
   try { await db.collection('ai_api_logs').insertOne({ provider, model, type, source, latency, status, createdAt: new Date() }); } catch {}
+}
+
+// Text-to-SQL: check if question can be answered from data sources
+async function tryDataSourceQuery(db, message, settings, organizationId) {
+  if (!_mysqlPool) return null;
+  try {
+    // Get data sources accessible to this org
+    const filter = organizationId ? { organizationIds: new ObjectId(organizationId) } : {};
+    const sources = await db.collection('data_sources').find(filter).toArray();
+    if (sources.length === 0) return null;
+
+    // Build schema description for LLM
+    const schemaDesc = sources.map(s => {
+      const cols = s.columns.map(c => `  - ${c.name} (${c.type}) — ${c.description || ''}`).join('\n');
+      return `Table: ${s.tableName}\nDescription: ${s.description || s.name}\nColumns:\n${cols}`;
+    }).join('\n\n');
+
+    // Ask LLM if this question needs SQL
+    const routerPrompt = `You have access to these MySQL tables:\n\n${schemaDesc}\n\nUser question: "${message}"\n\nIf this question can be answered by querying the tables above, respond with ONLY the SQL SELECT query (no explanation, no markdown). If the question is NOT about this data, respond with exactly "NO_SQL".`;
+
+    const sqlResult = await callLLM([{ role: 'user', content: routerPrompt }], { ...settings, chatLlmModel: settings.chatLlmModel || 'gemini-2.5-flash' }, db, 'text_to_sql');
+    const cleaned = sqlResult.trim().replace(/```sql\n?/g, '').replace(/```/g, '').trim();
+
+    if (cleaned === 'NO_SQL' || !cleaned.toUpperCase().startsWith('SELECT')) return null;
+
+    // Safety: only SELECT allowed
+    if (!/^\s*SELECT\s/i.test(cleaned)) return null;
+
+    // Execute with timeout and limit
+    const [rows] = await _mysqlPool.query({ sql: cleaned + (cleaned.toLowerCase().includes('limit') ? '' : ' LIMIT 100'), timeout: 5000 });
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+
+    return { sql: cleaned, rows, rowCount: rows.length, tables: sources.map(s => s.name) };
+  } catch (e) {
+    return null;
+  }
 }
 
 // ─── Guardrail Check ───────────────────────────────────────────
@@ -206,11 +246,6 @@ export async function callLLM(messages, settings, db = null, source = 'chat') {
         body, { timeout: 60000 }
       );
       result = res.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    } else if (provider === 'openai' || provider === 'groq') {
-      const baseURL = provider === 'groq' ? 'https://api.groq.com/openai/v1' : 'https://api.openai.com/v1';
-      const openai = new OpenAI({ apiKey, baseURL });
-      const res = await openai.chat.completions.create({ model, messages });
-      result = res.choices[0]?.message?.content || '';
     } else if (provider === 'mistral') {
       const res = await axios.post('https://api.mistral.ai/v1/chat/completions', { model, messages }, { headers: { 'Authorization': `Bearer ${apiKey}` }, timeout: 60000 });
       result = res.data.choices?.[0]?.message?.content || '';
@@ -233,7 +268,7 @@ export async function streamLLM(messages, settings, onToken, db = null, source =
   if (!provider) throw new Error('Chat LLM Provider not configured. Go to Settings → Chat → LLM.');
   if (!model) throw new Error('Chat LLM Model not configured. Go to Settings → Chat → LLM.');
   if (!apiKey) throw new Error(`Chat LLM API key not set for ${provider}. Check Settings or Provider Keys.`);
-  if (!['gemini', 'openai', 'groq'].includes(provider)) {
+  if (provider !== 'gemini') {
     throw new Error(`Streaming is not supported for provider: ${provider}`);
   }
 
@@ -246,14 +281,7 @@ export async function streamLLM(messages, settings, onToken, db = null, source =
   };
 
   try {
-    if (provider === 'openai' || provider === 'groq') {
-      const baseURL = provider === 'groq' ? 'https://api.groq.com/openai/v1' : 'https://api.openai.com/v1';
-      const openai = new OpenAI({ apiKey, baseURL });
-      const stream = await openai.chat.completions.create({ model, messages, stream: true });
-      for await (const chunk of stream) {
-        emit(chunk.choices?.[0]?.delta?.content || '');
-      }
-    } else if (provider === 'gemini') {
+    if (provider === 'gemini') {
       const systemMsg = messages.find(m => m.role === 'system');
       const chatMsgs = messages.filter(m => m.role !== 'system');
       const body = {
@@ -334,7 +362,39 @@ export async function processBrowserChat(db, userId, message, sessionId, setting
   let systemPrompt = settings.chatSystemPrompt || 'You are a helpful AI assistant.';
   if (organizationId) {
     const org = await db.collection('organizations').findOne({ _id: new ObjectId(organizationId) });
-    if (org?.systemPrompt) systemPrompt = org.systemPrompt;
+
+    // Multi-role routing
+    if (org?.roleMode === 'multi' && org.roles?.length > 0) {
+      let roleId = null;
+      // Check if session already has a role assigned
+      const sessionMsg = await db.collection('messages').findOne({ sessionId, roleId: { $exists: true, $ne: null } });
+      if (sessionMsg) {
+        roleId = sessionMsg.roleId;
+      } else {
+        // Route: classify user intent to pick a role
+        const roleList = org.roles.map(r => `- "${r.id}": ${r.name} — ${r.description}`).join('\n');
+        const routerPrompt = `You are a router. Based on the user message, classify which role should handle it.\n\nAvailable roles:\n${roleList}\n\nRespond with ONLY the role id (the value in quotes). If unclear, respond with "unclear".`;
+        try {
+          const routerResult = await callLLM([{ role: 'system', content: routerPrompt }, { role: 'user', content: message }], { ...settings, chatLlmModel: org.routerModel || settings.chatLlmModel || 'gemini-2.5-flash-lite' }, db, 'router');
+          const cleaned = routerResult.trim().replace(/['"]/g, '');
+          const matchedRole = org.roles.find(r => r.id === cleaned || r.name.toLowerCase() === cleaned.toLowerCase());
+          if (matchedRole) roleId = matchedRole.id;
+        } catch {}
+        // Fallback to default role
+        if (!roleId) {
+          const defaultRole = org.roles.find(r => r.isDefault) || org.roles[0];
+          roleId = defaultRole.id;
+        }
+        // Tag session with roleId
+        await db.collection('messages').updateMany({ sessionId }, { $set: { roleId } });
+      }
+      const activeRole = org.roles.find(r => r.id === roleId);
+      if (activeRole?.systemPrompt) systemPrompt = activeRole.systemPrompt;
+      // If role has specific fileIds, filter chunks later (stored in debug for now)
+      if (activeRole?.fileIds?.length > 0) debug.roleFileIds = activeRole.fileIds;
+    } else if (org?.systemPrompt) {
+      systemPrompt = org.systemPrompt;
+    }
 
     // Mandatory fields enforcement
     if (org?.mandatoryFields?.length > 0) {
@@ -387,7 +447,17 @@ Only include fields that are CLEARLY stated. If not mentioned, omit.`;
       chunks.map((c, i) => `[Source ${i + 1}: ${c.file_name}, Page ${c.page_number}]\n${c.content}`).join('\n\n');
   }
 
-  // Get chat history for this session (exclude current message which is appended separately)
+  // Text-to-SQL: try querying structured data
+  const sqlResult = await tryDataSourceQuery(db, message, settings, organizationId);
+  if (sqlResult) {
+    const headers = Object.keys(sqlResult.rows[0]);
+    const tableStr = headers.join(' | ') + '\n' + sqlResult.rows.map(r => headers.map(h => r[h] ?? '').join(' | ')).join('\n');
+    contextBlock += `\n\n## Data from database query:\nSQL: ${sqlResult.sql}\nResults (${sqlResult.rowCount} rows):\n${tableStr}\n\nUse this data to answer the user's question. Present results clearly, use tables if appropriate.`;
+    debug.sqlQuery = sqlResult.sql;
+    debug.sqlRowCount = sqlResult.rowCount;
+  }
+
+  // Get chat history for this session
   const history = await db.collection('messages')
     .find({ sessionId, role: { $in: ['user', 'bot'] } })
     .sort({ createdAt: 1 })
@@ -502,7 +572,34 @@ export async function processBrowserChatStream(db, userId, message, sessionId, s
   let systemPrompt = settings.chatSystemPrompt || 'You are a helpful AI assistant.';
   if (organizationId) {
     const org = await db.collection('organizations').findOne({ _id: new ObjectId(organizationId) });
-    if (org?.systemPrompt) systemPrompt = org.systemPrompt;
+
+    // Multi-role routing
+    if (org?.roleMode === 'multi' && org.roles?.length > 0) {
+      let roleId = null;
+      const sessionMsg = await db.collection('messages').findOne({ sessionId, roleId: { $exists: true, $ne: null } });
+      if (sessionMsg) {
+        roleId = sessionMsg.roleId;
+      } else {
+        const roleList = org.roles.map(r => `- "${r.id}": ${r.name} — ${r.description}`).join('\n');
+        const routerPrompt = `You are a router. Based on the user message, classify which role should handle it.\n\nAvailable roles:\n${roleList}\n\nRespond with ONLY the role id (the value in quotes). If unclear, respond with "unclear".`;
+        try {
+          const routerResult = await callLLM([{ role: 'system', content: routerPrompt }, { role: 'user', content: message }], { ...settings, chatLlmModel: org.routerModel || settings.chatLlmModel || 'gemini-2.5-flash-lite' }, db, 'router');
+          const cleaned = routerResult.trim().replace(/['"]/g, '');
+          const matchedRole = org.roles.find(r => r.id === cleaned || r.name.toLowerCase() === cleaned.toLowerCase());
+          if (matchedRole) roleId = matchedRole.id;
+        } catch {}
+        if (!roleId) {
+          const defaultRole = org.roles.find(r => r.isDefault) || org.roles[0];
+          roleId = defaultRole.id;
+        }
+        await db.collection('messages').updateMany({ sessionId }, { $set: { roleId } });
+      }
+      const activeRole = org.roles.find(r => r.id === roleId);
+      if (activeRole?.systemPrompt) systemPrompt = activeRole.systemPrompt;
+      if (activeRole?.fileIds?.length > 0) debug.roleFileIds = activeRole.fileIds;
+    } else if (org?.systemPrompt) {
+      systemPrompt = org.systemPrompt;
+    }
 
     if (org?.mandatoryFields?.length > 0) {
       const historyForCheck = await db.collection('messages')
@@ -544,9 +641,19 @@ Only include fields that are CLEARLY stated. If not mentioned, omit.`;
     }
   }
 
-  const contextBlock = chunks.length > 0
+  let contextBlock = chunks.length > 0
     ? '\n\n## Context from documents:\n' + chunks.map((c, i) => `[Source ${i + 1}: ${c.file_name}, Page ${c.page_number}]\n${c.content}`).join('\n\n')
     : '';
+
+  // Text-to-SQL: try querying structured data
+  const sqlResult = await tryDataSourceQuery(db, message, settings, organizationId);
+  if (sqlResult) {
+    const headers = Object.keys(sqlResult.rows[0]);
+    const tableStr = headers.join(' | ') + '\n' + sqlResult.rows.map(r => headers.map(h => r[h] ?? '').join(' | ')).join('\n');
+    contextBlock += `\n\n## Data from database query:\nSQL: ${sqlResult.sql}\nResults (${sqlResult.rowCount} rows):\n${tableStr}\n\nUse this data to answer the user's question. Present results clearly, use tables if appropriate.`;
+    debug.sqlQuery = sqlResult.sql;
+    debug.sqlRowCount = sqlResult.rowCount;
+  }
 
   const history = await db.collection('messages')
     .find({ sessionId, role: { $in: ['user', 'bot'] } })

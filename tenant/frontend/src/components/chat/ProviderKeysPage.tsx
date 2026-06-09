@@ -6,9 +6,7 @@ import { Eye, EyeOff, Save, CheckCircle, XCircle } from "lucide-react";
 
 const PROVIDERS = [
   { id: 'gemini', name: 'Gemini (Google AI)', placeholder: 'AIzaSy...', hint: 'https://aistudio.google.com/apikey' },
-  { id: 'openai', name: 'OpenAI', placeholder: 'sk-...', hint: 'https://platform.openai.com/api-keys' },
-  { id: 'mistral', name: 'Mistral', placeholder: 'sk-...', hint: 'https://console.mistral.ai/api-keys' },
-  { id: 'groq', name: 'Groq', placeholder: 'gsk_...', hint: 'https://console.groq.com/keys' },
+  { id: 'mistral', name: 'Mistral (OCR)', placeholder: 'sk-...', hint: 'https://console.mistral.ai/api-keys' },
   { id: 'google_cloud', name: 'Google Cloud (Service Account JSON)', placeholder: '{"type":"service_account",...}', hint: 'https://console.cloud.google.com/iam-admin/serviceaccounts', multiline: true },
 ];
 

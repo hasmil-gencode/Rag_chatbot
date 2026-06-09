@@ -5,7 +5,7 @@ import { useConfirm } from "./ConfirmDialog";
 import { api } from "@/lib/api";
 import { Plus, Copy, Power, Trash2, Eye, EyeOff, Key, X, Edit2, Activity } from "lucide-react";
 
-interface ApiKey { _id: string; key: string; shortKey?: string; hasShortKey?: boolean; name: string; description?: string; userId: string; userEmail: string; chatMode?: string; webhookUrl?: string; systemPrompt?: string; scopes?: string[]; allowedCollectionIds?: string[]; streamChunkSize?: number; streamDelayMs?: number; isActive: boolean; createdAt: string; lastUsedAt: string | null; }
+interface ApiKey { _id: string; key: string; shortKey?: string; hasShortKey?: boolean; name: string; description?: string; userId: string; userEmail: string; chatMode?: string; webhookUrl?: string; systemPrompt?: string; scopes?: string[]; streamChunkSize?: number; streamDelayMs?: number; isActive: boolean; createdAt: string; lastUsedAt: string | null; }
 interface ApiUsageSummary {
   totalRequests: number;
   totalErrors: number;
@@ -19,32 +19,30 @@ interface ApiUsageSummary {
 export const ApiManagementPage = () => {
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [users, setUsers] = useState<any[]>([]);
-  const [collections, setCollections] = useState<any[]>([]);
   const [usage, setUsage] = useState<any>(null);
   const [showModal, setShowModal] = useState(false);
   const [editingKey, setEditingKey] = useState<ApiKey | null>(null);
-  const [form, setForm] = useState({ name: "", description: "", userId: "", chatMode: "native", webhookUrl: "", systemPrompt: "", generateShortKey: false, scopes: ["chat"] as string[], allowedCollectionIds: [] as string[], streamChunkSize: 10, streamDelayMs: 22 });
+  const [form, setForm] = useState({ name: "", description: "", userId: "", chatMode: "native", webhookUrl: "", systemPrompt: "", generateShortKey: false, scopes: ["chat"] as string[], streamChunkSize: 10, streamDelayMs: 22 });
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
   const confirm = useConfirm();
 
-  useEffect(() => { loadKeys(); loadUsers(); loadUsage(); loadCollections(); }, []);
+  useEffect(() => { loadKeys(); loadUsers(); loadUsage(); }, []);
 
   const loadKeys = async () => { try { setKeys(await api.getApiKeys()); } catch (e: any) { toast.error(e.message); } };
   const loadUsers = async () => { try { setUsers(await api.getUsers()); } catch (e) { setUsers([]); } };
   const loadUsage = async () => { try { setUsage(await api.getApiUsage()); } catch (e) { setUsage(null); } };
-  const loadCollections = async () => { try { setCollections(await api.getExternalCollections()); } catch (e) { setCollections([]); } };
 
-  const openCreate = () => { setEditingKey(null); setForm({ name: "", description: "", userId: "", chatMode: "native", webhookUrl: "", systemPrompt: "", generateShortKey: false, scopes: ["chat"], allowedCollectionIds: [], streamChunkSize: 10, streamDelayMs: 22 }); setShowModal(true); };
-  const openEdit = (k: ApiKey) => { setEditingKey(k); setForm({ name: k.name, description: k.description || "", userId: k.userId, chatMode: k.chatMode || "webhook", webhookUrl: k.webhookUrl || "", systemPrompt: k.systemPrompt || "", generateShortKey: false, scopes: k.scopes?.length ? k.scopes : ["chat"], allowedCollectionIds: k.allowedCollectionIds || [], streamChunkSize: k.streamChunkSize || 10, streamDelayMs: k.streamDelayMs ?? 22 }); setShowModal(true); };
+  const openCreate = () => { setEditingKey(null); setForm({ name: "", description: "", userId: "", chatMode: "native", webhookUrl: "", systemPrompt: "", generateShortKey: false, scopes: ["chat"], streamChunkSize: 10, streamDelayMs: 22 }); setShowModal(true); };
+  const openEdit = (k: ApiKey) => { setEditingKey(k); setForm({ name: k.name, description: k.description || "", userId: k.userId, chatMode: k.chatMode || "webhook", webhookUrl: k.webhookUrl || "", systemPrompt: k.systemPrompt || "", generateShortKey: false, scopes: k.scopes?.length ? k.scopes : ["chat"], streamChunkSize: k.streamChunkSize || 10, streamDelayMs: k.streamDelayMs ?? 22 }); setShowModal(true); };
 
   const handleSubmit = async () => {
     if (!form.name || (!editingKey && !form.userId)) { toast.error("Fill required fields"); return; }
     if (form.chatMode === "webhook" && !form.webhookUrl) { toast.error("Webhook URL required for webhook mode"); return; }
     try {
       if (editingKey) {
-        await api.updateApiKeyDetails(editingKey._id, { name: form.name, description: form.description, chatMode: form.chatMode, webhookUrl: form.webhookUrl, systemPrompt: form.systemPrompt, scopes: form.scopes, allowedCollectionIds: form.allowedCollectionIds, streamChunkSize: form.streamChunkSize, streamDelayMs: form.streamDelayMs });
+        await api.updateApiKeyDetails(editingKey._id, { name: form.name, description: form.description, chatMode: form.chatMode, webhookUrl: form.webhookUrl, systemPrompt: form.systemPrompt, scopes: form.scopes, streamChunkSize: form.streamChunkSize, streamDelayMs: form.streamDelayMs });
       } else {
-        await api.createApiKey(form.name, form.userId, form.generateShortKey, null, form.description, form.webhookUrl, form.chatMode, form.systemPrompt, form.scopes, form.allowedCollectionIds, form.streamChunkSize, form.streamDelayMs);
+        await api.createApiKey(form.name, form.userId, form.generateShortKey, null, form.description, form.webhookUrl, form.chatMode, form.systemPrompt, form.scopes, undefined, form.streamChunkSize, form.streamDelayMs);
       }
       setShowModal(false); loadKeys(); loadUsage(); toast.success(editingKey ? "Updated" : "Created");
     } catch (e: any) { toast.error(e.message); }
@@ -59,12 +57,6 @@ export const ApiManagementPage = () => {
     const scopes = prev.scopes.includes(scope) ? prev.scopes.filter(s => s !== scope) : [...prev.scopes, scope];
     return { ...prev, scopes: scopes.length ? scopes : ["chat"] };
   });
-  const toggleCollection = (collectionId: string) => setForm(prev => ({
-    ...prev,
-    allowedCollectionIds: prev.allowedCollectionIds.includes(collectionId)
-      ? prev.allowedCollectionIds.filter(id => id !== collectionId)
-      : [...prev.allowedCollectionIds, collectionId],
-  }));
   const usageSummary: ApiUsageSummary = usage?.summary || {
     totalRequests: Array.isArray(usage) ? usage.length : 0,
     totalErrors: Array.isArray(usage) ? usage.filter((item: any) => item.responseStatus >= 400).length : 0,
@@ -131,8 +123,7 @@ export const ApiManagementPage = () => {
                       )}
                       <p className="text-[10px] text-muted-foreground">User: {key.userEmail} · Created: {new Date(key.createdAt).toLocaleDateString()}{key.description && ` · ${key.description}`}</p>
                       <p className="text-[10px] text-muted-foreground mt-0.5">
-                        Collections: {key.allowedCollectionIds?.length ? key.allowedCollectionIds.length : 'All accessible'}
-                        {' '}· Stream: {key.streamChunkSize || 10} chars / {key.streamDelayMs ?? 22}ms
+                        Stream: {key.streamChunkSize || 10} chars / {key.streamDelayMs ?? 22}ms
                       </p>
                     </div>
                     <div className="flex gap-1 ml-4">
@@ -263,8 +254,7 @@ Streaming chat:
 - Add ?format=sse only if your client needs Server-Sent Events metadata.`}</pre></div>
             <div><p className="text-[11px] text-muted-foreground mb-1">Error Codes</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`400 BAD_REQUEST              Missing/invalid request body
 401 Unauthorized             Missing/invalid API key
-403 API_SCOPE_DENIED         API key lacks chat/ingest scope
-403 API_COLLECTION_DENIED    API key cannot access collection
+403 API_SCOPE_DENIED         API key lacks required scope
 429 Too Many Requests        API rate limit hit
 502 LLM_AUTH_ERROR           Provider key rejected
 503 LLM_RATE_LIMIT           Provider quota/rate limit
@@ -287,19 +277,8 @@ while (true) {
   if (done) break;
   process.stdout.write(decoder.decode(value, { stream: true }));
 }`}</pre></div>
-            <div className="pt-1">
-              <p className="text-[11px] text-muted-foreground mb-1">Filter Notes</p>
-              <ul className="text-[11px] text-muted-foreground space-y-0.5 list-disc pl-4">
-                <li><code className="text-[10px]">filter</code> — optional object, any key/value pairs to filter Qdrant metadata</li>
-                <li><code className="text-[10px]">externalUserId</code> — auto-prefixed with <code className="text-[10px]">ext_</code> and matched against <code className="text-[10px]">shared_with</code></li>
-                <li>Other filter keys match exact values in vector payload metadata</li>
-                <li>Metadata set during ingest via <code className="text-[10px]">POST /api/ingest</code></li>
-              </ul>
-            </div>
           </div>
         </div>
-
-        {/* Ingest API Docs — moved to External Knowledge page */}
       </div>
 
       {/* Create/Edit Modal */}
@@ -337,7 +316,6 @@ while (true) {
                 <div className="grid grid-cols-2 gap-2 mt-1">
                   {[
                     { id: 'chat', label: 'Chat' },
-                    { id: 'ingest', label: 'Ingest' },
                   ].map(scope => (
                     <label key={scope.id} className="flex items-center gap-2 text-xs border rounded-lg px-3 py-2 cursor-pointer hover:bg-muted">
                       <input type="checkbox" checked={form.scopes.includes(scope.id)} onChange={() => toggleScope(scope.id)} className="w-3.5 h-3.5 rounded" />
@@ -345,20 +323,6 @@ while (true) {
                     </label>
                   ))}
                 </div>
-              </div>
-
-              <div>
-                <label className="text-[11px] text-muted-foreground">Collection Access</label>
-                <div className="mt-1 max-h-28 overflow-y-auto border rounded-lg p-2 space-y-1.5">
-                  {collections.map(col => (
-                    <label key={col._id} className="flex items-center gap-2 text-xs cursor-pointer">
-                      <input type="checkbox" checked={form.allowedCollectionIds.includes(col._id)} onChange={() => toggleCollection(col._id)} className="w-3.5 h-3.5 rounded" />
-                      <span className="truncate">{col.name}</span>
-                    </label>
-                  ))}
-                  {collections.length === 0 && <p className="text-[11px] text-muted-foreground">No external collections yet</p>}
-                </div>
-                <p className="text-[10px] text-muted-foreground mt-1">Leave empty to allow all collections in this API user's accessible organizations. Select one or more to restrict chat and ingest further.</p>
               </div>
 
               {/* Chat Mode */}

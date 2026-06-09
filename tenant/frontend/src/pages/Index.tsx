@@ -19,11 +19,11 @@ const SystemHealthPage = lazy(() => import("@/components/chat/SystemHealthPage")
 const VectorBrowserPage = lazy(() => import("@/components/chat/VectorBrowserPage").then(m => ({ default: m.VectorBrowserPage })));
 const MongoBrowserPage = lazy(() => import("@/components/chat/MongoBrowserPage").then(m => ({ default: m.MongoBrowserPage })));
 const GuardrailLogsPage = lazy(() => import("@/components/chat/GuardrailLogsPage").then(m => ({ default: m.GuardrailLogsPage })));
-const ExternalKnowledgePage = lazy(() => import("@/components/chat/ExternalKnowledgePage").then(m => ({ default: m.ExternalKnowledgePage })));
 const AiUsagePage = lazy(() => import("@/components/chat/AiUsagePage").then(m => ({ default: m.AiUsagePage })));
 const SmtpSettingsPage = lazy(() => import("@/components/chat/SmtpSettingsPage").then(m => ({ default: m.SmtpSettingsPage })));
 const UserSettingsPage = lazy(() => import("@/components/chat/UserSettingsPage").then(m => ({ default: m.UserSettingsPage })));
 const EmbedWidgetsPage = lazy(() => import("@/components/chat/EmbedWidgetsPage").then(m => ({ default: m.EmbedWidgetsPage })));
+const DataSourcesPage = lazy(() => import("@/components/chat/DataSourcesPage").then(m => ({ default: m.DataSourcesPage })));
 const WebViewPanel = lazy(() => import("@/components/chat/WebViewPanel").then(m => ({ default: m.WebViewPanel })));
 
 interface Message {
@@ -65,7 +65,7 @@ const Index = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const confirm = useConfirm();
   const [isLoading, setIsLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "external-knowledge" | "ai-usage" | "smtp-settings">("chat");
+  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "data-sources" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "ai-usage" | "smtp-settings">("chat");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
@@ -1058,7 +1058,6 @@ const Index = () => {
                 {currentPage === "vector-browser" && <VectorBrowserPage />}
                 {currentPage === "mongo-browser" && <MongoBrowserPage />}
                 {currentPage === "guardrail-logs" && <GuardrailLogsPage />}
-                {currentPage === "external-knowledge" && <ExternalKnowledgePage />}
                 {currentPage === "ai-usage" && <AiUsagePage />}
                 {currentPage === "smtp-settings" && <SmtpSettingsPage />}
                 {currentPage === "organizations" && <OrganizationsPage />}
@@ -1066,6 +1065,7 @@ const Index = () => {
                 {currentPage === "users" && <UsersPage />}
                 {currentPage === "user-settings" && <UserSettingsPage />}
                 {currentPage === "embed-widgets" && <EmbedWidgetsPage />}
+                {currentPage === "data-sources" && <DataSourcesPage />}
               </Suspense>
             )}
           </div>

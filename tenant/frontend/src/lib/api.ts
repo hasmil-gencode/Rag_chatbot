@@ -536,15 +536,42 @@ class API {
     return json
   }
 
-  async updateOrganization(orgId: string, name: string, type: string, parentId: string | null, publicEnabled?: boolean, systemPrompt?: string, mandatoryFields?: any[], broadFirstSearch?: boolean, broadFirstSearchChunks?: number) {
+  async updateOrganization(orgId: string, name: string, type: string, parentId: string | null, publicEnabled?: boolean, systemPrompt?: string, mandatoryFields?: any[], broadFirstSearch?: boolean, broadFirstSearchChunks?: number, roleMode?: string, routerModel?: string) {
     const res = await fetchWithAuth(`${API_BASE}/organizations/${orgId}`, {
       method: 'PUT',
       headers: this.getHeaders(),
-      body: JSON.stringify({ name, type, parentId, publicEnabled, systemPrompt, mandatoryFields, broadFirstSearch, broadFirstSearchChunks }),
+      body: JSON.stringify({ name, type, parentId, publicEnabled, systemPrompt, mandatoryFields, broadFirstSearch, broadFirstSearchChunks, roleMode, routerModel }),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to update organization')
     return json
+  }
+
+  // AI Roles
+  async getAiRoles(orgId: string) {
+    const res = await fetchWithAuth(`${API_BASE}/organizations/${orgId}/ai-roles`, { headers: this.getHeaders() })
+    if (!res.ok) throw new Error('Failed to get roles')
+    return res.json()
+  }
+
+  async createAiRole(orgId: string, data: { name: string; description: string; systemPrompt: string; fileIds: string[]; isDefault: boolean }) {
+    const res = await fetchWithAuth(`${API_BASE}/organizations/${orgId}/ai-roles`, { method: 'POST', headers: this.getHeaders(), body: JSON.stringify(data) })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to create role')
+    return json
+  }
+
+  async updateAiRole(orgId: string, roleId: string, data: { name: string; description: string; systemPrompt: string; fileIds: string[]; isDefault: boolean }) {
+    const res = await fetchWithAuth(`${API_BASE}/organizations/${orgId}/ai-roles/${roleId}`, { method: 'PUT', headers: this.getHeaders(), body: JSON.stringify(data) })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to update role')
+    return json
+  }
+
+  async deleteAiRole(orgId: string, roleId: string) {
+    const res = await fetchWithAuth(`${API_BASE}/organizations/${orgId}/ai-roles/${roleId}`, { method: 'DELETE', headers: this.getHeaders() })
+    if (!res.ok) throw new Error('Failed to delete role')
+    return res.json()
   }
   
   async testWebhook(url: string) {
@@ -947,46 +974,50 @@ class API {
     if (!res.ok) return []
     return res.json()
   }
-  // External Knowledge Collections
-  async getExternalCollections() {
-    const res = await fetchWithAuth(`${API_BASE}/external-collections`, { headers: this.getHeaders() })
-    if (!res.ok) throw new Error('Failed to get collections')
+
+  // Data Sources
+  async getDataSources() {
+    const res = await fetchWithAuth(`${API_BASE}/data-sources`, { headers: this.getHeaders() })
+    if (!res.ok) throw new Error('Failed to get data sources')
     return res.json()
   }
-  async createExternalCollection(data: { name: string; description?: string; organizationIds?: string[]; metadataSchema?: any[] }) {
-    const res = await fetchWithAuth(`${API_BASE}/external-collections`, { method: 'POST', headers: this.getHeaders(), body: JSON.stringify(data) })
+  async createDataSource(data: { name: string; description?: string; columns: { name: string; type: string; description: string }[]; organizationIds?: string[] }) {
+    const res = await fetchWithAuth(`${API_BASE}/data-sources`, { method: 'POST', headers: this.getHeaders(), body: JSON.stringify(data) })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed')
     return json
   }
-  async updateExternalCollection(id: string, data: { name: string; description?: string; organizationIds?: string[]; metadataSchema?: any[] }) {
-    const res = await fetchWithAuth(`${API_BASE}/external-collections/${id}`, { method: 'PUT', headers: this.getHeaders(), body: JSON.stringify(data) })
+  async updateDataSource(id: string, data: { name: string; description?: string; organizationIds?: string[] }) {
+    const res = await fetchWithAuth(`${API_BASE}/data-sources/${id}`, { method: 'PUT', headers: this.getHeaders(), body: JSON.stringify(data) })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed')
     return json
   }
-  async deleteExternalCollection(id: string) {
-    const res = await fetchWithAuth(`${API_BASE}/external-collections/${id}`, { method: 'DELETE', headers: this.getHeaders() })
+  async deleteDataSource(id: string) {
+    const res = await fetchWithAuth(`${API_BASE}/data-sources/${id}`, { method: 'DELETE', headers: this.getHeaders() })
+    if (!res.ok) throw new Error('Failed to delete')
+    return res.json()
+  }
+  async getDataSourceRecords(id: string, page = 1) {
+    const res = await fetchWithAuth(`${API_BASE}/data-sources/${id}/records?page=${page}`, { headers: this.getHeaders() })
+    if (!res.ok) throw new Error('Failed to get records')
+    return res.json()
+  }
+  async insertDataSourceRecords(id: string, records: any[], mode = 'append') {
+    const res = await fetchWithAuth(`${API_BASE}/data-sources/${id}/records`, { method: 'POST', headers: this.getHeaders(), body: JSON.stringify({ records, mode }) })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed')
     return json
   }
-  async getExternalIngestLogs(id: string) {
-    const res = await fetchWithAuth(`${API_BASE}/external-collections/${id}/ingest-logs`, { headers: this.getHeaders() })
-    const json = await res.json()
-    if (!res.ok) throw new Error(json.error || 'Failed to get ingest logs')
-    return json
+  async clearDataSource(id: string) {
+    const res = await fetchWithAuth(`${API_BASE}/data-sources/${id}/clear`, { method: 'POST', headers: this.getHeaders() })
+    if (!res.ok) throw new Error('Failed to clear')
+    return res.json()
   }
-  async clearExternalCollectionVectors(id: string) {
-    const res = await fetchWithAuth(`${API_BASE}/external-collections/${id}/clear-vectors`, { method: 'POST', headers: this.getHeaders() })
+  async queryDataSource(sql: string) {
+    const res = await fetchWithAuth(`${API_BASE}/data-sources/query`, { method: 'POST', headers: this.getHeaders(), body: JSON.stringify({ sql }) })
     const json = await res.json()
-    if (!res.ok) throw new Error(json.error || 'Failed to clear vectors')
-    return json
-  }
-  async searchExternalCollection(id: string, data: { query: string; limit?: number; filter?: Record<string, any> }) {
-    const res = await fetchWithAuth(`${API_BASE}/external-collections/${id}/search`, { method: 'POST', headers: this.getHeaders(), body: JSON.stringify(data) })
-    const json = await res.json()
-    if (!res.ok) throw new Error(json.error || 'Failed to search collection')
+    if (!res.ok) throw new Error(json.error || 'Query failed')
     return json
   }
 }

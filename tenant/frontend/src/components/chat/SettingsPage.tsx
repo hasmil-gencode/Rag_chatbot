@@ -332,11 +332,9 @@ export const SettingsPage = () => {
               <div className="p-4 space-y-4">
                 <div>
                   <label className="text-[11px] text-muted-foreground">Provider</label>
-                  <select value={settings.chatLlmProvider || 'gemini'} onChange={(e) => { const p = e.target.value; const defaults: Record<string,string> = {gemini:'gemini-2.5-flash',openai:'gpt-4o-mini',groq:'llama-3.3-70b-versatile'}; updateSettings({chatLlmProvider: p, chatLlmModel: defaults[p] || '', chatLlmApiKey: settings[`chatLlmApiKey_${p}`] || ''}); loadProviderModels(p); }}
+                  <select value={settings.chatLlmProvider || 'gemini'} onChange={(e) => { const p = e.target.value; const defaults: Record<string,string> = {gemini:'gemini-2.5-flash'}; updateSettings({chatLlmProvider: p, chatLlmModel: defaults[p] || '', chatLlmApiKey: settings[`chatLlmApiKey_${p}`] || ''}); loadProviderModels(p); }}
                     className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
                     <option value="gemini">Gemini</option>
-                    <option value="openai">OpenAI</option>
-                    <option value="groq">Groq</option>
                   </select>
                 </div>
                 <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys.</p>
@@ -349,8 +347,6 @@ export const SettingsPage = () => {
                       ) : (
                         <>
                           {settings.chatLlmProvider === 'gemini' && <><option value="gemini-2.5-flash">gemini-2.5-flash</option><option value="gemini-2.5-pro">gemini-2.5-pro</option></>}
-                          {settings.chatLlmProvider === 'openai' && <><option value="gpt-4o">gpt-4o</option><option value="gpt-4o-mini">gpt-4o-mini</option></>}
-                          {settings.chatLlmProvider === 'groq' && <><option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile</option><option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option></>}
                         </>
                       )}
                     </select>
@@ -369,13 +365,12 @@ export const SettingsPage = () => {
                   <label className="text-[11px] text-muted-foreground">Provider</label>
                   <select value={settings.chatEmbeddingProvider || 'gemini'} onChange={(e) => {
                     const p = e.target.value;
-                    const defaults: Record<string,string> = { gemini: 'gemini-embedding-001', openai: 'text-embedding-3-small', mistral: 'mistral-embed' };
+                    const defaults: Record<string,string> = { gemini: 'gemini-embedding-001', mistral: 'mistral-embed' };
                     updateSettings({ chatEmbeddingProvider: p, chatEmbeddingModel: defaults[p] || '' });
                   }}
                     className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
                     <option value="gemini">Gemini — 3072d — $0.15/1M tokens</option>
                     <option value="mistral">Mistral — 1024d — $0.01/1M tokens</option>
-                    <option value="openai">OpenAI — 1536d — $0.02/1M tokens</option>
                   </select>
                 </div>
                 <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys.</p>
@@ -588,28 +583,9 @@ export const SettingsPage = () => {
                   <select value={settings.voiceMode || "gemini"} onChange={(e) => updateSetting("voiceMode", e.target.value)}
                     className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
                     <option value="gemini">Gemini AI (Best quality, mixed language)</option>
-                    <option value="mistral">Mistral Voxtral (Cheap, accurate, 13 langs)</option>
                   </select>
                 </div>
-                {settings.voiceMode === "gemini" && (
-                  <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys (Gemini).</p>
-                )}
-                {settings.voiceMode === "mistral" && (
-                  <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys (Mistral). Supports EN, ZH, HI, ES, AR, FR, PT, RU, DE, JA, KO, IT, NL.</p>
-                )}
-                {settings.voiceMode !== "gemini" && (
-                  <div>
-                    <label className="text-[11px] text-muted-foreground">Voice Language</label>
-                    <select value={settings.voiceLanguage || "auto"} onChange={(e) => updateSetting("voiceLanguage", e.target.value)}
-                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring">
-                      <option value="auto">Auto Detect</option>
-                      <option value="ms">Malay</option>
-                      <option value="en">English</option>
-                      <option value="zh">Chinese</option>
-                      <option value="ta">Tamil</option>
-                    </select>
-                  </div>
-                )}
+                <p className="text-[10px] text-muted-foreground">API key managed in Provider Keys (Gemini).</p>
               </div>
             </div>
 

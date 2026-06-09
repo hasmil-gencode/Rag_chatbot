@@ -15,7 +15,8 @@ import { GoogleAuth } from 'google-auth-library';
 import { processUploadedFile, deleteFileVectors } from './uploadPipeline.js';
 import { QdrantClient } from '@qdrant/js-client-rest';
 import OpenAI from 'openai';
-import { processBrowserChat, processBrowserChatStream, processPublicChat, processPublicChatStream, callLLM, streamLLM, checkGuardrail } from './chatPipeline.js';
+import mysql from 'mysql2/promise';
+import { processBrowserChat, processBrowserChatStream, processPublicChat, processPublicChatStream, callLLM, streamLLM, checkGuardrail, setMysqlPool } from './chatPipeline.js';
 import { registerApiKeyRoutes } from './routes/apiKeys.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -183,6 +184,23 @@ await client.connect();
 db = client.db(); // Use database from connection string
 console.log(`Connected to MongoDB (${db.databaseName})`);
 
+// MySQL connection pool for Data Sources
+let mysqlPool = null;
+try {
+  mysqlPool = mysql.createPool({
+    host: process.env.MYSQL_HOST || 'mysql',
+    port: parseInt(process.env.MYSQL_PORT) || 3306,
+    user: process.env.MYSQL_USER || 'root',
+    password: process.env.MYSQL_PASSWORD || 'genia_mysql_2024',
+    database: process.env.MYSQL_DATABASE || 'genia_data',
+    waitForConnections: true,
+    connectionLimit: 10,
+  });
+  await mysqlPool.query('SELECT 1');
+  console.log('Connected to MySQL (genia_data)');
+  setMysqlPool(mysqlPool);
+} catch (e) { console.warn('MySQL not available:', e.message); }
+
 await ensureMongoIndexes();
 
 async function ensureMongoIndexes() {
@@ -224,8 +242,6 @@ if (!settingsExists) {
     googleTtsApiKey: '',
     geminiSttApiKey: '',
     geminiTtsApiKey: '',
-    elevenlabsApiKey: '',
-    elevenlabsVoice: 'onwK4e9ZLuTAKqWW03F9',
     gclasServiceAccount: '',
     gclasLanguage: 'auto',
     gclasVoice: 'en-US-Neural2-C',
@@ -236,7 +252,6 @@ if (!settingsExists) {
     chatWebhook: '',
     uploadWebhook: '',
     transcribeWebhook: '',
-    formSubmissionWebhook: '',
     s3Bucket: '',
     s3Region: '',
     s3AccessKey: '',
@@ -1318,6 +1333,57 @@ app.put('/api/organizations/:id/system-prompt', auth, async (req, res) => {
   } catch (error) { res.status(500).json({ error: 'Failed to update system prompt' }); }
 });
 
+// ─── AI Roles (Multi-role per org) ────────────────────────────
+app.get('/api/organizations/:id/ai-roles', auth, async (req, res) => {
+  try {
+    if (req.user.role === 'user') return res.status(403).json({ error: 'Admin only' });
+    const org = await db.collection('organizations').findOne({ _id: new ObjectId(req.params.id) });
+    if (!org) return res.status(404).json({ error: 'Org not found' });
+    res.json(org.roles || []);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/organizations/:id/ai-roles', auth, async (req, res) => {
+  try {
+    if (req.user.role === 'user') return res.status(403).json({ error: 'Admin only' });
+    const { name, description, systemPrompt, fileIds, isDefault } = req.body;
+    if (!name) return res.status(400).json({ error: 'Name required' });
+    const role = { id: new ObjectId().toString(), name, description: description || '', systemPrompt: systemPrompt || '', fileIds: fileIds || [], isDefault: isDefault || false, createdAt: new Date() };
+    // If isDefault, unset other defaults
+    if (isDefault) {
+      await db.collection('organizations').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { 'roles.$[].isDefault': false } });
+    }
+    await db.collection('organizations').updateOne({ _id: new ObjectId(req.params.id) }, { $push: { roles: role } });
+    await logAudit(req.user.id, 'org.role.create', `Created AI role: ${name}`);
+    res.json({ success: true, role });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/organizations/:id/ai-roles/:roleId', auth, async (req, res) => {
+  try {
+    if (req.user.role === 'user') return res.status(403).json({ error: 'Admin only' });
+    const { name, description, systemPrompt, fileIds, isDefault } = req.body;
+    if (isDefault) {
+      await db.collection('organizations').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { 'roles.$[].isDefault': false } });
+    }
+    await db.collection('organizations').updateOne(
+      { _id: new ObjectId(req.params.id), 'roles.id': req.params.roleId },
+      { $set: { 'roles.$.name': name, 'roles.$.description': description || '', 'roles.$.systemPrompt': systemPrompt || '', 'roles.$.fileIds': fileIds || [], 'roles.$.isDefault': isDefault || false, 'roles.$.updatedAt': new Date() } }
+    );
+    await logAudit(req.user.id, 'org.role.update', `Updated AI role: ${name}`);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/organizations/:id/ai-roles/:roleId', auth, async (req, res) => {
+  try {
+    if (req.user.role === 'user') return res.status(403).json({ error: 'Admin only' });
+    await db.collection('organizations').updateOne({ _id: new ObjectId(req.params.id) }, { $pull: { roles: { id: req.params.roleId } } });
+    await logAudit(req.user.id, 'org.role.delete', `Deleted AI role: ${req.params.roleId}`);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Update organization (Developer only)
 app.put('/api/organizations/:id', auth, hasPermission(), async (req, res) => {
   try {
@@ -1336,6 +1402,8 @@ app.put('/api/organizations/:id', auth, hasPermission(), async (req, res) => {
     if (req.body.mandatoryFields !== undefined) updateFields.mandatoryFields = req.body.mandatoryFields;
     if (req.body.broadFirstSearch !== undefined) updateFields.broadFirstSearch = req.body.broadFirstSearch;
     if (req.body.broadFirstSearchChunks !== undefined) updateFields.broadFirstSearchChunks = req.body.broadFirstSearchChunks;
+    if (req.body.roleMode !== undefined) updateFields.roleMode = req.body.roleMode;
+    if (req.body.routerModel !== undefined) updateFields.routerModel = req.body.routerModel;
     
     await db.collection('organizations').updateOne(
       { _id: new ObjectId(req.params.id) },
@@ -2827,7 +2895,6 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     
     // Get sharedWith from request (array of org IDs)
     const sharedWith = req.body.sharedWith ? JSON.parse(req.body.sharedWith) : [];
-    const fileType = req.body.type || 'document'; // 'document' or 'form'
     const isPublic = req.body.isPublic === 'true' || req.body.isPublic === true;
     
     // Check storage limit for user's org (plan is template, each org has own limit)
@@ -2903,10 +2970,9 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       groupId: userGroupId,
       organizationId: userOrgId,
       sharedWith: sharedWith.map(id => new ObjectId(id)), // Array of org IDs
-      type: fileType,
+      type: 'document',
       isPublic: isPublic,
-      isDownloadable: fileType === 'form',
-      isVectorized: fileType === 'document',
+      isVectorized: true,
       uploadedBy: uploaderName,
       uploadedByEmail: uploaderEmail,
       name: req.file.originalname,
@@ -2925,16 +2991,15 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       createdAt: new Date()
     });
     
-    // Only process documents (not forms)
-    if (fileType === 'document') {
-      // SSE for progress
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
+    // Process document for vectorization
+    // SSE for progress
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
 
-      const sendProgress = (step, detail) => {
-        try { res.write(`data: ${JSON.stringify({ step, detail })}\n\n`); } catch {}
-      };
+    const sendProgress = (step, detail) => {
+      try { res.write(`data: ${JSON.stringify({ step, detail })}\n\n`); } catch {};
+    };
       sendProgress('upload', 'File saved, starting processing...');
 
       try {
@@ -2975,96 +3040,9 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         res.write(`data: ${JSON.stringify({ success: false, error: pipelineError.message })}\n\n`);
         res.end();
       }
-    } else {
-      // For forms, just return success without processing
-      res.json({ 
-        success: true, 
-        fileId: result.insertedId,
-        message: 'Form uploaded successfully'
-      });
-    }
   } catch (error) {
     console.error('Upload error:', error.message);
     res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Fuzzy match helper function
-function calculateSimilarity(str1, str2) {
-  const s1 = str1.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const s2 = str2.toLowerCase().replace(/[^a-z0-9]/g, '');
-  
-  // Simple substring match
-  if (s1.includes(s2) || s2.includes(s1)) return 0.9;
-  
-  // Calculate Levenshtein distance
-  const matrix = [];
-  for (let i = 0; i <= s2.length; i++) {
-    matrix[i] = [i];
-  }
-  for (let j = 0; j <= s1.length; j++) {
-    matrix[0][j] = j;
-  }
-  for (let i = 1; i <= s2.length; i++) {
-    for (let j = 1; j <= s1.length; j++) {
-      if (s2.charAt(i - 1) === s1.charAt(j - 1)) {
-        matrix[i][j] = matrix[i - 1][j - 1];
-      } else {
-        matrix[i][j] = Math.min(
-          matrix[i - 1][j - 1] + 1,
-          matrix[i][j - 1] + 1,
-          matrix[i - 1][j] + 1
-        );
-      }
-    }
-  }
-  const distance = matrix[s2.length][s1.length];
-  const maxLen = Math.max(s1.length, s2.length);
-  return 1 - (distance / maxLen);
-}
-
-// Check downloadable files with fuzzy match
-app.post('/api/files/check-downloadable', auth, validateRequestBody({
-  fileNames: { required: true, type: 'array', arrayOf: 'string' },
-}), async (req, res) => {
-  try {
-    const { fileNames } = req.body;
-    
-    if (!fileNames || !Array.isArray(fileNames) || fileNames.length === 0) {
-      return res.json([]);
-    }
-    
-    // Get all downloadable forms
-    const allForms = await db.collection('files').find({
-      type: 'form',
-      isDownloadable: true
-    }).toArray();
-    
-    // Fuzzy match each filename
-    const matches = [];
-    for (const searchName of fileNames) {
-      const scored = allForms.map(form => ({
-        id: form._id,
-        name: form.name,
-        uploadedBy: form.uploadedBy,
-        uploadedAt: form.uploadedAt,
-        similarity: calculateSimilarity(searchName, form.name)
-      }))
-      .filter(f => f.similarity > 0.7) // Threshold 70% to reduce false positives
-      .sort((a, b) => b.similarity - a.similarity);
-      
-      if (scored.length > 0) {
-        matches.push({
-          searchTerm: searchName,
-          files: scored
-        });
-      }
-    }
-    
-    res.json(matches);
-  } catch (error) {
-    console.error('Check downloadable error:', error.message);
-    res.status(500).json({ error: error.message });
   }
 });
 
@@ -3210,65 +3188,6 @@ app.get('/api/files', auth, async (req, res) => {
   }
 });
 
-// Get forms (type='form')
-app.get('/api/forms', auth, async (req, res) => {
-  try {
-    let query = { type: 'form' };
-    
-    // Developer sees all forms
-    if (req.user.role !== 'developer') {
-      const userId = req.user.id.toString();
-      const userAssignments = await db.collection('user_organization_assignments').find({ userId }).toArray();
-      
-      if (userAssignments.length === 0) {
-        return res.json([]);
-      }
-      
-      const userOrgIds = userAssignments.map(a => a.organizationId);
-      // Get all children orgs for hierarchy access
-      const allOrgs = await db.collection('organizations').find({}).toArray();
-      const allAccessibleOrgs = [...userOrgIds.map(id => id.toString())];
-      const findChildren = (parentIds) => {
-        const children = allOrgs.filter(o => o.parentId && parentIds.includes(o.parentId.toString()));
-        if (children.length) { const childIds = children.map(c => c._id.toString()); allAccessibleOrgs.push(...childIds); findChildren(childIds); }
-      };
-      findChildren(allAccessibleOrgs);
-      
-      query.$or = [
-        { sharedWith: { $size: 0 } },
-        { sharedWith: { $in: allAccessibleOrgs.map(id => id.toString()) } }
-      ];
-    }
-    
-    const forms = await db.collection('files').find(query).sort({ uploadedAt: -1 }).toArray();
-    
-    // Include shared org names
-    const formsWithInfo = await Promise.all(forms.map(async (f) => {
-      let sharedOrgNames = [];
-      if (f.sharedWith && f.sharedWith.length > 0) {
-        const orgs = await db.collection('organizations').find({ 
-          _id: { $in: f.sharedWith.map(id => new ObjectId(id)) } 
-        }).toArray();
-        sharedOrgNames = orgs.map(o => o.name);
-      }
-      
-      return {
-        _id: f._id,
-        name: f.name,
-        uploadedAt: f.uploadedAt,
-        uploadedBy: f.uploadedBy || 'Unknown',
-        userId: f.userId,
-        sharedWith: sharedOrgNames
-      };
-    }));
-    
-    res.json(formsWithInfo);
-  } catch (error) {
-    console.error('Get forms error:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // Download file endpoint with tracking
 app.get('/api/files/:id/view', auth, async (req, res) => {
   try {
@@ -3281,10 +3200,6 @@ app.get('/api/files/:id/view', auth, async (req, res) => {
 
     if (!file) {
       return res.status(404).json({ error: 'File not found' });
-    }
-
-    if (file.type === 'form' && !file.isDownloadable) {
-      return res.status(404).json({ error: 'File not found or not downloadable' });
     }
 
     if (req.user.role !== 'developer') {
@@ -3385,11 +3300,6 @@ app.get('/api/files/:id/download', auth, async (req, res) => {
     
     if (!file) {
       return res.status(404).json({ error: 'File not found' });
-    }
-
-    // Forms must be explicitly downloadable
-    if (file.type === 'form' && !file.isDownloadable) {
-      return res.status(404).json({ error: 'File not found or not downloadable' });
     }
 
     // Access control for non-developers when file is restricted
@@ -3800,8 +3710,6 @@ app.get('/api/settings', auth, hasPermission(), async (req, res) => {
     googleTtsApiKey: settings.googleTtsApiKey || '',
     geminiSttApiKey: settings.geminiSttApiKey || pk.gemini || '',
     geminiTtsApiKey: settings.geminiTtsApiKey || pk.gemini || '',
-    elevenlabsApiKey: settings.elevenlabsApiKey || pk.elevenlabs || '',
-    elevenlabsVoice: settings.elevenlabsVoice || 'onwK4e9ZLuTAKqWW03F9',
     gclasServiceAccount: settings.gclasServiceAccount || pk.google_cloud || '',
     gclasLanguage: settings.gclasLanguage || 'auto',
     gclasVoice: settings.gclasVoice || 'en-US-Neural2-C',
@@ -3812,7 +3720,6 @@ app.get('/api/settings', auth, hasPermission(), async (req, res) => {
     chatWebhook: settings.chatWebhook || '',
     uploadWebhook: settings.uploadWebhook || '',
     transcribeWebhook: settings.transcribeWebhook || '',
-    formSubmissionWebhook: settings.formSubmissionWebhook || '',
     s3Bucket: settings.s3Bucket || '',
     s3Region: settings.s3Region || '',
     s3AccessKey: settings.s3AccessKey || '',
@@ -3937,10 +3844,8 @@ app.get('/api/provider-keys', auth, hasPermission(), async (req, res) => {
   const s = await db.collection('settings').findOne({ _id: 'config' }) || {};
   const seeded = {};
   if (s.geminiSttApiKey || s.geminiTtsApiKey) seeded.gemini = s.geminiSttApiKey || s.geminiTtsApiKey;
-  if (s['embeddingApiKey_openai']) seeded.openai = s['embeddingApiKey_openai'];
   if (s['ocrApiKey_mistral'] || s['embeddingApiKey_mistral']) seeded.mistral = s['ocrApiKey_mistral'] || s['embeddingApiKey_mistral'];
   if (s.gclasServiceAccount) seeded.google_cloud = s.gclasServiceAccount;
-  if (s.groqApiKey) seeded.groq = s.groqApiKey;
   res.json(seeded);
 });
 
@@ -3954,10 +3859,8 @@ app.put('/api/provider-keys', auth, hasPermission(), async (req, res) => {
   if (!orgId) {
     const sync = {};
     if (keys.gemini) { sync.geminiSttApiKey = keys.gemini; sync.geminiTtsApiKey = keys.gemini; sync['chatLlmApiKey_gemini'] = keys.gemini; sync['embeddingApiKey_gemini'] = keys.gemini; sync.chatEmbeddingApiKey = keys.gemini; }
-    if (keys.openai) { sync['embeddingApiKey_openai'] = keys.openai; sync['chatLlmApiKey_openai'] = keys.openai; }
     if (keys.mistral) { sync['ocrApiKey_mistral'] = keys.mistral; sync['embeddingApiKey_mistral'] = keys.mistral; sync['chatLlmApiKey_mistral'] = keys.mistral; }
     if (keys.google_cloud) { sync.gclasServiceAccount = keys.google_cloud; }
-    if (keys.groq) { sync.groqApiKey = keys.groq; sync['chatLlmApiKey_groq'] = keys.groq; }
     if (Object.keys(sync).length) await db.collection('settings').updateOne({ _id: 'config' }, { $set: sync }, { upsert: true });
   }
   res.json({ success: true });
@@ -4359,30 +4262,10 @@ app.post('/api/transcribe', auth, upload.single('audio'), async (req, res) => {
     const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
     const userOrgId = await getUserOrgId(req.user.id);
     const pk = await resolveProviderKeys(userOrgId);
-    const voiceMode = settings?.voiceMode || 'browser';
+    const voiceMode = settings?.voiceMode || 'gemini';
     const voiceLanguage = settings?.voiceLanguage || 'auto';
     
-    if (voiceMode === 'local') {
-      // Use local Whisper service
-      const formData = new FormData();
-      formData.append('audio_file', fs.createReadStream(req.file.path), {
-        filename: req.file.originalname,
-        contentType: req.file.mimetype
-      });
-      
-      let whisperUrl = process.env.WHISPER_API_URL + '/asr?task=transcribe&output=json';
-      if (voiceLanguage !== 'auto') {
-        whisperUrl += `&language=${voiceLanguage}`;
-      }
-      
-      const { data } = await axios.post(whisperUrl, formData, {
-        headers: formData.getHeaders()
-      });
-      
-      fs.unlinkSync(req.file.path);
-      res.json({ text: data.text || '', language: voiceLanguage });
-      
-    } else if (voiceMode === 'gemini') {
+    if (voiceMode === 'gemini') {
       // Use Gemini AI for transcription
       const geminiSttApiKey = settings?.geminiSttApiKey || pk.gemini || '';
       
@@ -4432,60 +4315,6 @@ app.post('/api/transcribe', auth, upload.single('audio'), async (req, res) => {
         console.error('Gemini API Error:', geminiError.message);
         return res.status(500).json({ 
           error: `Gemini error: ${geminiError.message}. Please check your API key.` 
-        });
-      }
-      
-    } else if (voiceMode === 'mistral') {
-      // Use Mistral Voxtral for transcription
-      const mistralKey = pk.mistral || '';
-      if (!mistralKey) { fs.unlinkSync(req.file.path); return res.status(400).json({ error: 'Mistral API key not configured in Provider Keys.' }); }
-      try {
-        const formData = new FormData();
-        formData.append('file', fs.createReadStream(req.file.path), { filename: 'audio.webm', contentType: req.file.mimetype });
-        formData.append('model', 'voxtral-mini-latest');
-        if (voiceLanguage !== 'auto') formData.append('language', voiceLanguage);
-        const { data } = await axios.post('https://api.mistral.ai/v1/audio/transcriptions', formData, {
-          headers: { ...formData.getHeaders(), 'Authorization': `Bearer ${mistralKey}` }, timeout: 60000
-        });
-        fs.unlinkSync(req.file.path);
-        res.json({ text: data.text || '', language: voiceLanguage });
-      } catch (e) {
-        fs.unlinkSync(req.file.path);
-        console.error('Mistral STT error:', e.response?.data || e.message);
-        return res.status(500).json({ error: `Mistral STT error: ${e.response?.data?.message || e.message}` });
-      }
-
-    } else if (voiceMode === 'elevenlabs') {
-      // Use ElevenLabs for transcription
-      const elevenlabsApiKey = settings?.elevenlabsApiKey || pk.elevenlabs || '';
-      
-      if (!elevenlabsApiKey) {
-        fs.unlinkSync(req.file.path);
-        return res.status(400).json({ error: 'ElevenLabs API Key not configured. Please set it in Settings.' });
-      }
-
-      try {
-        const formData = new FormData();
-        formData.append('audio', fs.createReadStream(req.file.path), {
-          filename: 'audio.webm',
-          contentType: 'audio/webm'
-        });
-
-        const { data } = await axios.post('https://api.elevenlabs.io/v1/audio-to-text', formData, {
-          headers: {
-            ...formData.getHeaders(),
-            'xi-api-key': elevenlabsApiKey
-          },
-          timeout: 30000
-        });
-
-        fs.unlinkSync(req.file.path);
-        res.json({ text: data.text || '', language: voiceLanguage });
-      } catch (elevenlabsError) {
-        fs.unlinkSync(req.file.path);
-        console.error('ElevenLabs API Error:', elevenlabsError.message);
-        return res.status(500).json({ 
-          error: `ElevenLabs error: ${elevenlabsError.response?.data?.detail || elevenlabsError.message}` 
         });
       }
       
@@ -4634,70 +4463,6 @@ app.post('/api/tts', auth, async (req, res) => {
       } catch (geminiError) {
         console.error('Gemini TTS error:', geminiError.response?.data || geminiError.message);
         return res.status(500).json({ error: 'Gemini TTS failed: ' + (geminiError.response?.data?.error?.message || geminiError.message) });
-      }
-    } else if (ttsMode === 'mistral') {
-      // Use Mistral Voxtral TTS
-      const mistralKey = pk.mistral || '';
-      if (!mistralKey) return res.status(400).json({ error: 'Mistral API key not configured in Provider Keys.' });
-      try {
-        let voiceId = settings?.mistralVoiceId || null;
-        // If no voice configured, fetch first available preset voice
-        if (!voiceId) {
-          try {
-            const vr = await axios.get('https://api.mistral.ai/v1/audio/voices', { headers: { 'Authorization': `Bearer ${mistralKey}` }, timeout: 10000 });
-            const voices = vr.data?.data || vr.data || [];
-            if (voices.length > 0) voiceId = voices[0].id;
-          } catch (e) { console.error('Failed to list Mistral voices:', e.message); }
-        }
-        if (!voiceId) return res.status(400).json({ error: 'No Mistral voice available. Create a voice in Mistral console or set mistralVoiceId in settings.' });
-        const body = { model: 'voxtral-mini-tts-2603', input: text, voice_id: voiceId, response_format: 'mp3' };
-        const { data } = await axios.post('https://api.mistral.ai/v1/audio/speech', body, {
-          headers: { 'Authorization': `Bearer ${mistralKey}`, 'Content-Type': 'application/json' }, timeout: 30000
-        });
-        const audioBuffer = Buffer.from(data.audio_data, 'base64');
-        res.set('Content-Type', 'audio/mpeg');
-        res.send(audioBuffer);
-      } catch (e) {
-        console.error('Mistral TTS error:', e.response?.data || e.message);
-        return res.status(500).json({ error: 'Mistral TTS failed: ' + (e.response?.data?.message || e.message) });
-      }
-    } else if (ttsMode === 'elevenlabs') {
-      // Use ElevenLabs TTS (fast, high quality)
-      const elevenlabsApiKey = settings?.elevenlabsApiKey || pk.elevenlabs || '';
-      if (!elevenlabsApiKey) {
-        return res.status(400).json({ error: 'ElevenLabs API Key not configured. Please set it in Settings.' });
-      }
-
-      try {
-        const voiceId = settings?.elevenlabsVoice || 'onwK4e9ZLuTAKqWW03F9';
-
-        const requestBody = {
-          text,
-          model_id: 'eleven_multilingual_v2',
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.75
-          }
-        };
-
-        const { data } = await axios.post(
-          `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-          requestBody,
-          {
-            timeout: 15000,
-            headers: {
-              'Content-Type': 'application/json',
-              'xi-api-key': elevenlabsApiKey
-            },
-            responseType: 'arraybuffer'
-          }
-        );
-
-        res.set('Content-Type', 'audio/mpeg');
-        res.send(Buffer.from(data));
-      } catch (elevenlabsError) {
-        console.error('ElevenLabs TTS error:', elevenlabsError.response?.data || elevenlabsError.message);
-        return res.status(500).json({ error: 'ElevenLabs TTS failed: ' + (elevenlabsError.response?.data?.detail || elevenlabsError.message) });
       }
     } else if (ttsMode === 'gclas') {
       // Google Cloud Long Audio Synthesis with service account
@@ -5982,476 +5747,168 @@ app.get('/api/ai-usage', auth, async (req, res) => {
   res.json({ byHour, byProvider, byType, total, errors, recent, days: parseInt(days) });
 });
 
-// ─── External Knowledge Collections ───────────────────────────
-function normalizeOrganizationIds(organizationIds = []) {
-  return organizationIds
-    .map(id => id?.toString?.() || id)
-    .filter(id => ObjectId.isValid(id))
-    .map(id => new ObjectId(id));
-}
+// ─── Data Sources (MySQL Text-to-SQL) ─────────────────────────
 
-function extractExternalRecordText(record) {
-  if (typeof record === 'string') return record.trim();
-  if (!record || typeof record !== 'object') return '';
-  if (typeof record.content === 'string' && record.content.trim()) return record.content.trim();
-  const { metadata, externalUserId, content, ...fields } = record;
-  return Object.entries(fields)
-    .filter(([, value]) => value !== null && value !== undefined && typeof value !== 'object')
-    .map(([key, value]) => `${key}: ${value}`)
-    .join(', ')
-    .trim();
-}
-
-function getExternalRecordId(collectionId, record, index) {
-  const meta = record && typeof record === 'object' && !Array.isArray(record) && record.metadata && typeof record.metadata === 'object'
-    ? record.metadata
-    : {};
-  const rawId = typeof record === 'object' && record
-    ? record.id || record._id || record.externalId || meta.id || meta.externalId
-    : null;
-  const stablePart = rawId ? rawId.toString() : `${Date.now()}-${index}-${Math.random()}`;
-  const hash = crypto.createHash('sha256').update(`${collectionId}:${stablePart}`).digest('hex');
-  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
-}
-
-app.get('/api/external-collections', auth, async (req, res) => {
+// List data sources
+app.get('/api/data-sources', auth, async (req, res) => {
   if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
-  const cols = await db.collection('external_collections').find().sort({ createdAt: -1 }).toArray();
-  const latestLogs = await db.collection('external_ingest_logs').aggregate([
-    { $sort: { createdAt: -1 } },
-    { $group: { _id: '$collectionId', latest: { $first: '$$ROOT' }, runs: { $sum: 1 }, errors: { $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] } } } },
-  ]).toArray();
-  const logMap = new Map(latestLogs.map(row => [row._id, row]));
-  res.json(cols.map(col => {
-    const stats = logMap.get(col._id.toString());
-    return {
-      ...col,
-      lastIngestStatus: col.lastIngestStatus || stats?.latest?.status || 'never',
-      lastIngestAt: col.lastIngestAt || stats?.latest?.completedAt || stats?.latest?.createdAt || null,
-      lastIngestCount: col.lastIngestCount ?? stats?.latest?.ingested ?? 0,
-      lastIngestSkipped: col.lastIngestSkipped ?? stats?.latest?.skipped ?? 0,
-      lastIngestDurationMs: col.lastIngestDurationMs ?? stats?.latest?.durationMs ?? null,
-      lastIngestError: col.lastIngestError || stats?.latest?.error || '',
-      ingestRuns: stats?.runs || 0,
-      ingestErrors: stats?.errors || 0,
-      lastIngest: stats?.latest || null,
-    };
-  }));
-});
-
-app.post('/api/external-collections', auth, validateRequestBody({
-  name: { required: true, type: 'string', minLength: 1, maxLength: 160 },
-  organizationIds: { type: 'array', objectIdArray: true },
-  metadataSchema: { type: 'array' },
-}), async (req, res) => {
-  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
-  const { name, description, organizationIds, metadataSchema } = req.body;
-  if (!name) return res.status(400).json({ error: 'Name required' });
-  const result = await db.collection('external_collections').insertOne({
-    name,
-    description: description || '',
-    organizationIds: normalizeOrganizationIds(organizationIds),
-    metadataSchema: Array.isArray(metadataSchema) ? metadataSchema : [],
-    recordCount: 0,
-    totalIngested: 0,
-    lastIngestStatus: 'never',
-    createdAt: new Date()
-  });
-  await logAudit(req.user.id, 'collection.create', `Created external collection: ${name}`);
-  res.json({ success: true, collectionId: result.insertedId });
-});
-
-app.put('/api/external-collections/:id', auth, validateRequestBody({
-  name: { required: true, type: 'string', minLength: 1, maxLength: 160 },
-  organizationIds: { type: 'array', objectIdArray: true },
-  metadataSchema: { type: 'array' },
-}), async (req, res) => {
-  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
-  const { name, description, organizationIds, metadataSchema } = req.body;
-  await db.collection('external_collections').updateOne({ _id: new ObjectId(req.params.id) }, { $set: {
-    name, description: description || '', organizationIds: normalizeOrganizationIds(organizationIds), metadataSchema: Array.isArray(metadataSchema) ? metadataSchema : [], updatedAt: new Date()
-  }});
-  // Update Qdrant vectors org access
-  const col = await db.collection('external_collections').findOne({ _id: new ObjectId(req.params.id) });
-  if (col) {
-    try {
-      const qdrant = new QdrantClient({ host: 'qdrant', port: 6333 });
-      const orgStrIds = col.organizationIds.map(id => id.toString());
-      const pts = await qdrant.scroll('documents', { filter: { must: [{ key: 'collection_id', match: { value: req.params.id } }] }, limit: 10000 });
-      if (pts.points?.length) {
-        await qdrant.setPayload('documents', { organization_ids: orgStrIds, shared_with: orgStrIds }, { filter: { must: [{ key: 'collection_id', match: { value: req.params.id } }] } });
-      }
-    } catch {}
-  }
-  await logAudit(req.user.id, 'collection.update', `Updated external collection: ${name}`);
-  res.json({ success: true });
-});
-
-app.delete('/api/external-collections/:id', auth, async (req, res) => {
-  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
-  const col = await db.collection('external_collections').findOne({ _id: new ObjectId(req.params.id) });
-  // Delete vectors from Qdrant
   try {
-    const qdrant = new QdrantClient({ host: 'qdrant', port: 6333 });
-    await qdrant.delete('documents', { filter: { must: [{ key: 'collection_id', match: { value: req.params.id } }] } });
-  } catch {}
-  await db.collection('external_collections').deleteOne({ _id: new ObjectId(req.params.id) });
-  await logAudit(req.user.id, 'collection.delete', `Deleted external collection: ${col?.name || req.params.id}`);
-  res.json({ success: true });
-});
-
-app.get('/api/external-collections/:id/ingest-logs', auth, async (req, res) => {
-  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
-  const logs = await db.collection('external_ingest_logs')
-    .find({ collectionId: req.params.id })
-    .sort({ createdAt: -1 })
-    .limit(50)
-    .toArray();
-  res.json(logs);
-});
-
-app.post('/api/external-collections/:id/clear-vectors', auth, async (req, res) => {
-  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
-  if (!ObjectId.isValid(req.params.id)) return res.status(400).json({ error: 'Invalid collection id' });
-  const col = await db.collection('external_collections').findOne({ _id: new ObjectId(req.params.id) });
-  if (!col) return res.status(404).json({ error: 'Collection not found' });
-
-  try {
-    const qdrant = new QdrantClient({ host: 'qdrant', port: 6333 });
-    await qdrant.delete('documents', { filter: { must: [{ key: 'collection_id', match: { value: req.params.id } }] } });
-  } catch (error) {
-    return res.status(500).json({ error: 'Failed to clear vectors: ' + error.message });
-  }
-
-  await db.collection('external_collections').updateOne(
-    { _id: new ObjectId(req.params.id) },
-    {
-      $set: {
-        recordCount: 0,
-        lastIngestStatus: 'cleared',
-        lastIngestCount: 0,
-        lastIngestSkipped: 0,
-        lastIngestError: '',
-        updatedAt: new Date(),
-      },
+    const sources = await db.collection('data_sources').find().sort({ createdAt: -1 }).toArray();
+    // Get row counts
+    for (const s of sources) {
+      try {
+        if (mysqlPool) { const [rows] = await mysqlPool.query(`SELECT COUNT(*) as count FROM \`${s.tableName}\``); s.rowCount = rows[0].count; }
+      } catch { s.rowCount = 0; }
     }
-  );
-  await logAudit(req.user.id, 'collection.clear_vectors', `Cleared vectors for external collection: ${col.name}`);
-  res.json({ success: true });
+    res.json(sources);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/external-collections/:id/search', auth, validateRequestBody({
-  query: { required: true, type: 'string', minLength: 1, maxLength: 4000 },
-  limit: { type: 'number' },
-  filter: { type: 'object' },
-}), async (req, res) => {
+// Create data source (creates MySQL table)
+app.post('/api/data-sources', auth, async (req, res) => {
   if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
-  if (!ObjectId.isValid(req.params.id)) return res.status(400).json({ error: 'Invalid collection id' });
-  const { query, limit = 5, filter } = req.body;
-  if (!query?.trim()) return res.status(400).json({ error: 'Query is required' });
-
-  const col = await db.collection('external_collections').findOne({ _id: new ObjectId(req.params.id) });
-  if (!col) return res.status(404).json({ error: 'Collection not found' });
-
   try {
-    const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
-    const pk = await resolveProviderKeys(null);
-    const embProvider = settings.embeddingProvider || settings.chatEmbeddingProvider || 'gemini';
-    const embModel = settings.embeddingModel || settings.chatEmbeddingModel || 'gemini-embedding-001';
-    const embKey = settings[`embeddingApiKey_${embProvider}`] || settings.embeddingApiKey || pk[embProvider] || '';
-    const embStart = Date.now();
-    let queryVector;
+    const { name, description, columns, organizationIds } = req.body;
+    if (!name) return res.status(400).json({ error: 'Name required' });
+    const tableName = 'ds_' + name.trim().toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/_$/, '');
+    if (await db.collection('data_sources').findOne({ tableName })) return res.status(400).json({ error: 'Data source with this name already exists' });
+    // Create MySQL table only if columns provided
+    if (columns?.length) {
+      const colDefs = columns.map(c => {
+        let sqlType = 'TEXT';
+        if (c.type === 'number') sqlType = 'DOUBLE';
+        else if (c.type === 'integer') sqlType = 'BIGINT';
+        else if (c.type === 'date') sqlType = 'DATETIME';
+        else if (c.type === 'boolean') sqlType = 'TINYINT(1)';
+        return `\`${c.name}\` ${sqlType}`;
+      }).join(', ');
+      await mysqlPool.query(`CREATE TABLE IF NOT EXISTS \`${tableName}\` (id BIGINT AUTO_INCREMENT PRIMARY KEY, ${colDefs}, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
+    }
+    // Save metadata in MongoDB (columns may be empty — auto-detected on first insert)
+    const result = await db.collection('data_sources').insertOne({ name, description: description || '', tableName, columns: columns || [], organizationIds: (organizationIds || []).map(id => new ObjectId(id)), createdAt: new Date() });
+    res.json({ success: true, id: result.insertedId, tableName });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-    if (embProvider === 'gemini') {
-      const resp = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${embModel}:embedContent?key=${embKey}`, {
-        content: { parts: [{ text: query }] }, taskType: 'RETRIEVAL_QUERY'
+// Update data source metadata
+app.put('/api/data-sources/:id', auth, async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  try {
+    const { name, description, organizationIds } = req.body;
+    await db.collection('data_sources').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { name, description: description || '', organizationIds: (organizationIds || []).map(id => new ObjectId(id)), updatedAt: new Date() } });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Delete data source (drops MySQL table)
+app.delete('/api/data-sources/:id', auth, async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  try {
+    const source = await db.collection('data_sources').findOne({ _id: new ObjectId(req.params.id) });
+    if (!source) return res.status(404).json({ error: 'Not found' });
+    await mysqlPool.query(`DROP TABLE IF EXISTS \`${source.tableName}\``);
+    await db.collection('data_sources').deleteOne({ _id: new ObjectId(req.params.id) });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Insert records into data source (auto-detect columns if needed)
+app.post('/api/data-sources/:id/records', auth, async (req, res) => {
+  if (req.user.role === 'user') return res.status(403).json({ error: 'Admin only' });
+  try {
+    const source = await db.collection('data_sources').findOne({ _id: new ObjectId(req.params.id) });
+    if (!source) return res.status(404).json({ error: 'Not found' });
+    const { records, mode } = req.body;
+    if (!records?.length) return res.status(400).json({ error: 'Records required' });
+
+    // Auto-detect columns from records if source has no columns defined
+    let colNames = (source.columns || []).map(c => c.name);
+    const incomingKeys = Object.keys(records[0]).sort();
+
+    // If no columns defined OR incoming data has different columns → rebuild table
+    const needRebuild = colNames.length === 0 || (mode === 'replace' && JSON.stringify(colNames.sort()) !== JSON.stringify(incomingKeys));
+    
+    if (needRebuild) {
+      const detectedCols = incomingKeys.map(k => {
+        const sampleVal = records[0][k];
+        let type = 'string';
+        if (typeof sampleVal === 'number') type = Number.isInteger(sampleVal) ? 'integer' : 'number';
+        else if (typeof sampleVal === 'boolean') type = 'boolean';
+        else if (typeof sampleVal === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(sampleVal)) type = 'date';
+        return { name: k, type, description: '' };
       });
-      queryVector = resp.data.embedding.values;
-    } else if (embProvider === 'openai') {
-      const oai = new OpenAI({ apiKey: embKey });
-      const resp = await oai.embeddings.create({ model: embModel, input: [query] });
-      queryVector = resp.data[0].embedding;
-    } else if (embProvider === 'mistral') {
-      const resp = await axios.post('https://api.mistral.ai/v1/embeddings', { model: embModel, input: [query] }, { headers: { Authorization: `Bearer ${embKey}` } });
-      queryVector = resp.data.data[0].embedding;
-    }
-    if (!queryVector) return res.status(400).json({ error: `Unsupported embedding provider: ${embProvider}` });
-    await logAiCall(embProvider, embModel, 'embedding', 'external_search_test', Date.now() - embStart);
 
-    const must = [{ key: 'collection_id', match: { value: req.params.id } }];
-    if (filter && typeof filter === 'object') {
-      for (const [key, value] of Object.entries(filter)) {
-        if (value === '' || value === null || value === undefined) continue;
-        if (key === 'externalUserId') must.push({ key: 'shared_with', match: { value: `ext_${value}` } });
-        else must.push({ key, match: { value } });
-      }
+      // Drop and recreate
+      await mysqlPool.query(`DROP TABLE IF EXISTS \`${source.tableName}\``);
+      const colDefs = detectedCols.map(c => {
+        let sqlType = 'TEXT';
+        if (c.type === 'number') sqlType = 'DOUBLE';
+        else if (c.type === 'integer') sqlType = 'BIGINT';
+        else if (c.type === 'date') sqlType = 'DATETIME';
+        else if (c.type === 'boolean') sqlType = 'TINYINT(1)';
+        return `\`${c.name}\` ${sqlType}`;
+      }).join(', ');
+      await mysqlPool.query(`CREATE TABLE \`${source.tableName}\` (id BIGINT AUTO_INCREMENT PRIMARY KEY, ${colDefs}, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
+      await db.collection('data_sources').updateOne({ _id: source._id }, { $set: { columns: detectedCols, updatedAt: new Date() } });
+      colNames = detectedCols.map(c => c.name);
+    } else if (mode === 'replace') {
+      await mysqlPool.query(`TRUNCATE TABLE \`${source.tableName}\``);
     }
 
-    const qdrant = new QdrantClient({ host: 'qdrant', port: 6333 });
-    const results = await qdrant.search('documents', {
-      vector: queryVector,
-      limit: Math.min(Math.max(Number(limit) || 5, 1), 20),
-      with_payload: true,
-      filter: { must },
-    });
-
-    res.json({
-      query,
-      provider: embProvider,
-      model: embModel,
-      results: results.map(r => ({
-        score: r.score,
-        content: r.payload?.content || '',
-        recordId: r.payload?.record_id || null,
-        metadata: r.payload || {},
-      })),
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Search failed: ' + error.message });
-  }
-});
-
-// Ingest API — Node-RED calls this
-app.post('/api/ingest', validateRequestBody({
-  collectionId: { required: true, objectId: true },
-  records: { required: true, type: 'array' },
-  mode: { enum: ['append', 'replace'] },
-}), async (req, res) => {
-  const ingestStart = Date.now();
-  let ingestLogId = null;
-  let collectionId = req.body?.collectionId;
-  let col = null;
-  let authType = null;
-  let authApiKey = null;
-
-  const updateIngestLog = async (patch) => {
-    if (!ingestLogId) return;
-    try {
-      await db.collection('external_ingest_logs').updateOne(
-        { _id: ingestLogId },
-        { $set: { ...patch, updatedAt: new Date() } }
-      );
-    } catch (error) {
-      console.error('Failed to update ingest log:', error.message);
-    }
-  };
-
-  try {
-    const internalKey = req.headers['x-internal-key'];
-    const apiKey = req.headers['x-api-key'];
-    // Auth: internal key OR API key OR JWT developer
-    let authed = false;
-    if (isValidInternalKey(internalKey)) {
-      authed = true;
-      authType = 'internal';
-    }
-    if (!authed && apiKey) {
-      const key = await db.collection('api_keys').findOne({ $or: [{ key: apiKey }, { shortKey: apiKey }], isActive: true });
-      if (key) {
-        authed = true;
-        authType = 'api_key';
-        authApiKey = key;
-      }
-    }
-    if (!authed) {
-      const token = req.headers.authorization?.replace('Bearer ', '');
-      if (token) {
-        try {
-          const u = jwt.verify(token, JWT_SECRET);
-          if (u.role === 'developer') {
-            authed = true;
-            authType = 'developer_jwt';
-          }
-        } catch {}
-      }
-    }
-    if (!authed) return res.status(401).json({ error: 'Unauthorized' });
-
-    const { records, mode = 'append' } = req.body;
-    if (!collectionId || !records?.length) return res.status(400).json({ error: 'collectionId and records required' });
-    if (!ObjectId.isValid(collectionId)) return res.status(400).json({ error: 'Invalid collectionId' });
-    if (!Array.isArray(records)) return res.status(400).json({ error: 'records must be an array' });
-    if (records.length > 1000) return res.status(413).json({ error: 'Maximum 1000 records per ingest request' });
-    if (!['append', 'replace'].includes(mode)) return res.status(400).json({ error: 'mode must be append or replace' });
-    if (authApiKey && !apiKeyHasScope(authApiKey, 'ingest')) {
-      return res.status(403).json({ error: 'API key does not have ingest scope', code: 'API_SCOPE_DENIED' });
-    }
-    const allowedCollectionIds = getApiKeyCollectionIds(authApiKey);
-    if (authApiKey && allowedCollectionIds.length > 0 && !allowedCollectionIds.includes(collectionId)) {
-      return res.status(403).json({ error: 'API key cannot access this collection', code: 'API_COLLECTION_DENIED' });
-    }
-
-    col = await db.collection('external_collections').findOne({ _id: new ObjectId(collectionId) });
-    if (!col) return res.status(404).json({ error: 'Collection not found' });
-
-    const logResult = await db.collection('external_ingest_logs').insertOne({
-      collectionId,
-      collectionName: col.name,
-      mode,
-      requestedRecords: records.length,
-      status: 'processing',
-      authType,
-      apiKeyId: authApiKey?._id || null,
-      apiKeyName: authApiKey?.name || null,
-      createdAt: new Date(),
-      startedAt: new Date(),
-    });
-    ingestLogId = logResult.insertedId;
-
-    const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
-    const pk = await resolveProviderKeys(null);
-    const embProvider = settings.embeddingProvider || settings.chatEmbeddingProvider || 'gemini';
-    const embModel = settings.embeddingModel || settings.chatEmbeddingModel || 'gemini-embedding-001';
-    const embKey = settings[`embeddingApiKey_${embProvider}`] || settings.embeddingApiKey || pk[embProvider] || '';
-    const orgIds = col.organizationIds.map(id => id.toString());
-
-    const qdrant = new QdrantClient({ host: 'qdrant', port: 6333 });
-    // Ensure collection exists
-    try { await qdrant.getCollection('documents'); } catch {
-      const dim = embModel.includes('3072') || embModel === 'gemini-embedding-001' ? 3072 : embModel.includes('1536') ? 1536 : 1024;
-      await qdrant.createCollection('documents', { vectors: { size: dim, distance: 'Cosine' } });
-    }
-
-    if (mode === 'replace') {
-      await qdrant.delete('documents', { filter: { must: [{ key: 'collection_id', match: { value: collectionId } }] } });
-    }
-
-    let ingested = 0;
-    let skipped = 0;
-    // Process in batches of 20
-    for (let i = 0; i < records.length; i += 20) {
-      const batch = records.slice(i, i + 20);
-      const prepared = batch.map((record, j) => ({
-        record,
-        text: extractExternalRecordText(record),
-        index: i + j,
-      })).filter(item => {
-        if (item.text) return true;
-        skipped += 1;
-        return false;
-      });
-      if (prepared.length === 0) continue;
-      const texts = prepared.map(item => item.text);
-
-      // Embed batch
-      let vectors;
-      const ingestEmbStart = Date.now();
-      if (embProvider === 'gemini') {
-        vectors = [];
-        for (const t of texts) {
-          const resp = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${embModel}:embedContent?key=${embKey}`, {
-            content: { parts: [{ text: t }] }, taskType: 'RETRIEVAL_DOCUMENT'
-          });
-          vectors.push(resp.data.embedding.values);
+    const placeholders = colNames.map(() => '?').join(', ');
+    let inserted = 0;
+    for (const record of records) {
+      const values = colNames.map(col => {
+        let val = record[col] ?? null;
+        if (val && typeof val === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(val)) {
+          val = new Date(val).toISOString().slice(0, 19).replace('T', ' ');
         }
-      } else if (embProvider === 'openai') {
-        const oai = new OpenAI({ apiKey: embKey });
-        const resp = await oai.embeddings.create({ model: embModel, input: texts });
-        vectors = resp.data.map(d => d.embedding);
-      } else if (embProvider === 'mistral') {
-        const resp = await axios.post('https://api.mistral.ai/v1/embeddings', { model: embModel, input: texts }, { headers: { Authorization: `Bearer ${embKey}` } });
-        vectors = resp.data.data.map(d => d.embedding);
-      }
-      if (!vectors?.length) throw new Error(`Unsupported embedding provider: ${embProvider}`);
-      await logAiCall(embProvider, embModel, 'embedding', 'ingest', Date.now() - ingestEmbStart);
-
-      // Upsert to Qdrant
-      const points = vectors.map((vec, j) => {
-        const { record, text, index } = prepared[j];
-        const meta = (typeof record === 'object' && record.metadata && !Array.isArray(record.metadata)) ? record.metadata : {};
-        const extUserId = meta.externalUserId || (typeof record === 'object' ? record.externalUserId : null);
-        const sharedWith = [...orgIds];
-        if (extUserId) sharedWith.push(`ext_${extUserId}`);
-        const recordId = typeof record === 'object' && record
-          ? record.id || record._id || record.externalId || meta.id || meta.externalId || null
-          : null;
-        // Merge custom metadata into payload
-        return {
-          id: getExternalRecordId(collectionId, record, index),
-          vector: vec,
-          payload: {
-            ...meta,
-            content: text,
-            record_id: recordId ? recordId.toString() : null,
-            collection_id: collectionId,
-            collection_name: col.name,
-            file_name: col.name,
-            file_id: `ext_${collectionId}`,
-            page_number: index + 1,
-            organization_ids: orgIds,
-            shared_with: sharedWith,
-            source: 'external',
-          }
-        };
+        return val;
       });
-      await qdrant.upsert('documents', { points });
-      ingested += prepared.length;
+      await mysqlPool.query(`INSERT INTO \`${source.tableName}\` (${colNames.map(c => '`' + c + '`').join(', ')}) VALUES (${placeholders})`, values);
+      inserted++;
     }
+    res.json({ success: true, inserted });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-    let recordCount = null;
-    try {
-      const countResult = await qdrant.count('documents', {
-        filter: { must: [{ key: 'collection_id', match: { value: collectionId } }] },
-        exact: true,
-      });
-      recordCount = countResult?.count ?? null;
-    } catch {}
+// Browse data source records
+app.get('/api/data-sources/:id/records', auth, async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  try {
+    const source = await db.collection('data_sources').findOne({ _id: new ObjectId(req.params.id) });
+    if (!source) return res.status(404).json({ error: 'Not found' });
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = (page - 1) * limit;
+    const [rows] = await mysqlPool.query(`SELECT * FROM \`${source.tableName}\` ORDER BY id DESC LIMIT ? OFFSET ?`, [limit, offset]);
+    const [[{ count }]] = await mysqlPool.query(`SELECT COUNT(*) as count FROM \`${source.tableName}\``);
+    res.json({ records: rows, total: count, page, pages: Math.ceil(count / limit) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-    const durationMs = Date.now() - ingestStart;
-    const collectionUpdate = {
-      lastIngestAt: new Date(),
-      lastIngestStatus: 'success',
-      lastIngestCount: ingested,
-      lastIngestSkipped: skipped,
-      lastIngestMode: mode,
-      lastIngestDurationMs: durationMs,
-      lastIngestError: '',
-      totalIngested: (col.totalIngested || 0) + ingested,
-      updatedAt: new Date(),
-    };
-    if (recordCount !== null) collectionUpdate.recordCount = recordCount;
-    else if (mode === 'replace') collectionUpdate.recordCount = ingested;
-    else collectionUpdate.recordCount = (col.recordCount || 0) + ingested;
+// Clear all records
+app.post('/api/data-sources/:id/clear', auth, async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  try {
+    const source = await db.collection('data_sources').findOne({ _id: new ObjectId(req.params.id) });
+    if (!source) return res.status(404).json({ error: 'Not found' });
+    await mysqlPool.query(`TRUNCATE TABLE \`${source.tableName}\``);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-    await db.collection('external_collections').updateOne(
-      { _id: new ObjectId(collectionId) },
-      { $set: collectionUpdate }
-    );
-    await updateIngestLog({
-      status: 'success',
-      ingested,
-      skipped,
-      provider: embProvider,
-      model: embModel,
-      durationMs,
-      recordCount: collectionUpdate.recordCount,
-      completedAt: new Date(),
-    });
-
-    res.json({ success: true, ingested, skipped, mode, collectionId, durationMs, recordCount: collectionUpdate.recordCount });
-  } catch (error) {
-    const durationMs = Date.now() - ingestStart;
-    await updateIngestLog({
-      status: 'failed',
-      error: error.message,
-      durationMs,
-      completedAt: new Date(),
-    });
-    if (collectionId && ObjectId.isValid(collectionId)) {
-      await db.collection('external_collections').updateOne(
-        { _id: new ObjectId(collectionId) },
-        {
-          $set: {
-            lastIngestStatus: 'failed',
-            lastIngestError: error.message,
-            lastIngestDurationMs: durationMs,
-            updatedAt: new Date(),
-          },
-        }
-      );
-    }
-    res.status(500).json({ error: 'Ingest failed: ' + error.message });
-  }
+// Test SQL query (developer tool)
+app.post('/api/data-sources/query', auth, async (req, res) => {
+  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  try {
+    const { sql } = req.body;
+    if (!sql) return res.status(400).json({ error: 'SQL required' });
+    // Safety: only allow SELECT
+    if (!/^\s*SELECT\s/i.test(sql)) return res.status(400).json({ error: 'Only SELECT queries allowed' });
+    const [rows] = await mysqlPool.query({ sql, timeout: 5000 });
+    res.json({ rows: Array.isArray(rows) ? rows.slice(0, 100) : [], rowCount: Array.isArray(rows) ? rows.length : 0 });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // Serve React app for all other routes

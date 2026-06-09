@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { parseFileNamesFromMessage, checkDownloadableFiles } from "@/lib/fileHelper";
 import { DownloadButton } from "./DownloadButton";
+import { ExportableTable } from "./ExportableTable";
 
 interface ChatMessageProps {
   role: "user" | "assistant";
@@ -236,7 +237,14 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, status, star
                 )}
                 <ReactMarkdown 
                   remarkPlugins={[remarkGfm]}
-                  components={{ a: LinkRenderer }}
+                  components={{
+                    a: LinkRenderer,
+                    table: ({ children }) => <ExportableTable>{children}</ExportableTable>,
+                    thead: ({ children }) => <thead className="bg-muted/60">{children}</thead>,
+                    th: ({ children }) => <th className="px-3 py-2 text-left text-[11px] font-semibold border-b">{children}</th>,
+                    td: ({ children }) => <td className="px-3 py-1.5 border-b border-muted/50">{children}</td>,
+                    tr: ({ children }) => <tr className="hover:bg-muted/30">{children}</tr>,
+                  }}
                 >
                   {content.replace(/\[Download:\s*(.+?)\]/g, (_, filename) => `[📥 ${filename.trim()}](/api/files/download-by-name/${encodeURIComponent(filename.trim())}?token=${localStorage.getItem('token')})`)}
                 </ReactMarkdown>
