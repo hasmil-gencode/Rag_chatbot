@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState } from "react";
 import { ChatMessage } from "./ChatMessage";
 import { ChatInput } from "./ChatInput";
+import type { ChatArtifact } from "@/lib/api";
 
 interface Message {
   id: string;
@@ -10,6 +11,7 @@ interface Message {
   createdAt?: Date | string;
   status?: string;
   sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[];
+  artifacts?: ChatArtifact[];
   responseTimeMs?: number;
   actions?: { label: string; value: string }[];
   debug?: any;
@@ -119,6 +121,7 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, userFu
                     startedBy={msg.startedBy}
                     timestamp={msg.createdAt}
                     sources={msg.sources}
+                    artifacts={msg.artifacts}
                     responseTimeMs={msg.responseTimeMs}
                     onWebViewOpen={onWebViewOpen}
                     debug={msg.debug}

@@ -1,4 +1,4 @@
-import { Plus, FolderOpen, LogOut, Trash2, Users, Building2, Settings, Key, FileText, UserCog, Search, X, ChevronDown, Code, Activity, Database, Shield, Zap, Mail } from "lucide-react";
+import { Plus, FolderOpen, LogOut, Trash2, Users, Building2, Settings, Key, FileText, UserCog, Search, X, ChevronDown, Code, Activity, Database, Shield, Zap, Mail, MoreHorizontal, Share2 } from "lucide-react";
 import { NotificationBell } from "./NotificationBell";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -19,6 +19,7 @@ interface ChatSidebarProps {
   onNewChat: () => void;
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
+  onShareChat: (id: string) => void;
   currentPage: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "data-sources" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "ai-usage" | "smtp-settings";
   onNavigate: (page: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "data-sources" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "ai-usage" | "smtp-settings") => void;
   onLogout: () => void;
@@ -35,6 +36,7 @@ export const ChatSidebar = ({
   onNewChat,
   onSelectChat,
   onDeleteChat,
+  onShareChat,
   currentPage,
   onNavigate,
   onLogout,
@@ -48,6 +50,7 @@ export const ChatSidebar = ({
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [openSessionMenuId, setOpenSessionMenuId] = useState<string | null>(null);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     return (localStorage.getItem('theme') as 'light' | 'dark') || 'dark';
   });
@@ -112,6 +115,7 @@ export const ChatSidebar = ({
   // Extract name from email and get first letter for avatar
   const userName = userEmail.split('@')[0];
   const userInitial = userName.charAt(0).toUpperCase();
+  const canManageSession = (session: ChatSession) => session.startedByEmail === userEmail || isDeveloper || isAdmin;
   
   // Dynamic logo based on theme and collapsed state
   const logoSrc = theme === 'light' 
@@ -341,7 +345,10 @@ export const ChatSidebar = ({
                     )}
                   >
                     <button
-                      onClick={() => onSelectChat(session.id)}
+                      onClick={() => {
+                        setOpenSessionMenuId(null);
+                        onSelectChat(session.id);
+                      }}
                       className="w-full text-left px-3 py-1.5 pr-9"
                     >
                       <div className="text-[13px] font-medium truncate text-sidebar-foreground leading-tight">
@@ -354,19 +361,49 @@ export const ChatSidebar = ({
                         {session.date}
                       </div>
                     </button>
-                    {/* Only show delete button for own chats or developer/admin */}
-                    {(session.startedByEmail === userEmail || isDeveloper || isAdmin) && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDeleteChat(session.id);
-                        }}
-                        className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity h-7 w-7 text-sidebar-muted hover:text-destructive rounded-md"
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenSessionMenuId(openSessionMenuId === session.id ? null : session.id);
+                      }}
+                      className={cn(
+                        "absolute right-1.5 top-1/2 -translate-y-1/2 h-7 w-7 rounded-md text-sidebar-muted hover:text-sidebar-foreground",
+                        openSessionMenuId === session.id ? "opacity-100 bg-muted/60" : "opacity-0 group-hover:opacity-100"
+                      )}
+                      title="Chat actions"
+                    >
+                      <MoreHorizontal className="w-3.5 h-3.5" />
+                    </Button>
+                    {openSessionMenuId === session.id && (
+                      <div
+                        className="absolute right-1.5 top-8 z-30 w-32 overflow-hidden rounded-md border bg-popover py-1 shadow-lg"
+                        onClick={(e) => e.stopPropagation()}
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </Button>
+                        <button
+                          onClick={() => {
+                            onShareChat(session.id);
+                            setOpenSessionMenuId(null);
+                          }}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-popover-foreground hover:bg-accent"
+                        >
+                          <Share2 className="h-3.5 w-3.5" />
+                          Share
+                        </button>
+                        {canManageSession(session) && (
+                          <button
+                            onClick={() => {
+                              onDeleteChat(session.id);
+                              setOpenSessionMenuId(null);
+                            }}
+                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-destructive hover:bg-accent"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Delete
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                   <div className="border-b border-border/30 my-0.5" />
@@ -529,11 +566,59 @@ export const ChatSidebar = ({
                 {sessions.map((session) => (
                   <div key={session.id}>
                     <div
-                      onClick={() => onSelectChat(session.id)}
-                      className="px-3 py-2 rounded-lg hover:bg-accent/50 cursor-pointer transition-all group"
+                      className="relative rounded-lg hover:bg-accent/50 transition-all group"
                     >
-                      <p className="text-sm text-sidebar-foreground truncate">{session.title}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">{session.date}</p>
+                      <button
+                        onClick={() => {
+                          setOpenSessionMenuId(null);
+                          onSelectChat(session.id);
+                        }}
+                        className="w-full px-3 py-2 pr-10 text-left"
+                      >
+                        <p className="text-sm text-sidebar-foreground truncate">{session.title}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">{session.date}</p>
+                      </button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenSessionMenuId(openSessionMenuId === session.id ? null : session.id);
+                        }}
+                        className="absolute right-1.5 top-1/2 h-8 w-8 -translate-y-1/2 rounded-md text-sidebar-muted hover:text-sidebar-foreground"
+                        title="Chat actions"
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                      {openSessionMenuId === session.id && (
+                        <div
+                          className="absolute right-1.5 top-9 z-30 w-32 overflow-hidden rounded-md border bg-popover py-1 shadow-lg"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            onClick={() => {
+                              onShareChat(session.id);
+                              setOpenSessionMenuId(null);
+                            }}
+                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-popover-foreground hover:bg-accent"
+                          >
+                            <Share2 className="h-3.5 w-3.5" />
+                            Share
+                          </button>
+                          {canManageSession(session) && (
+                            <button
+                              onClick={() => {
+                                onDeleteChat(session.id);
+                                setOpenSessionMenuId(null);
+                              }}
+                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-destructive hover:bg-accent"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              Delete
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}

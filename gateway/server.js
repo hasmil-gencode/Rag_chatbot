@@ -240,6 +240,39 @@ function isDeveloperLoginData(data) {
   return data?.user?.role === 'developer';
 }
 
+function isValidShareId(value) {
+  return /^[A-Za-z0-9_-]{8,128}$/.test(String(value || ''));
+}
+
+async function getPublicShareServer(req, shareId) {
+  if (!isValidShareId(shareId)) return null;
+
+  const candidates = [];
+  const cookieServerUrl = req.cookies?.[TENANT_SERVER_COOKIE];
+  if (cookieServerUrl) candidates.push({ url: cookieServerUrl });
+
+  const activeServers = await db.collection('servers').find({ status: 'active' }).toArray();
+  for (const server of activeServers) {
+    if (!candidates.some(candidate => candidate.url === server.url)) {
+      candidates.push(server);
+    }
+  }
+
+  for (const server of candidates) {
+    try {
+      const resp = await axios.get(
+        `${server.url}/api/share/${encodeURIComponent(shareId)}`,
+        { timeout: 8000, validateStatus: () => true }
+      );
+      if (resp.status === 200) return server;
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
 function sendGatewayDeveloperLogin(req, res, user) {
   const normalizedUser = {
     id: user.id || user._id,
@@ -600,6 +633,47 @@ app.post('/api/gateway/tenant-logout', (req, res) => {
   clearTenantServerCookie(req, res);
   clearTenantAuthCookie(req, res);
   res.json({ success: true });
+});
+
+// Public shared chats must work without a tenant login cookie.
+app.get('/api/share/:shareId', async (req, res) => {
+  try {
+    const server = await getPublicShareServer(req, req.params.shareId);
+    if (!server) return res.status(404).json({ error: 'Shared chat not found' });
+
+    const resp = await axios.get(
+      `${server.url}/api/share/${encodeURIComponent(req.params.shareId)}`,
+      { timeout: 10000, validateStatus: () => true }
+    );
+    res.status(resp.status).json(resp.data);
+  } catch (error) {
+    console.error('Gateway public share API error:', error.message);
+    res.status(502).json({ error: 'Unable to load shared chat' });
+  }
+});
+
+app.get('/share/:shareId', async (req, res) => {
+  try {
+    const server = await getPublicShareServer(req, req.params.shareId);
+    if (!server) return res.status(404).send('<h1>Shared chat not found</h1>');
+
+    const resp = await axios({
+      method: 'GET',
+      url: `${server.url}/share/${encodeURIComponent(req.params.shareId)}`,
+      timeout: 10000,
+      responseType: 'stream',
+      validateStatus: () => true,
+    });
+
+    res.status(resp.status);
+    Object.entries(resp.headers).forEach(([key, value]) => {
+      if (key !== 'transfer-encoding') res.setHeader(key, value);
+    });
+    resp.data.pipe(res);
+  } catch (error) {
+    console.error('Gateway public share page error:', error.message);
+    res.status(502).send('<h1>Unable to load shared chat</h1>');
+  }
 });
 
 // ─── Proxy all /api/* to tenant server (for logged-in users) ──

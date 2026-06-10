@@ -11,6 +11,12 @@ interface LoginData {
 interface ChatMessage {
   role: 'user' | 'bot'
   content: string
+  createdAt?: string
+  startedBy?: string
+  startedByEmail?: string
+  sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[]
+  artifacts?: ChatArtifact[]
+  responseTimeMs?: number
 }
 
 interface ChatSession {
@@ -92,6 +98,18 @@ export interface Message {
   startedBy?: string
   startedByEmail?: string
   sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[]
+  artifacts?: ChatArtifact[]
+  responseTimeMs?: number
+}
+
+export interface ChatArtifact {
+  id?: string
+  type: 'echart' | 'table' | string
+  title?: string
+  option?: Record<string, any>
+  columns?: string[]
+  rows?: any[]
+  metadata?: Record<string, any>
 }
 
 interface Settings {
@@ -163,7 +181,7 @@ class API {
     return json
   }
 
-  async sendMessage(message: string, sessionId?: string, fileId?: string, currentOrganizationId?: string | null): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[]; responseTimeMs?: number; debug?: any }> {
+  async sendMessage(message: string, sessionId?: string, fileId?: string, currentOrganizationId?: string | null): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[]; artifacts?: ChatArtifact[]; responseTimeMs?: number; debug?: any }> {
     const res = await fetchWithAuth(`${API_BASE}/chat`, {
       method: 'POST',
       headers: this.getHeaders(),
@@ -184,7 +202,7 @@ class API {
       onStatus?: (status: string) => void
       onReplace?: (content: string) => void
     } = {}
-  ): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[]; responseTimeMs?: number; debug?: any; blocked?: boolean }> {
+  ): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[]; artifacts?: ChatArtifact[]; responseTimeMs?: number; debug?: any; blocked?: boolean }> {
     const res = await fetchWithAuth(`${API_BASE}/chat/stream`, {
       method: 'POST',
       headers: this.getHeaders(),
@@ -270,6 +288,27 @@ class API {
       headers: this.getHeaders(),
     })
     if (!res.ok) throw new Error('Failed to delete session')
+    return res.json()
+  }
+
+  async shareSession(sessionId: string) {
+    const res = await fetchWithAuth(`${API_BASE}/sessions/${sessionId}/share`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({}),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data.error || 'Failed to share')
+    }
+    return res.json()
+  }
+
+  async unshareSession(sessionId: string) {
+    const res = await fetchWithAuth(`${API_BASE}/sessions/${sessionId}/share`, {
+      method: 'DELETE',
+      headers: this.getHeaders(),
+    })
     return res.json()
   }
 

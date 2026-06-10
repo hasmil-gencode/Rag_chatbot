@@ -7,6 +7,8 @@ import remarkGfm from 'remark-gfm';
 import { parseFileNamesFromMessage, checkDownloadableFiles } from "@/lib/fileHelper";
 import { DownloadButton } from "./DownloadButton";
 import { ExportableTable } from "./ExportableTable";
+import { EChartBlock } from "./EChartBlock";
+import type { ChatArtifact } from "@/lib/api";
 
 interface ChatMessageProps {
   role: "user" | "assistant";
@@ -18,13 +20,191 @@ interface ChatMessageProps {
   startedBy?: string;
   timestamp?: Date | string;
   sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[];
+  artifacts?: ChatArtifact[];
   responseTimeMs?: number;
   onWebViewOpen?: (url: string) => void;
   debug?: any;
 }
 
-export const ChatMessage = ({ role, content, isTyping, isStreaming, status, startedBy, sources, responseTimeMs, onWebViewOpen, debug }: ChatMessageProps) => {
+function stripModelFence(text: string) {
+  return text
+    .trim()
+    .replace(/^```(?:json|echart|echarts|chart)?\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+}
+
+function extractBalancedJson(text: string) {
+  const input = stripModelFence(text);
+  const start = input.search(/[\[{]/);
+  if (start < 0) return "";
+
+  const open = input[start];
+  const close = open === "{" ? "}" : "]";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < input.length; i += 1) {
+    const ch = input[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === open) depth += 1;
+    if (ch === close) depth -= 1;
+    if (depth === 0) return input.slice(start, i + 1);
+  }
+
+  return input.slice(start);
+}
+
+function parseChartOption(raw: string) {
+  try {
+    const candidate = extractBalancedJson(raw);
+    if (!candidate) return null;
+    let parsed = JSON.parse(candidate);
+    if (Array.isArray(parsed)) parsed = parsed[0];
+    if (parsed?.type && parsed?.data?.datasets) parsed = chartJsToECharts(parsed);
+    if (parsed?.option && typeof parsed.option === "object") parsed = parsed.option;
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.series && !Array.isArray(parsed.series)) parsed.series = [parsed.series];
+    if (Array.isArray(parsed.series) && parsed.series.length > 0) return parsed;
+    if (parsed.chartType || parsed.xAxis || parsed.yAxis) return parsed;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function chartJsToECharts(chart: any) {
+  if (!chart || typeof chart !== "object" || !chart.data?.datasets) return null;
+  const labels = Array.isArray(chart.data.labels) ? chart.data.labels.map(String) : [];
+  const datasets = Array.isArray(chart.data.datasets) ? chart.data.datasets : [];
+  const firstDataset = datasets[0] || {};
+  const chartType = String(chart.type || firstDataset.type || "bar").toLowerCase();
+  const title = chart.options?.plugins?.title?.text || chart.options?.title?.text || "Chart";
+
+  if (chartType === "pie" || chartType === "doughnut") {
+    return {
+      title: { text: title, left: "center" },
+      tooltip: { trigger: "item" },
+      legend: { bottom: 0 },
+      series: [{
+        name: firstDataset.label || title,
+        type: "pie",
+        radius: chartType === "doughnut" ? ["38%", "68%"] : "62%",
+        data: labels.map((name: string, index: number) => ({ name, value: Number(firstDataset.data?.[index]) || 0 })),
+      }],
+    };
+  }
+
+  return {
+    title: { text: title, left: "center" },
+    tooltip: { trigger: "axis" },
+    grid: { top: 70, left: 45, right: 24, bottom: 70 },
+    xAxis: { type: "category", data: labels },
+    yAxis: { type: "value" },
+    series: datasets.map((dataset: any) => ({
+      name: dataset.label || title,
+      type: chartType === "line" ? "line" : "bar",
+      data: Array.isArray(dataset.data) ? dataset.data.map((value: any) => Number(value) || 0) : [],
+    })),
+  };
+}
+
+function looksLikeChartJson(raw: string) {
+  const candidate = extractBalancedJson(raw);
+  if (!candidate) return false;
+  try {
+    const parsed = JSON.parse(candidate);
+    return Boolean(parseChartOption(candidate))
+      || Boolean(parsed?.type && parsed?.data?.datasets)
+      || Boolean(parsed?.chartType && parsed?.data)
+      || Boolean(parsed?.data?.labels && parsed?.data?.datasets);
+  } catch {
+    return false;
+  }
+}
+
+function removeBareChartJson(text: string) {
+  let output = text;
+  let cursor = 0;
+  while (cursor < output.length) {
+    const relativeStart = output.slice(cursor).search(/[\[{]/);
+    if (relativeStart < 0) break;
+    const start = cursor + relativeStart;
+    const fragment = extractBalancedJson(output.slice(start));
+    if (!fragment) break;
+    if (looksLikeChartJson(fragment)) {
+      output = `${output.slice(0, start)}${output.slice(start + fragment.length)}`;
+      cursor = Math.max(0, start - 1);
+    } else {
+      cursor = start + Math.max(fragment.length, 1);
+    }
+  }
+  return output;
+}
+
+function extractChartOptions(content: string) {
+  const charts: Record<string, any>[] = [];
+  const seen = new Set<string>();
+  const pushChart = (raw: string) => {
+    const option = parseChartOption(raw);
+    if (!option) return;
+    const key = JSON.stringify(option);
+    if (seen.has(key)) return;
+    seen.add(key);
+    charts.push(option);
+  };
+
+  for (const match of content.matchAll(/```([a-zA-Z0-9_-]*)\s*\n?([\s\S]*?)```/g)) {
+    const language = match[1]?.toLowerCase();
+    const body = match[2] || "";
+    if (language === "echart" || language === "echarts" || language === "chart" || language === "json" || /"series"|"xAxis"|"yAxis"|"chartType"|"datasets"/.test(body)) {
+      pushChart(body);
+    }
+  }
+
+  if (charts.length === 0) {
+    for (const match of content.matchAll(/`([\s\S]*?(?:"series"|"xAxis"|"yAxis"|"chartType"|"datasets")[\s\S]*?)`/g)) {
+      pushChart(match[1]);
+    }
+  }
+
+  return charts;
+}
+
+function stripChartBlocks(content: string) {
+  let stripped = content.replace(/```([a-zA-Z0-9_-]*)\s*\n?([\s\S]*?)```/g, (full, language, body) => {
+    const lang = String(language || "").toLowerCase();
+    if (lang === "echart" || lang === "echarts" || lang === "chart") return "";
+    if ((lang === "json" || /"series"|"xAxis"|"yAxis"|"chartType"|"datasets"/.test(body)) && looksLikeChartJson(body)) return "";
+    return full;
+  });
+
+  stripped = stripped.replace(/```(?:echart|echarts|chart)\s*\n?[\s\S]*$/i, "");
+  stripped = stripped.replace(/```json\s*\n[\s\S]*?(?:"series"|"xAxis"|"yAxis"|"chartType"|"datasets")[\s\S]*$/i, "");
+
+  stripped = stripped.replace(/`([\s\S]*?(?:"series"|"xAxis"|"yAxis"|"chartType"|"datasets")[\s\S]*?)`/g, (full, body) => (
+    looksLikeChartJson(body) ? "" : full
+  ));
+
+  return removeBareChartJson(stripped).trim();
+}
+
+export const ChatMessage = ({ role, content: rawContent, isTyping, isStreaming, status, startedBy, sources, artifacts, responseTimeMs, onWebViewOpen, debug }: ChatMessageProps) => {
   const isUser = role === "user";
+  const content = rawContent.replace(/\n?\n?\[\/?\s*GENERATE_ECHART\s*\]/g, '').replace(/<br\s*\/?>/g, '\n');
   const [showDebug, setShowDebug] = useState(false);
   const userRole = localStorage.getItem('userRole') || 'user';
   const canShowSourceCitations = userRole.toLowerCase() === 'developer';
@@ -192,6 +372,17 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, status, star
     }
   };
 
+  const markdownContent = (() => {
+    const withDownloadLinks = content.replace(/\[Download:\s*(.+?)\]/g, (_, filename: string) => (
+      `[📥 ${filename.trim()}](/api/files/download-by-name/${encodeURIComponent(filename.trim())}?token=${localStorage.getItem('token')})`
+    ));
+    return stripChartBlocks(withDownloadLinks);
+  })();
+  const artifactChartOptions = (artifacts || [])
+    .filter((artifact) => artifact.type === "echart" && artifact.option)
+    .map((artifact) => artifact.option as Record<string, any>);
+  const chartOptions = isUser ? [] : (artifactChartOptions.length > 0 ? artifactChartOptions : extractChartOptions(content));
+
   return (
     <div className={cn("mb-6 message-enter w-full", isUser && "flex justify-end")}>
       <div className={cn("flex flex-col gap-1.5", isUser ? "items-end max-w-[70%]" : "items-start max-w-[85%]")}>
@@ -244,10 +435,20 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, status, star
                     th: ({ children }) => <th className="px-3 py-2 text-left text-[11px] font-semibold border-b">{children}</th>,
                     td: ({ children }) => <td className="px-3 py-1.5 border-b border-muted/50">{children}</td>,
                     tr: ({ children }) => <tr className="hover:bg-muted/30">{children}</tr>,
+                    code: ({ className, children }) => {
+                      const text = String(children).trim();
+                      // Hide chart JSON from display (rendered separately below)
+                      if (text.length > 50 && text.startsWith('{') && /["'](?:series|datasets|xAxis|yAxis|chartType)["']/.test(text) && looksLikeChartJson(text)) return null;
+                      if (/language-(echart|echarts|chart)/.test(className || '')) return null;
+                      return <code className={className}>{children}</code>;
+                    },
+                    pre: ({ children }) => <>{children}</>,
                   }}
                 >
-                  {content.replace(/\[Download:\s*(.+?)\]/g, (_, filename) => `[📥 ${filename.trim()}](/api/files/download-by-name/${encodeURIComponent(filename.trim())}?token=${localStorage.getItem('token')})`)}
+                  {markdownContent}
                 </ReactMarkdown>
+                {/* Render ECharts extracted from content */}
+                {chartOptions.map((opt, i) => <EChartBlock key={i} option={opt} />)}
               </div>
             )}
           </div>
@@ -335,6 +536,25 @@ export const ChatMessage = ({ role, content, isTyping, isStreaming, status, star
                           {typeof chunk.score === 'number' && <span>score {chunk.score.toFixed(3)}</span>}
                         </div>
                         {chunk.content && <p className="mt-1 line-clamp-3 whitespace-pre-wrap">{chunk.content}</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {Array.isArray(debug.toolCalls) && debug.toolCalls.length > 0 && (
+                  <div className="mt-3 space-y-1.5">
+                    <p className="text-[9px] font-medium uppercase tracking-wide">Tool Calls</p>
+                    {debug.toolCalls.map((tool: any, index: number) => (
+                      <div key={`${tool.name}-${index}`} className="rounded border bg-background/60 p-2">
+                        <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] text-foreground">
+                          <span>{tool.name}</span>
+                          <span className={tool.status === 'ok' ? 'text-green-500' : tool.status === 'skipped' ? 'text-amber-500' : 'text-red-500'}>
+                            {tool.status || 'ok'}
+                          </span>
+                          {typeof tool.latencyMs === 'number' && <span>{formatMs(tool.latencyMs)}</span>}
+                        </div>
+                        {tool.output && <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap font-mono text-[10px]">{JSON.stringify(tool.output, null, 2)}</pre>}
+                        {tool.error && <p className="mt-1 font-mono text-[10px] text-red-500">{tool.error}</p>}
                       </div>
                     ))}
                   </div>

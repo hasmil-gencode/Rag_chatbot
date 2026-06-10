@@ -436,6 +436,18 @@ export const SettingsPage = () => {
                     className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
                   <p className="text-[10px] text-muted-foreground mt-1">Lightweight model for safety classification. Uses Gemini API key from Provider Keys.</p>
                 </div>
+                <div>
+                  <label className="text-[11px] text-muted-foreground">Classifier Model (Language & Intent)</label>
+                  <input value={settings.classifierModel || 'gemini-2.5-flash'} onChange={(e) => updateSetting('classifierModel', e.target.value)}
+                    className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+                  <p className="text-[10px] text-muted-foreground mt-1">Fast model to detect user language and chart intent.</p>
+                </div>
+                <div>
+                  <label className="text-[11px] text-muted-foreground">Chart Generation Model</label>
+                  <input value={settings.chartModel || 'gemini-2.5-flash'} onChange={(e) => updateSetting('chartModel', e.target.value)}
+                    className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+                  <p className="text-[10px] text-muted-foreground mt-1">Model for generating ECharts JSON. Dedicated call — outputs only chart data.</p>
+                </div>
               </div>
             </div>
 

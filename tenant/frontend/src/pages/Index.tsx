@@ -3,7 +3,7 @@ import { Toaster, toast } from "sonner";
 import { ConfirmDialogProvider, useConfirm } from "@/components/chat/ConfirmDialog";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { ChatArea } from "@/components/chat/ChatArea";
-import { api, setUnauthorizedHandler } from "@/lib/api";
+import { api, setUnauthorizedHandler, type ChatArtifact } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -33,6 +33,7 @@ interface Message {
   startedBy?: string;
   status?: string;
   sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[];
+  artifacts?: ChatArtifact[];
   responseTimeMs?: number;
   actions?: { label: string; value: string }[];
   debug?: any;
@@ -415,6 +416,11 @@ const Index = () => {
         id: i.toString(),
         role: m.role === "bot" ? "assistant" : "user",
         content: m.content || "",
+        startedBy: m.startedBy,
+        createdAt: m.createdAt,
+        sources: m.sources || [],
+        artifacts: m.artifacts || [],
+        responseTimeMs: m.responseTimeMs,
       })));
     } catch (error) {
       console.error("Failed to load messages:", error);
@@ -430,6 +436,17 @@ const Index = () => {
       }
     } catch (error: any) {
       toast.error(error.message);
+    }
+  };
+
+  const handleShareChat = async (id: string) => {
+    try {
+      const res = await api.shareSession(id);
+      const url = `${window.location.origin}${res.url}`;
+      await navigator.clipboard.writeText(url);
+      toast.success("Share link copied!");
+    } catch (error: any) {
+      toast.error(error?.message || "Failed to share chat");
     }
   };
 
@@ -565,6 +582,7 @@ const Index = () => {
                 content: fallback.response,
                 status: undefined,
                 sources: fallback.sources || [],
+                artifacts: fallback.artifacts || [],
                 responseTimeMs: fallback.responseTimeMs,
                 debug: fallback.debug,
               }
@@ -587,6 +605,7 @@ const Index = () => {
               content: msg.content || response.response,
               status: undefined,
               sources: response.sources || [],
+              artifacts: response.artifacts || [],
               responseTimeMs: response.responseTimeMs,
               debug: response.debug,
             }
@@ -1017,6 +1036,7 @@ const Index = () => {
             document.querySelector('.sidebar-container')?.classList.remove('open');
           }}
           onDeleteChat={handleDeleteChat}
+          onShareChat={handleShareChat}
           currentPage={currentPage}
           onNavigate={(page) => {
             setCurrentPage(page);

@@ -50,9 +50,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Serve React app static files
-app.use(express.static(join(__dirname, 'frontend/dist')));
-
 const MONGODB_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
 const MIN_INTERNAL_KEY_LENGTH = 24;
@@ -290,6 +287,9 @@ if (!settingsExists) {
     chatMaxChunks: 5,
     chatShowSourcesDefault: true,
     chatStreamingSpeed: 'balanced',
+    // Sub-agent models
+    classifierModel: 'gemini-2.5-flash',
+    chartModel: 'gemini-2.5-flash',
     // Guardrail settings
     guardrailEnabled: true,
     guardrailModel: 'gemini-2.5-flash-lite',
@@ -1704,6 +1704,7 @@ app.post('/api/chat', auth, apiRateLimit(30, 60000), validateRequestBody({
       role: 'bot',
       content: botContent,
       sources: sourceCitations,
+      artifacts: result.artifacts || [],
       responseTimeMs: verboseMode ? responseTimeMs : undefined,
       chatType: 'browser',
       chatName: 'normal',
@@ -1724,7 +1725,7 @@ app.post('/api/chat', auth, apiRateLimit(30, 60000), validateRequestBody({
       );
     }
 
-    res.json({ response: botContent, sources: sourceCitations, responseTimeMs: verboseMode ? responseTimeMs : undefined, sessionId: chatSessionId, debug: isDev ? result.debug : undefined });
+    res.json({ response: botContent, sources: sourceCitations, artifacts: result.artifacts || [], responseTimeMs: verboseMode ? responseTimeMs : undefined, sessionId: chatSessionId, debug: isDev ? result.debug : undefined });
   } catch (error) {
     console.error('Chat error:', error.message);
     res.status(500).json({ 
@@ -1888,6 +1889,7 @@ app.post('/api/chat/stream', auth, apiRateLimit(30, 60000), validateRequestBody(
       role: 'bot',
       content: botContent,
       sources: sourceCitations,
+      artifacts: result.artifacts || [],
       responseTimeMs: verboseMode ? responseTimeMs : undefined,
       chatType: 'browser',
       chatName: 'normal',
@@ -1910,6 +1912,7 @@ app.post('/api/chat/stream', auth, apiRateLimit(30, 60000), validateRequestBody(
     sendEvent('done', {
       response: botContent,
       sources: sourceCitations,
+      artifacts: result.artifacts || [],
       responseTimeMs: verboseMode ? responseTimeMs : undefined,
       sessionId: chatSessionId,
       debug: isDev ? result.debug : undefined,
@@ -2664,6 +2667,7 @@ app.get('/api/messages', auth, async (req, res) => {
     createdAt: m.createdAt,
     startedBy: m.startedBy,
     sources: m.sources || [],
+    artifacts: m.artifacts || [],
     responseTimeMs: m.responseTimeMs
   })));
 });
@@ -2719,6 +2723,67 @@ app.get('/api/sessions', auth, async (req, res) => {
     console.error('Get sessions error:', error.message);
     res.status(500).json({ error: error.message });
   }
+});
+
+// Share chat session
+app.post('/api/sessions/:id/share', auth, async (req, res) => {
+  try {
+    const sessionId = req.params.id;
+    const matchQuery = req.user.role === 'developer'
+      ? { sessionId }
+      : { sessionId, userId: req.user.id };
+    const msg = await db.collection('messages').findOne(matchQuery);
+    if (!msg) return res.status(404).json({ error: 'Session not found' });
+    const existing = await db.collection('shared_chats').findOne({ sessionId });
+    if (existing) return res.json({ shareId: existing.shareId, url: `/share/${existing.shareId}` });
+    const shareId = crypto.randomBytes(12).toString('hex');
+    await db.collection('shared_chats').insertOne({ shareId, sessionId, userId: req.user.id, createdAt: new Date() });
+    res.json({ shareId, url: `/share/${shareId}` });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Unshare chat session
+app.delete('/api/sessions/:id/share', auth, async (req, res) => {
+  try {
+    await db.collection('shared_chats').deleteOne({ sessionId: req.params.id, userId: req.user.id });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+function getSafeSharedMessages(messages = []) {
+  return messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+    createdAt: message.createdAt,
+    artifacts: Array.isArray(message.artifacts)
+      ? message.artifacts
+        .filter((artifact) => artifact?.type === 'echart' && artifact.option)
+        .map((artifact) => ({
+          id: artifact.id,
+          type: 'echart',
+          title: artifact.title || artifact.option?.title?.text || 'Chart',
+          option: artifact.option,
+        }))
+      : [],
+  }));
+}
+
+function toSafeScriptJson(value) {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+// Public: view shared chat (no auth)
+app.get('/api/share/:shareId', async (req, res) => {
+  try {
+    const shared = await db.collection('shared_chats').findOne({ shareId: req.params.shareId });
+    if (!shared) return res.status(404).json({ error: 'Not found' });
+    const messages = await db.collection('messages').find({ sessionId: shared.sessionId }).sort({ createdAt: 1 }).toArray();
+    const safe = getSafeSharedMessages(messages);
+    res.json({ messages: safe, sharedAt: shared.createdAt });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Delete chat session
@@ -5199,12 +5264,13 @@ app.post('/api/embed/chat', auth, async (req, res) => {
       startedBy: startedByName, startedByEmail,
       role: 'bot', content: result.response || '',
       sources: result.sources || [],
+      artifacts: result.artifacts || [],
       responseTimeMs,
       chatType: 'embed', chatName: widget.name,
       createdAt: new Date()
     });
 
-    res.json({ response: result.response, sessionId: chatSessionId, sources: result.sources || [] });
+    res.json({ response: result.response, sessionId: chatSessionId, sources: result.sources || [], artifacts: result.artifacts || [] });
   } catch (error) {
     console.error('Embed chat error:', error.message);
     res.status(500).json({ error: error.message });
@@ -5272,12 +5338,13 @@ app.post('/api/embed/chat/stream', auth, async (req, res) => {
       startedBy: startedByName, startedByEmail,
       role: 'bot', content: botContent,
       sources: result.sources || [],
+      artifacts: result.artifacts || [],
       responseTimeMs,
       chatType: 'embed', chatName: widget.name,
       createdAt: new Date()
     });
 
-    sendEvent('done', { response: botContent, sessionId: chatSessionId, sources: result.sources || [], blocked: result.blocked || false });
+    sendEvent('done', { response: botContent, sessionId: chatSessionId, sources: result.sources || [], artifacts: result.artifacts || [], blocked: result.blocked || false });
     res.end();
   } catch (error) {
     console.error('Embed stream chat error:', error.message);
@@ -5910,6 +5977,42 @@ app.post('/api/data-sources/query', auth, async (req, res) => {
     res.json({ rows: Array.isArray(rows) ? rows.slice(0, 100) : [], rowCount: Array.isArray(rows) ? rows.length : 0 });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
+
+// Public share page (standalone, no auth)
+app.get('/share/:shareId', async (req, res) => {
+  try {
+    const shared = await db.collection('shared_chats').findOne({ shareId: req.params.shareId });
+    if (!shared) return res.status(404).send('<h1>Chat not found</h1>');
+    const messages = await db.collection('messages').find({ sessionId: shared.sessionId }).sort({ createdAt: 1 }).toArray();
+    const safe = getSafeSharedMessages(messages);
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https:; media-src 'self' blob:; frame-ancestors 'none';");
+    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shared Chat - Genia</title>
+<link rel="icon" href="/genia_icon.png"><script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script><script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a2e;color:#e0e0e0;padding:2rem;max-width:800px;margin:0 auto}
+.header{text-align:center;margin-bottom:2rem;padding-bottom:1rem;border-bottom:1px solid #333}.header h1{font-size:1.2rem;color:#fff}.header p{font-size:.75rem;color:#888;margin-top:.5rem}
+.msg{margin-bottom:1rem;padding:.8rem 1rem;border-radius:12px;font-size:.9rem;line-height:1.6}.user{background:#2d2d44;margin-left:3rem;border-bottom-right-radius:4px}.bot{background:#1e1e30;margin-right:3rem;border-bottom-left-radius:4px}
+.role{font-size:.65rem;font-weight:600;text-transform:uppercase;margin-bottom:.3rem;color:#888}.user .role{color:#7c8aff}.bot .role{color:#4ecdc4}
+.msg a{color:#7c8aff}.msg code{background:#333;padding:.1em .3em;border-radius:3px;font-size:.85em}.msg pre{background:#222;padding:.8rem;border-radius:6px;overflow-x:auto;margin:.5rem 0}
+.msg table{border-collapse:collapse;width:100%;margin:.5rem 0;font-size:.8rem}.msg th,.msg td{border:1px solid #444;padding:.4rem .6rem;text-align:left}.msg th{background:#2a2a3e}
+.chart-card{margin:.75rem 0 0;border:1px solid #333;border-radius:10px;overflow:hidden;background:#181828}.chart-head{height:32px;padding:0 .75rem;display:flex;align-items:center;border-bottom:1px solid #333;color:#aaa;font-size:.7rem}.chart-canvas{height:360px;min-height:300px;width:100%}
+.footer{text-align:center;margin-top:2rem;padding-top:1rem;border-top:1px solid #333;font-size:.75rem;color:#666}
+.footer a{color:#7c8aff;text-decoration:none}</style></head><body>
+<div class="header"><h1>Shared Chat</h1><p>Shared on ${shared.createdAt.toLocaleDateString()}</p></div>
+<div id="messages"></div>
+<div class="footer">Powered by <a href="/">Genia</a> by GenCode</div>
+<script>const msgs=${toSafeScriptJson(safe)};const el=document.getElementById('messages');
+function escapeHtml(value){return String(value||'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));}
+function renderMarkdown(value){return window.marked?marked.parse(value||''):'<p>'+escapeHtml(value).replace(/\\n/g,'<br>')+'</p>';}
+function mapAxis(axis){if(Array.isArray(axis))return axis.map(mapAxis);if(!axis||typeof axis!=='object')return axis;return{...axis,axisLabel:{...(axis.axisLabel||{}),color:'#ccc'},axisLine:{...(axis.axisLine||{}),lineStyle:{...(axis.axisLine?.lineStyle||{}),color:'#555'}},splitLine:{...(axis.splitLine||{}),lineStyle:{...(axis.splitLine?.lineStyle||{}),color:'#333'}}};}
+function darkOption(option){const series=Array.isArray(option.series)?option.series:(option.series?[option.series]:[]);const hasPie=series.some(s=>s?.type==='pie');const hasCartesian=Boolean(option.xAxis||option.yAxis||series.some(s=>['bar','line'].includes(s?.type)));const hideLegend=hasCartesian&&series.length<=1;const next={...option,backgroundColor:'transparent',textStyle:{...(option.textStyle||{}),color:'#e0e0e0'},title:{...(option.title||{}),top:option.title?.top??8,left:option.title?.left??'center',textStyle:{...(option.title?.textStyle||{}),color:'#e0e0e0',fontSize:option.title?.textStyle?.fontSize??16}},legend:hideLegend?{...(option.legend||{}),show:false}:{...(option.legend||{}),top:hasPie?undefined:(option.legend?.top??42),bottom:hasPie?(option.legend?.bottom??0):option.legend?.bottom,textStyle:{...(option.legend?.textStyle||{}),color:'#ccc'}},grid:hasCartesian?{...(option.grid||{}),top:hideLegend?78:102,left:48,right:24,bottom:58,containLabel:true}:option.grid,tooltip:{...(option.tooltip||{}),backgroundColor:'#333',textStyle:{color:'#fff'}}};if(next.xAxis)next.xAxis=mapAxis(next.xAxis);if(next.yAxis)next.yAxis=mapAxis(next.yAxis);if(next.series&&!Array.isArray(next.series))next.series=[next.series];if(next.series)next.series=next.series.map(s=>s.type==='pie'?{...s,label:{...(s.label||{}),color:'#e0e0e0'}}:s);return next;}
+function renderArtifacts(container,artifacts=[]){if(!window.echarts)return;artifacts.filter(a=>a?.type==='echart'&&a.option).forEach((artifact,index)=>{const card=document.createElement('div');card.className='chart-card';const head=document.createElement('div');head.className='chart-head';head.textContent=artifact.title||'Chart';const canvas=document.createElement('div');canvas.className='chart-canvas';card.appendChild(head);card.appendChild(canvas);container.appendChild(card);const chart=echarts.init(canvas,null,{renderer:'canvas'});chart.setOption(darkOption(artifact.option));window.addEventListener('resize',()=>chart.resize());});}
+msgs.forEach(m=>{if(!m.content&&!m.artifacts?.length)return;const d=document.createElement('div');d.className='msg '+(m.role==='user'?'user':'bot');
+d.innerHTML='<div class="role">'+(m.role==='user'?'You':'Genia')+'</div>'+renderMarkdown(m.content);renderArtifacts(d,m.artifacts);el.appendChild(d)});</script></body></html>`);
+  } catch (e) { res.status(500).send('<h1>Error</h1>'); }
+});
+
+// Serve React app static files after public server-rendered routes.
+app.use(express.static(join(__dirname, 'frontend/dist')));
 
 // Serve React app for all other routes
 app.get('*', (req, res) => {
