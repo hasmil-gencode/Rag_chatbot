@@ -46,8 +46,6 @@ ingress:
 # sudo systemctl restart cloudflared
 # sudo systemctl status cloudflared --no-pager
 
-
-
 #old
 tunnel: 0faa563c-5b0b-4d0f-82e9-90552aa9b051
 credentials-file: /home/hasmil/.cloudflared/0faa563c-5b0b-4d0f-82e9-90552>
