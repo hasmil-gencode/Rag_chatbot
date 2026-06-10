@@ -195,8 +195,9 @@ export function registerApiKeyRoutes(app, { auth, hasPermission, db, logAudit, v
 }
 
 function cleanApiScopes(scopes) {
+  const allowedScopes = ['chat', 'ingest', 'ingest:write'];
   return Array.isArray(scopes) && scopes.length > 0
-    ? scopes.filter(scope => ['chat', 'ingest'].includes(scope))
+    ? scopes.filter(scope => allowedScopes.includes(scope))
     : ['chat'];
 }
 

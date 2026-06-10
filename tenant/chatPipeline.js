@@ -522,6 +522,64 @@ function addToolCall(debug, name, { status = 'ok', input = {}, output = null, er
   });
 }
 
+function normalizeDataSourceKind(source = {}) {
+  return source.kind || (source.managed ? 'dynamic' : 'fixed');
+}
+
+function buildDataSourceOrgFilter(organizationId) {
+  if (!organizationId) return {};
+  const id = organizationId?.toString?.() || organizationId;
+  if (!ObjectId.isValid(id)) return { organizationIds: '__invalid_org__' };
+  return { organizationIds: new ObjectId(id) };
+}
+
+async function loadAccessibleDataSources(db, organizationId = null) {
+  if (!_mysqlPool) return [];
+  const sources = await db.collection('data_sources')
+    .find(buildDataSourceOrgFilter(organizationId))
+    .sort({ updatedAt: -1, createdAt: -1 })
+    .toArray();
+  return sources.map(source => ({
+    ...source,
+    kind: normalizeDataSourceKind(source),
+    managed: Boolean(source.managed),
+    columns: Array.isArray(source.columns) ? source.columns : [],
+  }));
+}
+
+function formatColumnForPrompt(column = {}) {
+  const label = column.label && column.label !== column.name ? ` label="${column.label}"` : '';
+  const sourceKey = column.sourceKey && column.sourceKey !== column.name ? ` sourceKey="${column.sourceKey}"` : '';
+  const description = column.description ? ` — ${column.description}` : '';
+  return `  - ${column.name} (${column.type || 'string'})${label}${sourceKey}${description}`;
+}
+
+function formatDataSourceForPlanner(source = {}) {
+  const kindLabel = source.kind === 'dynamic' ? 'Dynamic Ingested' : 'Fixed SQL';
+  const sourceDetails = source.kind === 'dynamic'
+    ? `, sourceApp: ${source.sourceApp || 'external'}, externalSourceId: ${source.externalSourceId || '-'}, lastSynced: ${source.lastIngestedAt ? new Date(source.lastIngestedAt).toISOString() : 'never'}`
+    : '';
+  const columnNames = source.columns.map(c => c.name).join(', ') || 'auto-detected on insert';
+  return `- ${source.name} [${kindLabel}] (table: ${source.tableName}, columns: ${columnNames}${sourceDetails})`;
+}
+
+function formatDataSourceForSqlPrompt(source = {}) {
+  const kindLabel = source.kind === 'dynamic' ? 'Dynamic Ingested' : 'Fixed SQL';
+  const details = [
+    `Type: ${kindLabel}`,
+    `Name: ${source.name}`,
+    `Description: ${source.description || source.name || ''}`,
+  ];
+  if (source.kind === 'dynamic') {
+    details.push(`Source app: ${source.sourceApp || 'external'}`);
+    details.push(`External source ID: ${source.externalSourceId || '-'}`);
+    details.push(`Last synced: ${source.lastIngestedAt ? new Date(source.lastIngestedAt).toISOString() : 'never'}`);
+    details.push('This table was dynamically ingested from an external app. Use it normally for SQL if it matches the user request.');
+  }
+  const cols = source.columns.map(formatColumnForPrompt).join('\n') || '  - Columns will be inferred from inserted records.';
+  return `Table: ${source.tableName}\n${details.join('\n')}\nColumns:\n${cols}`;
+}
+
 function normalizeToolName(name = '') {
   return String(name).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
 }
@@ -776,16 +834,12 @@ Rules: Use ECharts format. Required: title.text, tooltip:{}, series:[]. For pie:
 async function tryDataSourceQuery(db, message, settings, organizationId, forceQuery = false) {
   if (!_mysqlPool) return null;
   try {
-    // Get data sources accessible to this org
-    const filter = organizationId ? { organizationIds: new ObjectId(organizationId) } : {};
-    const sources = await db.collection('data_sources').find(filter).toArray();
+    // Get fixed and dynamic data sources accessible to this org.
+    const sources = await loadAccessibleDataSources(db, organizationId);
     if (sources.length === 0) return null;
 
     // Build schema description for LLM
-    const schemaDesc = sources.map(s => {
-      const cols = s.columns.map(c => `  - ${c.name} (${c.type}) — ${c.description || ''}`).join('\n');
-      return `Table: ${s.tableName}\nDescription: ${s.description || s.name}\nColumns:\n${cols}`;
-    }).join('\n\n');
+    const schemaDesc = sources.map(formatDataSourceForSqlPrompt).join('\n\n');
 
     let cleaned;
     if (forceQuery) {
@@ -1239,8 +1293,8 @@ Only include fields that are CLEARLY stated. If not mentioned, omit.`;
   let dataSourcesAvailable = '';
   if (_mysqlPool && organizationId) {
     try {
-      const sources = await db.collection('data_sources').find({ organizationIds: new ObjectId(organizationId) }).toArray();
-      if (sources.length > 0) dataSourcesAvailable = sources.map(s => `- ${s.name} (table: ${s.tableName}, columns: ${s.columns.map(c => c.name).join(', ')})`).join('\n');
+      const sources = await loadAccessibleDataSources(db, organizationId);
+      if (sources.length > 0) dataSourcesAvailable = sources.map(formatDataSourceForPlanner).join('\n');
     } catch {}
   }
   const plannerPrompt = `You are a tool planner. Analyze the user message and decide which internal tools to run.
@@ -1600,9 +1654,9 @@ Only include fields that are CLEARLY stated. If not mentioned, omit.`;
   let dataSourcesAvailable = '';
   if (_mysqlPool && organizationId) {
     try {
-      const sources = await db.collection('data_sources').find({ organizationIds: new ObjectId(organizationId) }).toArray();
+      const sources = await loadAccessibleDataSources(db, organizationId);
       if (sources.length > 0) {
-        dataSourcesAvailable = sources.map(s => `- ${s.name} (table: ${s.tableName}, columns: ${s.columns.map(c => c.name).join(', ')})`).join('\n');
+        dataSourcesAvailable = sources.map(formatDataSourceForPlanner).join('\n');
       }
     } catch {}
   }

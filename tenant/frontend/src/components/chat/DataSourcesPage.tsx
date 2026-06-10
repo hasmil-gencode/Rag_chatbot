@@ -50,6 +50,12 @@ export const DataSourcesPage = () => {
     try { setQueryResult(await api.queryDataSource(sqlQuery)); } catch (e: any) { setQueryResult({ error: e.message }); }
   };
 
+  const isDynamic = (source: any) => source.kind === 'dynamic' || source.managed;
+  const sourceBadge = (source: any) => isDynamic(source)
+    ? { label: 'Dynamic Ingested', className: 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300' }
+    : { label: 'Fixed SQL', className: 'bg-muted text-muted-foreground' };
+  const formatSyncTime = (value?: string) => value ? new Date(value).toLocaleString() : 'Never synced';
+
   return (
     <div className="h-full overflow-y-auto">
       <div className="px-6 py-5">
@@ -66,10 +72,20 @@ export const DataSourcesPage = () => {
         <div className="space-y-2">
           {sources.length === 0 && <p className="text-sm text-muted-foreground text-center py-8">No data sources yet.</p>}
           {sources.map(s => (
-            <div key={s._id} className="border rounded-lg px-4 py-3 flex items-center justify-between">
+            <div key={s._id} className="border rounded-lg px-4 py-3 flex items-start justify-between gap-4">
               <div>
-                <p className="text-sm font-medium flex items-center gap-2"><Database className="w-4 h-4 text-blue-500" />{s.name}</p>
-                <p className="text-[11px] text-muted-foreground">{s.description || s.tableName} · {s.columns?.length} columns · {s.rowCount || 0} rows</p>
+                <p className="text-sm font-medium flex items-center gap-2">
+                  <Database className="w-4 h-4 text-blue-500" />{s.name}
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full ${sourceBadge(s).className}`}>{sourceBadge(s).label}</span>
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  {s.description || s.tableName} · {s.columns?.length || 0} columns · {s.rowCount || 0} rows
+                </p>
+                {isDynamic(s) && (
+                  <p className="text-[10px] text-muted-foreground">
+                    Source: {s.sourceApp || 'external'} · External ID: <span className="font-mono select-all">{s.externalSourceId || '-'}</span> · Last synced: {formatSyncTime(s.lastIngestedAt)}
+                  </p>
+                )}
                 <p className="text-[10px] text-muted-foreground/60 font-mono select-all">ID: {s._id}</p>
               </div>
               <div className="flex gap-1">
@@ -162,7 +178,14 @@ export const DataSourcesPage = () => {
             <div className="flex items-center justify-between mb-3">
               <div>
                 <h2 className="text-sm font-semibold">{viewSource.name}</h2>
-                <p className="text-[10px] text-muted-foreground">{viewSource.tableName} · {records.total} rows</p>
+                <p className="text-[10px] text-muted-foreground">
+                  {sourceBadge(viewSource).label} · {viewSource.tableName} · {records.total} rows
+                </p>
+                {isDynamic(viewSource) && (
+                  <p className="text-[10px] text-muted-foreground">
+                    {viewSource.sourceApp || 'external'} · <span className="font-mono select-all">{viewSource.externalSourceId || '-'}</span> · Last synced: {formatSyncTime(viewSource.lastIngestedAt)}
+                  </p>
+                )}
               </div>
               <div className="flex gap-2">
                 <Button size="sm" variant="outline" onClick={() => handleClear(viewSource._id)} className="text-xs h-7">Clear All</Button>

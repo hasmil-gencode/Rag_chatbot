@@ -2005,7 +2005,9 @@ function getApiKeyScopes(apiKey) {
 }
 
 function apiKeyHasScope(apiKey, scope) {
-  return getApiKeyScopes(apiKey).includes(scope);
+  const scopes = getApiKeyScopes(apiKey);
+  if (scopes.includes(scope)) return true;
+  return scope === 'ingest:write' && scopes.includes('ingest');
 }
 
 function getApiKeyCollectionIds(apiKey) {
@@ -5816,6 +5818,330 @@ app.get('/api/ai-usage', auth, async (req, res) => {
 
 // ─── Data Sources (MySQL Text-to-SQL) ─────────────────────────
 
+const DYNAMIC_INGEST_MAX_RECORDS = 10000;
+const DYNAMIC_INGEST_MAX_FIELDS = 200;
+
+function slugForIdentifier(value, fallback = 'field', maxLength = 48) {
+  const base = String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+  const safe = base || fallback;
+  const prefixed = /^[0-9]/.test(safe) ? `c_${safe}` : safe;
+  return prefixed.slice(0, maxLength).replace(/_$/g, '') || fallback;
+}
+
+function makeUniqueIdentifier(value, used, fallback = 'field') {
+  const base = slugForIdentifier(value, fallback);
+  let name = base;
+  let counter = 2;
+  while (used.has(name)) {
+    const suffix = `_${counter}`;
+    name = `${base.slice(0, Math.max(1, 64 - suffix.length))}${suffix}`;
+    counter++;
+  }
+  used.add(name);
+  return name;
+}
+
+function normalizeIngestSourceApp(value) {
+  return slugForIdentifier(value, 'external', 24);
+}
+
+function buildDynamicTableName(sourceApp, ownerScopeId, externalSourceId, displayName) {
+  const hash = crypto
+    .createHash('sha1')
+    .update(`${ownerScopeId}:${externalSourceId}`)
+    .digest('hex')
+    .slice(0, 10);
+  const slug = slugForIdentifier(displayName || externalSourceId, 'source', 32);
+  return `dyn_${sourceApp}_${slug}_${hash}`.slice(0, 64).replace(/_$/g, '');
+}
+
+async function makeUniqueDynamicTableName(baseName) {
+  let tableName = baseName;
+  let counter = 2;
+  while (await db.collection('data_sources').findOne({ tableName })) {
+    const suffix = `_${counter}`;
+    tableName = `${baseName.slice(0, Math.max(1, 64 - suffix.length))}${suffix}`;
+    counter++;
+  }
+  return tableName;
+}
+
+function normalizeFieldType(type) {
+  const clean = String(type || '').toLowerCase();
+  if (['number', 'decimal', 'float', 'double', 'currency'].includes(clean)) return 'number';
+  if (['integer', 'int'].includes(clean)) return 'integer';
+  if (['date', 'datetime', 'timestamp', 'time'].includes(clean)) return 'date';
+  if (['boolean', 'bool', 'checkbox'].includes(clean)) return 'boolean';
+  return 'string';
+}
+
+function detectColumnType(values, preferredType = 'string') {
+  if (preferredType && preferredType !== 'string') return normalizeFieldType(preferredType);
+  const sample = values.find(value => value !== null && value !== undefined && value !== '');
+  if (sample === undefined) return 'string';
+  if (typeof sample === 'number') return Number.isInteger(sample) ? 'integer' : 'number';
+  if (typeof sample === 'boolean') return 'boolean';
+  if (sample instanceof Date) return 'date';
+  if (typeof sample === 'string' && /^\d{4}-\d{2}-\d{2}(T|\s)/.test(sample)) return 'date';
+  return 'string';
+}
+
+function sqlTypeForColumn(type) {
+  if (type === 'number') return 'DOUBLE';
+  if (type === 'integer') return 'BIGINT';
+  if (type === 'date') return 'DATETIME';
+  if (type === 'boolean') return 'TINYINT(1)';
+  return 'LONGTEXT';
+}
+
+function normalizeMysqlValue(value, type) {
+  if (value === undefined) return null;
+  if (value === null) return null;
+  if (type === 'boolean') return Boolean(value) ? 1 : 0;
+  if (type === 'number' || type === 'integer') {
+    if (value === '') return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (type === 'date') {
+    if (!value) return null;
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 19).replace('T', ' ');
+  }
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function sameColumnSchema(a = [], b = []) {
+  const normalize = (cols) => cols
+    .map(col => `${col.name}:${normalizeFieldType(col.type)}`)
+    .sort();
+  return JSON.stringify(normalize(a)) === JSON.stringify(normalize(b));
+}
+
+function prepareDynamicIngestRecords(fields, records) {
+  const used = new Set();
+  const fieldColumns = new Map();
+  const columns = [];
+
+  const addColumn = (sourceKey, label, type = 'string') => {
+    const key = String(sourceKey || label || '').trim();
+    if (!key || fieldColumns.has(key)) return fieldColumns.get(key);
+    const name = makeUniqueIdentifier(label || key, used, 'field');
+    const column = {
+      name,
+      type: normalizeFieldType(type),
+      description: label && label !== name ? String(label) : '',
+      sourceKey: key,
+      label: String(label || key),
+    };
+    fieldColumns.set(key, column);
+    columns.push(column);
+    return column;
+  };
+
+  for (const field of (Array.isArray(fields) ? fields.slice(0, DYNAMIC_INGEST_MAX_FIELDS) : [])) {
+    if (!field || typeof field !== 'object') continue;
+    addColumn(
+      field.id || field.name || field.key || field.label,
+      field.label || field.name || field.key || field.id,
+      field.type
+    );
+  }
+
+  for (const record of records) {
+    if (!record || typeof record !== 'object' || Array.isArray(record)) continue;
+    for (const key of Object.keys(record)) {
+      addColumn(key, key, 'string');
+    }
+  }
+
+  if (columns.length === 0) addColumn('value', 'value', 'string');
+
+  for (const column of columns) {
+    const values = records.map(record => record?.[column.sourceKey]);
+    column.type = detectColumnType(values, column.type);
+  }
+
+  const normalizedRecords = records.map(record => {
+    const row = {};
+    for (const column of columns) {
+      row[column.name] = normalizeMysqlValue(record?.[column.sourceKey], column.type);
+    }
+    return row;
+  });
+
+  return { columns, normalizedRecords };
+}
+
+async function recreateDataSourceTable(tableName, columns) {
+  const colDefs = columns.map(c => `\`${c.name}\` ${sqlTypeForColumn(c.type)}`).join(', ');
+  await mysqlPool.query(`DROP TABLE IF EXISTS \`${tableName}\``);
+  await mysqlPool.query(`CREATE TABLE \`${tableName}\` (id BIGINT AUTO_INCREMENT PRIMARY KEY, ${colDefs}, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
+}
+
+async function insertRowsIntoDataSource(tableName, columns, records) {
+  const colNames = columns.map(c => c.name);
+  const placeholders = colNames.map(() => '?').join(', ');
+  const insertSql = `INSERT INTO \`${tableName}\` (${colNames.map(c => `\`${c}\``).join(', ')}) VALUES (${placeholders})`;
+  let inserted = 0;
+  for (const record of records) {
+    const values = colNames.map(col => record[col] ?? null);
+    await mysqlPool.query(insertSql, values);
+    inserted++;
+  }
+  return inserted;
+}
+
+// Dynamic ingest endpoint for external apps with changing schemas, such as Genform.
+app.post('/api/v1/ingest/dynamic', authenticateApiKey, requireApiScope('ingest:write'), apiRateLimit(120, 60000), async (req, res) => {
+  const started = Date.now();
+  try {
+    if (!mysqlPool) return res.status(503).json({ error: 'MySQL data source storage is not available' });
+
+    const sourceApp = normalizeIngestSourceApp(req.body?.sourceApp || 'external');
+    const externalSourceId = String(req.body?.externalSourceId || '').trim();
+    const displayName = String(req.body?.displayName || req.body?.name || externalSourceId || 'External Source').trim();
+    const description = String(req.body?.description || '').trim();
+    const records = Array.isArray(req.body?.records) ? req.body.records : [];
+    const fields = Array.isArray(req.body?.fields) ? req.body.fields : [];
+    const mode = req.body?.mode === 'append' ? 'append' : 'replace';
+
+    if (!externalSourceId) return res.status(400).json({ error: 'externalSourceId is required' });
+    if (records.length === 0) return res.status(400).json({ error: 'records are required' });
+    if (records.length > DYNAMIC_INGEST_MAX_RECORDS) {
+      return res.status(400).json({ error: `Too many records. Max ${DYNAMIC_INGEST_MAX_RECORDS} per request.` });
+    }
+
+    const orgScope = await resolveApiOrganizationScope(req.apiKey.userId, req.body?.organizationId || null);
+    if (!orgScope.allowed) {
+      return res.status(orgScope.status).json({ error: orgScope.message, code: orgScope.code });
+    }
+
+    const ownerScopeId = orgScope.currentOrganizationId || req.apiKey.userId?.toString?.() || req.apiKey.userId || req.apiKey._id.toString();
+    const sourceQuery = { kind: 'dynamic', ownerScopeId, sourceApp, externalSourceId };
+    let source = await db.collection('data_sources').findOne(sourceQuery);
+    const { columns, normalizedRecords } = prepareDynamicIngestRecords(fields, records);
+    let created = false;
+
+    if (!source) {
+      const baseTableName = buildDynamicTableName(sourceApp, ownerScopeId, externalSourceId, displayName);
+      const tableName = await makeUniqueDynamicTableName(baseTableName);
+      const insert = await db.collection('data_sources').insertOne({
+        ...sourceQuery,
+        name: displayName,
+        description,
+        tableName,
+        columns,
+        organizationIds: orgScope.currentOrganizationId && ObjectId.isValid(orgScope.currentOrganizationId)
+          ? [new ObjectId(orgScope.currentOrganizationId)]
+          : [],
+        sourceApp,
+        externalSourceId,
+        managed: true,
+        createdByApiKeyId: req.apiKey._id,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      source = { _id: insert.insertedId, tableName, columns };
+      created = true;
+      await recreateDataSourceTable(tableName, columns);
+    } else if (!sameColumnSchema(source.columns || [], columns)) {
+      if (mode !== 'replace') {
+        return res.status(400).json({ error: 'Schema changed. Send mode=replace to rebuild this managed data source.' });
+      }
+      await recreateDataSourceTable(source.tableName, columns);
+      await db.collection('data_sources').updateOne(
+        { _id: source._id },
+        {
+          $set: {
+            name: displayName,
+            description,
+            columns,
+            organizationIds: orgScope.currentOrganizationId && ObjectId.isValid(orgScope.currentOrganizationId)
+              ? [new ObjectId(orgScope.currentOrganizationId)]
+              : [],
+            updatedAt: new Date(),
+          },
+        }
+      );
+      source.columns = columns;
+    } else if (mode === 'replace') {
+      await mysqlPool.query(`TRUNCATE TABLE \`${source.tableName}\``);
+      await db.collection('data_sources').updateOne(
+        { _id: source._id },
+        {
+          $set: {
+            name: displayName,
+            description,
+            organizationIds: orgScope.currentOrganizationId && ObjectId.isValid(orgScope.currentOrganizationId)
+              ? [new ObjectId(orgScope.currentOrganizationId)]
+              : [],
+            updatedAt: new Date(),
+          },
+        }
+      );
+    }
+
+    const inserted = await insertRowsIntoDataSource(source.tableName, columns, normalizedRecords);
+    await db.collection('data_sources').updateOne(
+      { _id: source._id },
+      {
+        $set: {
+          lastIngestedAt: new Date(),
+          lastIngestedByApiKeyId: req.apiKey._id,
+          lastIngestedRecordCount: inserted,
+          updatedAt: new Date(),
+        },
+      }
+    );
+
+    await logApiUsage({
+      apiKeyId: req.apiKey._id,
+      apiKeyName: req.apiKey.name,
+      userId: req.apiKey.userId,
+      endpoint: '/api/v1/ingest/dynamic',
+      responseStatus: 200,
+      latencyMs: Date.now() - started,
+      requestLength: JSON.stringify(req.body || {}).length,
+      responseLength: inserted,
+      provider: 'mysql',
+      model: 'dynamic-ingest',
+      chatMode: 'ingest',
+      streaming: false,
+    });
+
+    res.json({
+      success: true,
+      created,
+      dataSourceId: source._id,
+      tableName: source.tableName,
+      inserted,
+      columns: columns.map(({ name, type, label, sourceKey }) => ({ name, type, label, sourceKey })),
+    });
+  } catch (e) {
+    await logApiUsage({
+      apiKeyId: req.apiKey?._id,
+      apiKeyName: req.apiKey?.name,
+      userId: req.apiKey?.userId,
+      endpoint: '/api/v1/ingest/dynamic',
+      responseStatus: 500,
+      latencyMs: Date.now() - started,
+      errorCode: 'INGEST_ERROR',
+      errorMessage: e.message,
+      provider: 'mysql',
+      model: 'dynamic-ingest',
+      chatMode: 'ingest',
+      streaming: false,
+    });
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // List data sources
 app.get('/api/data-sources', auth, async (req, res) => {
   if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
@@ -5823,6 +6149,8 @@ app.get('/api/data-sources', auth, async (req, res) => {
     const sources = await db.collection('data_sources').find().sort({ createdAt: -1 }).toArray();
     // Get row counts
     for (const s of sources) {
+      s.kind = s.kind || (s.managed ? 'dynamic' : 'fixed');
+      s.managed = Boolean(s.managed);
       try {
         if (mysqlPool) { const [rows] = await mysqlPool.query(`SELECT COUNT(*) as count FROM \`${s.tableName}\``); s.rowCount = rows[0].count; }
       } catch { s.rowCount = 0; }
@@ -5852,7 +6180,16 @@ app.post('/api/data-sources', auth, async (req, res) => {
       await mysqlPool.query(`CREATE TABLE IF NOT EXISTS \`${tableName}\` (id BIGINT AUTO_INCREMENT PRIMARY KEY, ${colDefs}, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
     }
     // Save metadata in MongoDB (columns may be empty — auto-detected on first insert)
-    const result = await db.collection('data_sources').insertOne({ name, description: description || '', tableName, columns: columns || [], organizationIds: (organizationIds || []).map(id => new ObjectId(id)), createdAt: new Date() });
+    const result = await db.collection('data_sources').insertOne({
+      name,
+      description: description || '',
+      tableName,
+      columns: columns || [],
+      organizationIds: (organizationIds || []).map(id => new ObjectId(id)),
+      kind: 'fixed',
+      managed: false,
+      createdAt: new Date()
+    });
     res.json({ success: true, id: result.insertedId, tableName });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

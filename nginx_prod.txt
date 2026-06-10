@@ -44,6 +44,19 @@ server {
         return 404;
     }
 
+    # External data ingest API direct to Tenant.
+    # Used by GenForm/other systems with x-api-key + ingest:write scope.
+    location = /api/v1/ingest/dynamic {
+        proxy_pass http://genia_tenant;
+
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_connect_timeout 75s;
+        proxy_request_buffering off;
+    }
+
     # SSE browser chat stream via Gateway -> Tenant
     location = /api/chat/stream {
         proxy_pass http://genia_gateway;

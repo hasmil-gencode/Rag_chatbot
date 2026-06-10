@@ -1,0 +1,85 @@
+Phase 0: Confirm Contract
+* Define payload Genform → Genia:
+{
+  "sourceApp": "genform",
+  "externalSourceId": "genform:<formId>",
+  "displayName": "<form title>",
+  "mode": "replace",
+  "fields": [],
+  "records": []
+}
+* Decide endpoint baru Genia:POST /api/v1/ingest/dynamic
+* Use Genia API key, bukan login token.
+Phase 1: Genia API Key Scope
+* Add new API key scope: ingest:write.
+* Update API key UI supaya developer boleh tick Ingest Write.
+* Backend require scope untuk endpoint dynamic ingest.
+* Existing chat scope tak kacau.
+Phase 2: Genia Dynamic Ingestion Backend
+* Add endpoint POST /api/v1/ingest/dynamic.
+* Auto find/create data source by:
+    * organizationId
+    * sourceApp
+    * externalSourceId
+* Auto create MySQL table if first ingest.
+* Auto detect columns from fields/records.
+* If same form sent again:
+    * replace = truncate + insert latest records.
+    * same table reused.
+* If form schema changed:
+    * add missing columns or rebuild safely where needed.
+* Save metadata in Mongo:
+    * kind: "dynamic"
+    * sourceApp: "genform"
+    * externalSourceId
+    * managed: true
+    * tableName
+    * columns
+Phase 3: Keep Fixed Data Sources Untouched
+* Manual/fixed data source flow stays as-is.
+* Existing /api/data-sources manual create/table setup still works.
+* Add distinction:
+    * kind: "fixed" for current/manual sources
+    * kind: "dynamic" for Genform/ingested sources
+Phase 4: Genia Data Sources UI
+* Show label/badge:
+    * Fixed SQL
+    * Dynamic Ingested
+* Dynamic source displays:
+    * Source app
+    * External source ID/form ID
+    * Row count
+    * Last synced
+* Developer can browse/delete dynamic source.
+* Avoid manual editing table schema for dynamic source for now.
+Phase 5: Genform Developer Settings
+* Remove need for dataSourceId in Genform settings.
+* Developer only stores per admin:
+    * Genia URL
+    * Genia API Key
+* Optional later:
+    * Namespace/project label
+* UI copy makes clear data source/table auto-created in Genia.
+Phase 6: Genform Send to Genia
+* Responses page Send to Genia only appears for admin and developer.
+* User keeps:
+    * AI Summary
+    * Export Excel
+* On click, Genform sends:
+    * form metadata
+    * field definitions
+    * response records
+* Genform calls Genia dynamic endpoint with API key.
+* No modal, no manual data source ID.
+Phase 7: SQL/RAG Planner Compatibility
+* Ensure Genia SQL planner can see dynamic ingested tables.
+* Dynamic data source gets included in data-source context like fixed tables.
+* RAG vector stays separate.
+Phase 8: Testing
+* Test new Genform form send first time → Genia creates dynamic source/table.
+* Test same form send again → same table, records replaced.
+* Test form with new field → schema updates.
+* Test multiple forms under same admin → multiple dynamic tables.
+* Test user role cannot send.
+* Test fixed/manual data source still works.
+* Test API key without ingest:write fails with 403.
