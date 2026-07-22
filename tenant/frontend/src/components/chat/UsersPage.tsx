@@ -17,13 +17,17 @@ export const UsersPage = () => {
   const [formData, setFormData] = useState({ email: "", password: "", fullName: "", organizationIds: [] as string[], canUploadFiles: true, isAdmin: false });
   const userRole = localStorage.getItem('userRole') || 'user';
   const isDeveloper = userRole === 'developer';
+  const isManager = userRole === 'manager';
   const confirm = useConfirm();
 
   useEffect(() => { loadData(); }, []);
 
   const loadData = async () => {
     try {
-      const [usersData, orgsData] = await Promise.all([api.getUsers(), api.getAllOrganizations()]);
+      const [usersData, orgsData] = await Promise.all([
+        api.getUsers(),
+        isManager ? api.getMyOrganizations() : api.getAllOrganizations(),
+      ]);
       const orgs = orgsData.organizations || [];
       setOrganizations(orgs);
       const usersWithOrgs = await Promise.all(usersData.map(async (user: any) => {
@@ -50,10 +54,11 @@ export const UsersPage = () => {
     try {
       if (editingUser) {
         await api.updateUser(editingUser._id, formData.fullName, formData.password, formData.canUploadFiles);
-        await api.assignUserToOrganizations(editingUser._id, formData.organizationIds);
+        if (!isManager) await api.assignUserToOrganizations(editingUser._id, formData.organizationIds);
       } else {
+        // Managers auto-assign new users to their own department (handled server-side).
         const userData = await api.createUser(formData.email, formData.password, formData.fullName, formData.canUploadFiles, formData.isAdmin);
-        if (formData.organizationIds.length > 0) await api.assignUserToOrganizations(userData.userId, formData.organizationIds);
+        if (!isManager && formData.organizationIds.length > 0) await api.assignUserToOrganizations(userData.userId, formData.organizationIds);
       }
       setShowForm(false); setEditingUser(null); setFormData({ email: "", password: "", fullName: "", organizationIds: [], canUploadFiles: true, isAdmin: false }); loadData();
     } catch (e: any) { toast.error(e.message); }
@@ -179,6 +184,7 @@ export const UsersPage = () => {
                 <input type="password" value={formData.password} onChange={(e) => setFormData({ ...formData, password: e.target.value })} required={!editingUser}
                   className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
               </div>
+              {!isManager ? (
               <div>
                 <label className="text-[11px] text-muted-foreground">Assign to Organizations</label>
                 <div className="border rounded-lg p-3 mt-1 max-h-40 overflow-y-auto space-y-1">
@@ -192,6 +198,9 @@ export const UsersPage = () => {
                   ))}
                 </div>
               </div>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">New users are added to your department: <span className="text-foreground font-medium">{organizations[0]?.name || 'your department'}</span></p>
+              )}
               <label className="flex items-center gap-2 text-xs cursor-pointer">
                 <input type="checkbox" checked={formData.canUploadFiles} onChange={(e) => setFormData({ ...formData, canUploadFiles: e.target.checked })} className="w-3.5 h-3.5 rounded" />
                 Can upload files

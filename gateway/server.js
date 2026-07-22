@@ -8,10 +8,22 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
-app.set('trust proxy', true);
+// Configurable trust proxy (TRUST_PROXY: true|false|<hop count>|<subnet list>).
+// Default true so req.secure / x-forwarded-proto work behind Cloudflare+nginx.
+// Security decisions use getClientIp() → CF-Connecting-IP, not req.ip.
+function parseTrustProxy(value) {
+  if (value === undefined || value === '') return true;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  const asNumber = Number(value);
+  if (Number.isInteger(asNumber) && asNumber >= 0) return asNumber;
+  return value;
+}
+app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
+const jsonBodyParser = express.json({ limit: process.env.JSON_BODY_LIMIT || '2mb' });
 app.use((req, res, next) => {
   if ((req.headers['content-type'] || '').includes('multipart')) return next();
-  express.json()(req, res, next);
+  jsonBodyParser(req, res, next);
 });
 app.use(cookieParser());
 
@@ -29,6 +41,24 @@ app.use((req, res, next) => {
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  next();
+});
+
+// Responsible-disclosure contact (security assessment F-007).
+app.get('/.well-known/security.txt', (req, res) => {
+  res.type('text/plain').send(
+    'Contact: mailto:security@gencode.com.my\n' +
+    'Expires: 2027-01-01T00:00:00.000Z\n' +
+    'Preferred-Languages: en, ms\n' +
+    'Canonical: https://genia.gencode.com.my/.well-known/security.txt\n'
+  );
+});
+
+// Explicitly 404 sensitive/probe paths before the SPA catch-all so scanners
+// don't see a blanket HTTP 200 for /.env, /.git, *.php, etc (assessment F-003).
+const SENSITIVE_PATH_RE = /(^|\/)\.(env|git|htaccess|htpasswd|svn|hg|aws|ssh)(\/|$)|\.(php|asp|aspx|jsp|cgi)$|(^|\/)(web\.config|phpinfo\.php|wp-login\.php|wp-admin)(\/|$)/i;
+app.use((req, res, next) => {
+  if (SENSITIVE_PATH_RE.test(req.path)) return res.status(404).type('text/plain').send('Not found');
   next();
 });
 
@@ -58,7 +88,7 @@ function getLoginRateKey(ip) {
 
 async function loginRateLimit(req, res, next) {
   try {
-    const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+    const ip = getClientIp(req);
     const key = getLoginRateKey(ip);
     req._loginIp = ip;
     req._loginRateKey = key;
@@ -121,6 +151,17 @@ function getRequestHost(req) {
   const forwardedHost = req.headers['x-forwarded-host'];
   const host = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost || req.headers.host || '';
   return String(host).split(',')[0].trim().split(':')[0].toLowerCase();
+}
+
+// Real client IP for security decisions (login rate limiting). Production
+// traffic comes through Cloudflare, which sets an unspoofable CF-Connecting-IP
+// header (forwarded intact by nginx). X-Forwarded-For / req.ip contain
+// client-supplied values under `trust proxy` and must not be trusted here.
+function getClientIp(req) {
+  const cf = req.headers['cf-connecting-ip'];
+  const cfIp = (Array.isArray(cf) ? cf[0] : cf || '').trim();
+  if (cfIp) return cfIp;
+  return req.ip || req.connection?.remoteAddress || 'unknown';
 }
 
 function isLocalhostRequest(req) {
@@ -290,10 +331,28 @@ function sendGatewayDeveloperLogin(req, res, user) {
   });
 }
 
+const gatewayFrontendDist = join(__dirname, 'frontend/dist');
+const noStoreHtmlCache = 'no-cache, no-store, must-revalidate';
+const immutableAssetCache = 'public, max-age=31536000, immutable';
+
+function setFrontendCacheHeaders(res, filePath) {
+  const normalizedPath = filePath.replaceAll('\\', '/');
+  if (normalizedPath.includes('/assets/')) {
+    res.setHeader('Cache-Control', immutableAssetCache);
+  } else if (normalizedPath.endsWith('/index.html') || normalizedPath.endsWith('.html')) {
+    res.setHeader('Cache-Control', noStoreHtmlCache);
+  }
+}
+
+function sendNoCacheIndex(res) {
+  res.setHeader('Cache-Control', noStoreHtmlCache);
+  return res.sendFile(join(gatewayFrontendDist, 'index.html'));
+}
+
 // Serve gateway static files only if NOT a tenant session
 app.use((req, res, next) => {
   if (req.cookies?.__gw_server) return next();
-  express.static(join(__dirname, 'frontend/dist'))(req, res, next);
+  express.static(gatewayFrontendDist, { setHeaders: setFrontendCacheHeaders })(req, res, next);
 });
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://mongodb:27017/gateway';
@@ -301,6 +360,24 @@ const JWT_SECRET = process.env.JWT_SECRET || (() => { throw new Error('JWT_SECRE
 const PORT = process.env.PORT || 4000;
 
 let db;
+let mongoClient;
+
+app.get('/api/health', async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(503).json({ ok: false, service: 'gateway', database: 'disconnected' });
+    }
+    await db.command({ ping: 1 });
+    res.json({ ok: true, service: 'gateway', database: 'connected' });
+  } catch (error) {
+    res.status(503).json({
+      ok: false,
+      service: 'gateway',
+      database: 'unavailable',
+      error: error.message,
+    });
+  }
+});
 
 async function ensureMongoIndexes() {
   const indexes = [
@@ -468,17 +545,27 @@ app.get('/api/gateway/tenants', auth, async (req, res) => {
 
 app.post('/api/gateway/tenants', auth, async (req, res) => {
   try {
-    const { orgName, adminEmail, adminPassword, adminName, packageId, publicEnabled } = req.body;
+    const { orgName, adminEmail, adminPassword, adminName, packageId, publicEnabled, serverId, systemPrompt } = req.body;
     if (!orgName || !adminEmail || !adminPassword || !adminName) return res.status(400).json({ error: 'All fields required' });
 
-    // Find server with available slot
-    const servers = await db.collection('servers').find({ status: 'active' }).toArray();
+    // Pick target server: explicit selection wins, else auto-find first with a free slot.
     let targetServer = null;
-    for (const s of servers) {
-      const count = await db.collection('tenants').countDocuments({ serverId: s._id.toString() });
-      if (count < (s.maxTenants || 5)) { targetServer = s; break; }
+    if (serverId) {
+      if (!ObjectId.isValid(serverId)) return res.status(400).json({ error: 'Invalid server selected' });
+      const server = await db.collection('servers').findOne({ _id: new ObjectId(serverId) });
+      if (!server) return res.status(404).json({ error: 'Selected server not found' });
+      if (server.status !== 'active') return res.status(400).json({ error: 'Selected server is not active' });
+      const count = await db.collection('tenants').countDocuments({ serverId: server._id.toString() });
+      if (count >= (server.maxTenants || 5)) return res.status(400).json({ error: `Selected server is full (${count}/${server.maxTenants || 5}). Choose another server or increase its capacity.` });
+      targetServer = server;
+    } else {
+      const servers = await db.collection('servers').find({ status: 'active' }).toArray();
+      for (const s of servers) {
+        const count = await db.collection('tenants').countDocuments({ serverId: s._id.toString() });
+        if (count < (s.maxTenants || 5)) { targetServer = s; break; }
+      }
+      if (!targetServer) return res.status(400).json({ error: 'All servers are full. Add a new server first.' });
     }
-    if (!targetServer) return res.status(400).json({ error: 'All servers are full. Add a new server first.' });
 
     // Get package data
     let packageData = null;
@@ -489,7 +576,7 @@ app.post('/api/gateway/tenants', auth, async (req, res) => {
 
     // Call tenant server to create client
     const resp = await axios.post(`${targetServer.url}/api/internal/create-client`, {
-      orgName, adminEmail, adminPassword, adminName, packageData, publicEnabled
+      orgName, adminEmail, adminPassword, adminName, packageData, publicEnabled, systemPrompt
     }, { headers: { 'x-internal-key': targetServer.internalKey }, timeout: 15000 });
 
     if (!resp.data.success) throw new Error(resp.data.error || 'Failed');
@@ -519,6 +606,90 @@ app.post('/api/gateway/tenants/:id/manage', auth, async (req, res) => {
     setTenantServerCookie(req, res, server.url);
     res.json({ token: resp.data.token, serverUrl: server.url, user: resp.data.user });
   } catch (error) { res.status(500).json({ error: 'Failed to get access: ' + error.message }); }
+});
+
+async function getTenantDeveloperContext(req, res) {
+  const serverUrl = req.cookies?.[TENANT_SERVER_COOKIE];
+  const cookieHeader = getTenantProxyCookieHeader(req);
+  if (!serverUrl || !cookieHeader) {
+    res.status(401).json({ error: 'Tenant developer session required' });
+    return null;
+  }
+
+  const server = await db.collection('servers').findOne({ url: serverUrl, status: 'active' });
+  if (!server) {
+    res.status(404).json({ error: 'Tenant server not registered in gateway' });
+    return null;
+  }
+
+  const me = await axios.get(`${serverUrl}/api/user/me`, {
+    headers: { cookie: cookieHeader },
+    timeout: 10000,
+    validateStatus: () => true,
+  });
+
+  if (me.status !== 200 || me.data?.role !== 'developer') {
+    res.status(403).json({ error: 'Developer only' });
+    return null;
+  }
+
+  return { server, user: me.data };
+}
+
+function toPackageTemplate(pkg) {
+  return {
+    gatewayPackageId: pkg._id.toString(),
+    name: pkg.name,
+    storageLimitGB: pkg.storageLimitGB || 5,
+    chatQuota: pkg.chatQuota || 0,
+    quotaType: pkg.quotaType || 'individual',
+    renewDay: pkg.renewDay || 1,
+    departmentLimit: pkg.departmentLimit || 0,
+    createdAt: pkg.createdAt,
+    updatedAt: pkg.updatedAt,
+  };
+}
+
+// Tenant developer view: list gateway package templates that can be imported into the active tenant.
+app.get('/api/gateway/package-templates', async (req, res) => {
+  try {
+    const context = await getTenantDeveloperContext(req, res);
+    if (!context) return;
+    const packages = await db.collection('packages').find().sort({ createdAt: -1 }).toArray();
+    res.json(packages.map(toPackageTemplate));
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get gateway package templates' });
+  }
+});
+
+// Assign a gateway package template to an organization in the active tenant.
+// The tenant stores a local copy as its real quota group, linked back to gatewayPackageId.
+app.post('/api/gateway/package-templates/:id/assign', async (req, res) => {
+  try {
+    const context = await getTenantDeveloperContext(req, res);
+    if (!context) return;
+    if (!ObjectId.isValid(req.params.id)) return res.status(400).json({ error: 'Invalid package id' });
+
+    const pkg = await db.collection('packages').findOne({ _id: new ObjectId(req.params.id) });
+    if (!pkg) return res.status(404).json({ error: 'Gateway package not found' });
+
+    const resp = await axios.post(
+      `${context.server.url}/api/internal/gateway-packages/${pkg._id.toString()}/assign`,
+      {
+        orgId: req.body?.orgId,
+        packageData: toPackageTemplate(pkg),
+      },
+      {
+        headers: { 'x-internal-key': context.server.internalKey },
+        timeout: 15000,
+        validateStatus: () => true,
+      }
+    );
+
+    res.status(resp.status).json(resp.data);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to assign gateway package: ' + error.message });
+  }
 });
 
 // ─── Packages ──────────────────────────────────────────────────
@@ -676,6 +847,45 @@ app.get('/share/:shareId', async (req, res) => {
   }
 });
 
+// ─── Embed widget → tenant resolution ─────────────────────────
+// Embed traffic is anonymous (no gateway cookie / api-key) but every embed
+// request carries a widgetId (an ObjectId) in the path, body, or query. We map
+// that widgetId to the owning tenant so all tenants can share ONE public domain.
+const WIDGET_OBJECT_ID_RE = /^[a-f0-9]{24}$/i;
+const WIDGET_SERVER_CACHE_TTL_MS = 10 * 60 * 1000;
+const widgetServerCache = new Map(); // widgetId -> { url, expiresAt }
+
+function extractEmbedWidgetId(req) {
+  for (const seg of req.path.split('/')) {
+    if (WIDGET_OBJECT_ID_RE.test(seg)) return seg;
+  }
+  const fromBody = req.body && typeof req.body === 'object' ? req.body.widgetId : null;
+  if (fromBody && WIDGET_OBJECT_ID_RE.test(String(fromBody))) return String(fromBody);
+  const fromQuery = req.query?.widgetId;
+  if (fromQuery && WIDGET_OBJECT_ID_RE.test(String(fromQuery))) return String(fromQuery);
+  return null;
+}
+
+async function resolveServerByWidgetId(widgetId) {
+  const cached = widgetServerCache.get(widgetId);
+  if (cached && cached.expiresAt > Date.now()) return cached.url;
+
+  const servers = await db.collection('servers').find({ status: 'active' }).toArray();
+  for (const s of servers) {
+    try {
+      const resp = await axios.get(
+        `${s.url}/api/internal/resolve-widget/${encodeURIComponent(widgetId)}`,
+        { headers: { 'x-internal-key': s.internalKey }, timeout: 5000, validateStatus: () => true }
+      );
+      if (resp.status === 200 && resp.data?.exists) {
+        widgetServerCache.set(widgetId, { url: s.url, expiresAt: Date.now() + WIDGET_SERVER_CACHE_TTL_MS });
+        return s.url;
+      }
+    } catch { continue; }
+  }
+  return null;
+}
+
 // ─── Proxy all /api/* to tenant server (for logged-in users) ──
 app.all('/api/*', async (req, res) => {
   // Don't proxy gateway routes
@@ -696,6 +906,12 @@ app.all('/api/*', async (req, res) => {
         if (resp.status === 200 && resp.data.valid) { serverUrl = s.url; break; }
       } catch { continue; }
     }
+  }
+
+  // Public embed routes: anonymous, but carry a widgetId identifying the tenant.
+  if (!serverUrl && req.path.startsWith('/api/embed/')) {
+    const widgetId = extractEmbedWidgetId(req);
+    if (widgetId) serverUrl = await resolveServerByWidgetId(widgetId);
   }
 
   if (!serverUrl) return res.status(401).json({ error: 'Not authenticated' });
@@ -740,17 +956,17 @@ app.get('*', (req, res) => {
       res.status(proxyRes.status);
       Object.entries(proxyRes.headers).forEach(([k, v]) => { if (k !== 'transfer-encoding') res.setHeader(k, v); });
       proxyRes.data.pipe(res);
-    }).catch(() => res.sendFile(join(__dirname, 'frontend/dist/index.html')));
+    }).catch(() => sendNoCacheIndex(res));
     return;
   }
-  res.sendFile(join(__dirname, 'frontend/dist/index.html'));
+  sendNoCacheIndex(res);
 });
 
 // ─── Start ─────────────────────────────────────────────────────
 async function start() {
-  const client = new MongoClient(MONGODB_URI);
-  await client.connect();
-  db = client.db();
+  mongoClient = new MongoClient(MONGODB_URI);
+  await mongoClient.connect();
+  db = mongoClient.db();
   console.log('Connected to MongoDB');
   await ensureMongoIndexes();
 

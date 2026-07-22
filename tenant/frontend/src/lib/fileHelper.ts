@@ -51,13 +51,22 @@ export async function downloadFile(fileId: string) {
     headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
   });
   
-  if (!response.ok) throw new Error('Download failed');
-  
   const contentType = response.headers.get('content-type') || '';
+
+  if (!response.ok) {
+    if (contentType.includes('application/json')) {
+      const data = await response.json().catch(() => null);
+      throw new Error(data?.error || 'Download failed');
+    }
+    throw new Error('Download failed');
+  }
   
   if (contentType.includes('application/json')) {
     // S3 or external URL
     const { downloadUrl, fileName } = await response.json();
+    if (!downloadUrl) {
+      throw new Error('Original file is not available for download. Please upload the file again to enable downloads.');
+    }
     const link = document.createElement('a');
     link.href = downloadUrl;
     link.download = fileName;

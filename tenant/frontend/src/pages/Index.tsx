@@ -9,8 +9,10 @@ import { Input } from "@/components/ui/input";
 
 const FilesPage = lazy(() => import("@/components/chat/FilesPage").then(m => ({ default: m.FilesPage })));
 const SettingsPage = lazy(() => import("@/components/chat/SettingsPage").then(m => ({ default: m.SettingsPage })));
+const TextNotesPage = lazy(() => import("@/components/chat/TextNotesPage").then(m => ({ default: m.TextNotesPage })));
 const ApiManagementPage = lazy(() => import("@/components/chat/ApiManagementPage").then(m => ({ default: m.ApiManagementPage })));
 const ProviderKeysPage = lazy(() => import("@/components/chat/ProviderKeysPage").then(m => ({ default: m.ProviderKeysPage })));
+const GroupsPage = lazy(() => import("@/components/chat/GroupsPage").then(m => ({ default: m.GroupsPage })));
 const UsersPage = lazy(() => import("@/components/chat/UsersPage").then(m => ({ default: m.UsersPage })));
 const OrganizationsPage = lazy(() => import("@/components/chat/OrganizationsPage").then(m => ({ default: m.OrganizationsPage })));
 const AuditTrailPage = lazy(() => import("@/components/chat/AuditTrailPage").then(m => ({ default: m.AuditTrailPage })));
@@ -66,7 +68,7 @@ const Index = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const confirm = useConfirm();
   const [isLoading, setIsLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "data-sources" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "ai-usage" | "smtp-settings">("chat");
+  const [currentPage, setCurrentPage] = useState<"chat" | "files" | "settings" | "api" | "users" | "organizations" | "groups" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "data-sources" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "ai-usage" | "smtp-settings" | "text-notes">("chat");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
@@ -419,6 +421,7 @@ const Index = () => {
         startedBy: m.startedBy,
         createdAt: m.createdAt,
         sources: m.sources || [],
+        attachments: m.attachments || [],
         artifacts: m.artifacts || [],
         responseTimeMs: m.responseTimeMs,
       })));
@@ -582,6 +585,7 @@ const Index = () => {
                 content: fallback.response,
                 status: undefined,
                 sources: fallback.sources || [],
+                attachments: fallback.attachments || [],
                 artifacts: fallback.artifacts || [],
                 responseTimeMs: fallback.responseTimeMs,
                 debug: fallback.debug,
@@ -605,6 +609,7 @@ const Index = () => {
               content: msg.content || response.response,
               status: undefined,
               sources: response.sources || [],
+              attachments: response.attachments || [],
               artifacts: response.artifacts || [],
               responseTimeMs: response.responseTimeMs,
               debug: response.debug,
@@ -1070,8 +1075,10 @@ const Index = () => {
             {currentPage !== "chat" && (
               <Suspense fallback={<PageFallback />}>
                 {currentPage === "files" && <FilesPage />}
+                {currentPage === "text-notes" && <TextNotesPage />}
                 {currentPage === "settings" && <SettingsPage />}
                 {currentPage === "api" && <ApiManagementPage />}
+                {currentPage === "groups" && <GroupsPage />}
                 {currentPage === "provider-keys" && <ProviderKeysPage />}
                 {currentPage === "deleted-chats" && <DeletedChatsPage />}
                 {currentPage === "system-health" && <SystemHealthPage />}

@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { FileText, Loader2, Square, Volume2 } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { FileText, Loader2, Square, Volume2, FileArchive } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import ReactMarkdown from 'react-markdown';
@@ -8,6 +8,8 @@ import { parseFileNamesFromMessage, checkDownloadableFiles } from "@/lib/fileHel
 import { DownloadButton } from "./DownloadButton";
 import { ExportableTable } from "./ExportableTable";
 import { EChartBlock } from "./EChartBlock";
+import { DashboardBlock } from "./DashboardBlock";
+import { api } from "@/lib/api";
 import type { ChatArtifact } from "@/lib/api";
 
 interface ChatMessageProps {
@@ -20,6 +22,7 @@ interface ChatMessageProps {
   startedBy?: string;
   timestamp?: Date | string;
   sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[];
+  attachments?: { file_id: string; file_name: string }[];
   artifacts?: ChatArtifact[];
   responseTimeMs?: number;
   onWebViewOpen?: (url: string) => void;
@@ -202,7 +205,7 @@ function stripChartBlocks(content: string) {
   return removeBareChartJson(stripped).trim();
 }
 
-export const ChatMessage = ({ role, content: rawContent, isTyping, isStreaming, status, startedBy, sources, artifacts, responseTimeMs, onWebViewOpen, debug }: ChatMessageProps) => {
+export const ChatMessage = ({ role, content: rawContent, isTyping, isStreaming, status, startedBy, sources, attachments, artifacts, responseTimeMs, onWebViewOpen, debug }: ChatMessageProps) => {
   const isUser = role === "user";
   const content = rawContent.replace(/\n?\n?\[\/?\s*GENERATE_ECHART\s*\]/g, '').replace(/<br\s*\/?>/g, '\n');
   const [showDebug, setShowDebug] = useState(false);
@@ -216,6 +219,29 @@ export const ChatMessage = ({ role, content: rawContent, isTyping, isStreaming, 
   const [ttsLanguage, setTtsLanguage] = useState<string>("en-US");
   const [audio, setAudio] = useState<HTMLAudioElement | null>(null);
   const [downloadableMatches, setDownloadableMatches] = useState<any[]>([]);
+  const [zipLoading, setZipLoading] = useState(false);
+
+  const handleDownloadAllZip = async () => {
+    if (!attachments || attachments.length === 0) return;
+    setZipLoading(true);
+    try {
+      const ids = attachments.map((a) => a.file_id).filter(Boolean);
+      const blob = await api.downloadFilesZip(ids);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `genia-documents-${Date.now()}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error('ZIP download failed:', err);
+      toast.error(err?.message || 'Failed to download ZIP');
+    } finally {
+      setZipLoading(false);
+    }
+  };
   const displayStatus = (() => {
     const raw = (status || 'Thinking').replace(/\.+$/, '').trim();
     if (/safety|checking/i.test(raw)) return 'Thinking';
@@ -266,6 +292,21 @@ export const ChatMessage = ({ role, content: rawContent, isTyping, isStreaming, 
       })
       .catch(err => console.error('Failed to load TTS settings:', err));
   }, []);
+
+  // Auto-open the first external link in a freshly generated bot reply (split-screen).
+  // Uses a "was streaming" gate so it only fires for new replies, not when loading chat history.
+  const autoOpenedRef = useRef(false);
+  const wasStreamingRef = useRef(isStreaming || isTyping);
+  useEffect(() => {
+    if (isUser) return;
+    if (isStreaming || isTyping) { wasStreamingRef.current = true; return; }
+    if (autoOpenedRef.current || !wasStreamingRef.current) return;
+    const match = (content || '').match(/https?:\/\/[^\s)\]]+/);
+    if (match && onWebViewOpen) {
+      autoOpenedRef.current = true;
+      onWebViewOpen(match[0]);
+    }
+  }, [content, isUser, isTyping, isStreaming, onWebViewOpen]);
 
   // Check for downloadable files in bot messages
   useEffect(() => {
@@ -381,6 +422,8 @@ export const ChatMessage = ({ role, content: rawContent, isTyping, isStreaming, 
   const artifactChartOptions = (artifacts || [])
     .filter((artifact) => artifact.type === "echart" && artifact.option)
     .map((artifact) => artifact.option as Record<string, any>);
+  const dashboardArtifacts = (artifacts || [])
+    .filter((artifact) => artifact.type === "dashboard" && Array.isArray(artifact.charts));
   const chartOptions = isUser ? [] : (artifactChartOptions.length > 0 ? artifactChartOptions : extractChartOptions(content));
 
   return (
@@ -449,6 +492,7 @@ export const ChatMessage = ({ role, content: rawContent, isTyping, isStreaming, 
                 </ReactMarkdown>
                 {/* Render ECharts extracted from content */}
                 {chartOptions.map((opt, i) => <EChartBlock key={i} option={opt} />)}
+                {dashboardArtifacts.map((artifact, i) => <DashboardBlock key={artifact.id || i} artifact={artifact} />)}
               </div>
             )}
           </div>
@@ -476,6 +520,22 @@ export const ChatMessage = ({ role, content: rawContent, isTyping, isStreaming, 
             {downloadableMatches.length > 0 && (
               <DownloadButton matches={downloadableMatches} />
             )}
+          </div>
+        )}
+
+        {/* Downloadable documents: per-item links are rendered inline in the answer.
+            Here we only offer a bulk "Download all" for convenience. */}
+        {!isUser && !isTyping && attachments && attachments.length > 1 && (
+          <div className="mt-2">
+            <button
+              onClick={handleDownloadAllZip}
+              disabled={zipLoading}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/40 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground hover:bg-muted/70 hover:text-foreground transition-colors disabled:opacity-50"
+              title={`Download all ${attachments.length} documents as ZIP`}
+            >
+              {zipLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileArchive className="h-3.5 w-3.5" />}
+              Download all ({attachments.length}) as .zip
+            </button>
           </div>
         )}
 

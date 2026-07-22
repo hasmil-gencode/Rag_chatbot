@@ -5,17 +5,20 @@ import { Plus, X } from 'lucide-react';
 export function TenantsPage() {
   const [tenants, setTenants] = useState<any[]>([]);
   const [packages, setPackages] = useState<any[]>([]);
+  const [servers, setServers] = useState<any[]>([]);
   const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState({ orgName: '', adminName: '', adminEmail: '', adminPassword: '', packageId: '', publicEnabled: false });
+  const [form, setForm] = useState({ orgName: '', adminName: '', adminEmail: '', adminPassword: '', packageId: '', serverId: '', publicEnabled: false, systemPrompt: '' });
   const [msg, setMsg] = useState('');
 
-  useEffect(() => { load(); api.getPackages().then(setPackages).catch(() => {}); }, []);
+  useEffect(() => { load(); api.getPackages().then(setPackages).catch(() => {}); api.getServers().then(setServers).catch(() => {}); }, []);
   const load = () => api.getTenants().then(setTenants).catch(() => {});
 
   const handleCreate = async () => {
     if (!form.orgName || !form.adminName || !form.adminEmail || !form.adminPassword) { setMsg('All fields required'); return; }
-    try { const r = await api.createTenant(form); setMsg(''); setShowModal(false); setForm({ orgName: '', adminName: '', adminEmail: '', adminPassword: '', packageId: '', publicEnabled: false }); load(); } catch (e: any) { setMsg(e.message); }
+    try { const r = await api.createTenant(form); setMsg(''); setShowModal(false); setForm({ orgName: '', adminName: '', adminEmail: '', adminPassword: '', packageId: '', serverId: '', publicEnabled: false, systemPrompt: '' }); load(); } catch (e: any) { setMsg(e.message); }
   };
+
+  const serverIsFull = (s: any) => (s.tenantCount ?? 0) >= (s.maxTenants ?? 5);
 
   return (
     <div className="p-6">
@@ -64,6 +67,17 @@ export function TenantsPage() {
               <div><label className="text-[11px] text-muted-foreground">Admin Email</label><input value={form.adminEmail} onChange={e => setForm({ ...form, adminEmail: e.target.value })} placeholder="admin@client.com" className="w-full h-9 px-3 mt-1 text-sm rounded-lg bg-secondary border border text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500" /></div>
               <div><label className="text-[11px] text-muted-foreground">Admin Password</label><input type="password" value={form.adminPassword} onChange={e => setForm({ ...form, adminPassword: e.target.value })} placeholder="Min 6 characters" className="w-full h-9 px-3 mt-1 text-sm rounded-lg bg-secondary border border text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500" /></div>
               <div>
+                <label className="text-[11px] text-muted-foreground">Server</label>
+                <select value={form.serverId} onChange={e => setForm({ ...form, serverId: e.target.value })} className="w-full h-9 px-3 mt-1 text-sm rounded-lg bg-secondary border border text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500">
+                  <option value="">Auto — first available server</option>
+                  {servers.map(s => {
+                    const full = serverIsFull(s);
+                    const inactive = s.status !== 'active';
+                    return <option key={s._id} value={s._id} disabled={full || inactive}>{s.name} — {s.tenantCount ?? 0}/{s.maxTenants ?? 5}{inactive ? ' (offline)' : full ? ' (full)' : ''}</option>;
+                  })}
+                </select>
+              </div>
+              <div>
                 <label className="text-[11px] text-muted-foreground">Package</label>
                 <select value={form.packageId} onChange={e => setForm({ ...form, packageId: e.target.value })} className="w-full h-9 px-3 mt-1 text-sm rounded-lg bg-secondary border border text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500">
                   <option value="">No package</option>
@@ -71,6 +85,10 @@ export function TenantsPage() {
                 </select>
               </div>
               <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={form.publicEnabled} onChange={e => setForm({ ...form, publicEnabled: e.target.checked })} className="rounded" /><span className="text-xs">Enable public access</span></label>
+              <div>
+                <label className="text-[11px] text-muted-foreground">AI Instructions <span className="text-[10px]">(optional — how this org's bot should behave; identity is auto-set)</span></label>
+                <textarea value={form.systemPrompt} onChange={e => setForm({ ...form, systemPrompt: e.target.value })} rows={3} placeholder="e.g. Focus on Yamaha motorcycle products, pricing and after-sales. Be formal." className="w-full mt-1 px-3 py-2 text-xs rounded-lg bg-secondary border border text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none" />
+              </div>
               {msg && <p className="text-xs text-red-400">{msg}</p>}
               <div className="flex gap-2 pt-2">
                 <button onClick={handleCreate} className="flex-1 h-9 bg-blue-600 hover:bg-blue-700 text-foreground text-xs rounded-lg transition-colors">Create</button>

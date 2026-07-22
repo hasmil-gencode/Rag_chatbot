@@ -1,4 +1,4 @@
-import { Plus, FolderOpen, LogOut, Trash2, Users, Building2, Settings, Key, FileText, UserCog, Search, X, ChevronDown, Code, Activity, Database, Shield, Zap, Mail, MoreHorizontal, Share2 } from "lucide-react";
+import { Plus, FolderOpen, LogOut, Trash2, Users, Building2, Settings, Key, FileText, UserCog, Search, X, ChevronDown, Code, Activity, Database, Shield, Zap, Mail, MoreHorizontal, Share2, Package, StickyNote } from "lucide-react";
 import { NotificationBell } from "./NotificationBell";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -20,8 +20,8 @@ interface ChatSidebarProps {
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
   onShareChat: (id: string) => void;
-  currentPage: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "data-sources" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "ai-usage" | "smtp-settings";
-  onNavigate: (page: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "data-sources" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "ai-usage" | "smtp-settings") => void;
+  currentPage: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "groups" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "data-sources" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "ai-usage" | "smtp-settings" | "text-notes";
+  onNavigate: (page: "chat" | "files" | "settings" | "api" | "users" | "organizations" | "groups" | "deleted-chats" | "user-settings" | "provider-keys" | "audit-trail" | "embed-widgets" | "data-sources" | "system-health" | "vector-browser" | "mongo-browser" | "guardrail-logs" | "ai-usage" | "smtp-settings" | "text-notes") => void;
   onLogout: () => void;
   userEmail: string;
   userRole: string;
@@ -67,10 +67,11 @@ export const ChatSidebar = ({
 
   const isDeveloper = userRole.toLowerCase() === 'developer';
   const isAdmin = userRole.toLowerCase() === 'admin';
+  const isManager = userRole.toLowerCase() === 'manager';
   
   // Role-based navigation access
   const navItems = [
-    ...(canUploadFiles || isDeveloper || isAdmin ? [{ id: "files" as const, label: "Files", icon: FolderOpen }] : []),
+    ...(canUploadFiles || isDeveloper || isAdmin || isManager ? [{ id: "files" as const, label: "Files", icon: FolderOpen }] : []),
     { id: "user-settings" as const, label: "My Account", icon: UserCog },
   ];
 
@@ -82,19 +83,22 @@ export const ChatSidebar = ({
         { id: "provider-keys" as const, label: "Provider Keys", icon: Key },
         { id: "settings" as const, label: "Settings", icon: Settings },
         { id: "api" as const, label: "API", icon: Key },
+        { id: "groups" as const, label: "Packages", icon: Package },
         { id: "embed-widgets" as const, label: "Embed Widgets", icon: Code },
         { id: "data-sources" as const, label: "Data Sources", icon: Database },
+        { id: "text-notes" as const, label: "Text Notes", icon: StickyNote },
         { id: "deleted-chats" as const, label: "Deleted Chats", icon: Trash2 },
       ],
     }] : []),
-    ...(isDeveloper || isAdmin ? [{
+    ...(isDeveloper || isAdmin || isManager ? [{
       label: "Management",
       icon: Building2,
       items: [
-        ...(isDeveloper || isAdmin ? [{ id: "users" as const, label: "Users", icon: Users }] : []),
-        ...(isDeveloper || isAdmin ? [{ id: "organizations" as const, label: "Organizations", icon: Building2 }] : []),
+        ...(isDeveloper || isAdmin || isManager ? [{ id: "users" as const, label: "Users", icon: Users }] : []),
+        ...(isDeveloper || isAdmin || isManager ? [{ id: "organizations" as const, label: "Organizations", icon: Building2 }] : []),
         ...(isDeveloper || isAdmin ? [{ id: "audit-trail" as const, label: "Audit Trail", icon: FileText }] : []),
         ...(isDeveloper || isAdmin ? [{ id: "smtp-settings" as const, label: "SMTP Settings", icon: Mail }] : []),
+        ...(isAdmin ? [{ id: "data-sources" as const, label: "Ingested Data", icon: Database }] : []),
       ],
     }] : []),
     ...(isDeveloper ? [{
@@ -355,7 +359,7 @@ export const ChatSidebar = ({
                         {session.title.length > 50 ? session.title.substring(0, 50) + '...' : session.title}
                       </div>
                       <div className="text-[11px] text-muted-foreground/60 mt-0.5">
-                        {isDeveloper && session.startedBy && session.startedBy !== userName && (
+                        {(isDeveloper || isAdmin || isManager) && session.startedBy && session.startedBy !== userName && (
                           <span className="text-primary/60 mr-1">{session.startedBy} ·</span>
                         )}
                         {session.date}

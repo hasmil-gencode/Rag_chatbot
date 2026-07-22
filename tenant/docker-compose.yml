@@ -31,30 +31,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # ── n8n Local ─────────────────────────────────
-  n8n:
-    image: n8nio/n8n:latest
-    ports:
-      - "127.0.0.1:5678:5678"
-    environment:
-      - DB_TYPE=default
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
-      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-admin}
-      - WEBHOOK_URL=http://n8n:5678/
-    volumes:
-      - n8n_data:/home/node/.n8n
-    restart: unless-stopped
-
-  # ── Node-RED ──────────────────────────────────
-  node-red:
-    image: nodered/node-red:latest
-    ports:
-      - "127.0.0.1:1880:1880"
-    volumes:
-      - ./node-red-data:/data
-    restart: unless-stopped
-
   # ── Qdrant Vector DB ──────────────────────────
   qdrant:
     image: qdrant/qdrant:latest
@@ -79,6 +55,5 @@ services:
 
 volumes:
   mongodb_data:
-  n8n_data:
   qdrant_data:
   mysql_data:

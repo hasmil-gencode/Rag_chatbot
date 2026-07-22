@@ -80,7 +80,7 @@ export function GroupsPage() {
             <p className="text-2xl font-semibold mt-0.5">{totalStorage} GB</p>
           </div>
           <div className="border rounded-lg px-4 py-3">
-            <p className="text-[11px] text-muted-foreground">Organizations Assigned</p>
+            <p className="text-[11px] text-muted-foreground">Nodes Assigned</p>
             <p className="text-2xl font-semibold mt-0.5">{groups.reduce((sum, g) => sum + (g.organizationIds?.length || 0), 0)}</p>
           </div>
         </div>
@@ -97,7 +97,7 @@ export function GroupsPage() {
                 <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">Storage</th>
                 <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">Chat Quota</th>
                 <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">Departments</th>
-                <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">Organizations</th>
+                <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">Assigned To</th>
                 <th className="px-4 py-2.5 w-28"></th>
               </tr>
             </thead>
@@ -180,7 +180,7 @@ export function GroupsPage() {
                 <p className="text-[10px] text-muted-foreground mt-1">Max departments per organization</p>
               </div>
               <div>
-                <label className="text-[11px] text-muted-foreground">Assign Organizations</label>
+                <label className="text-[11px] text-muted-foreground">Assign To Organization / Department</label>
                 <div className="border rounded-lg p-3 mt-1 max-h-40 overflow-y-auto space-y-1">
                   {organizations.length === 0 ? <p className="text-xs text-muted-foreground">No organizations</p> : organizations.map((org) => (
                     <label key={org._id} className="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs hover:bg-muted cursor-pointer">

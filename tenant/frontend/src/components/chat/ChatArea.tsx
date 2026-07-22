@@ -11,6 +11,7 @@ interface Message {
   createdAt?: Date | string;
   status?: string;
   sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[];
+  attachments?: { file_id: string; file_name: string }[];
   artifacts?: ChatArtifact[];
   responseTimeMs?: number;
   actions?: { label: string; value: string }[];
@@ -121,6 +122,7 @@ export const ChatArea = ({ messages, onSendMessage, isLoading, userEmail, userFu
                     startedBy={msg.startedBy}
                     timestamp={msg.createdAt}
                     sources={msg.sources}
+                    attachments={msg.attachments}
                     artifacts={msg.artifacts}
                     responseTimeMs={msg.responseTimeMs}
                     onWebViewOpen={onWebViewOpen}

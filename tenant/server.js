@@ -9,13 +9,14 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadBucketCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { GoogleGenAI } from '@google/genai';
 import { GoogleAuth } from 'google-auth-library';
-import { processUploadedFile, deleteFileVectors } from './uploadPipeline.js';
+import { processUploadedFile, deleteFileVectors, embedTabularRows } from './uploadPipeline.js';
 import { QdrantClient } from '@qdrant/js-client-rest';
 import OpenAI from 'openai';
 import mysql from 'mysql2/promise';
+import XLSX from 'xlsx';
 import { processBrowserChat, processBrowserChatStream, processPublicChat, processPublicChatStream, callLLM, streamLLM, checkGuardrail, setMysqlPool } from './chatPipeline.js';
 import { registerApiKeyRoutes } from './routes/apiKeys.js';
 
@@ -43,7 +44,7 @@ app.use((req, res, next) => {
       status: res.statusCode,
       latencyMs: Date.now() - startedAt,
       actor,
-      ip: req.ip,
+      ip: getClientIp(req),
     }));
   });
 
@@ -51,7 +52,18 @@ app.use((req, res, next) => {
 });
 
 const MONGODB_URI = process.env.MONGODB_URI;
-const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
+const JWT_SECRET = process.env.JWT_SECRET;
+const MIN_JWT_SECRET_LENGTH = 32;
+const WEAK_JWT_SECRETS = new Set([
+  'change-this-secret',
+  'change-this-to-a-long-random-tenant-secret',
+]);
+if (!JWT_SECRET || WEAK_JWT_SECRETS.has(JWT_SECRET)) {
+  throw new Error('JWT_SECRET environment variable is required and must not be a default value. Generate one with: openssl rand -hex 32');
+}
+if (process.env.NODE_ENV === 'production' && JWT_SECRET.length < MIN_JWT_SECRET_LENGTH) {
+  throw new Error(`JWT_SECRET must be at least ${MIN_JWT_SECRET_LENGTH} characters in production. Generate one with: openssl rand -hex 32`);
+}
 const MIN_INTERNAL_KEY_LENGTH = 24;
 const TENANT_AUTH_COOKIE = 'tenant_auth';
 const TENANT_AUTH_COOKIE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -129,6 +141,21 @@ function getRequestHost(req) {
   const forwardedHost = req.headers['x-forwarded-host'];
   const host = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost || req.headers.host || '';
   return String(host).split(',')[0].trim().split(':')[0].toLowerCase();
+}
+
+// Resolve the real client IP. All production traffic arrives through
+// Cloudflare (cloudflared tunnel → nginx → gateway → tenant), so
+// `CF-Connecting-IP` is set by Cloudflare and cannot be spoofed by the client;
+// it is forwarded intact by nginx and the gateway. `X-Forwarded-For` (and thus
+// req.ip under `trust proxy`) contains client-supplied values on the left and
+// must NOT be trusted for security decisions like rate limiting / lockout.
+// Falls back to req.ip only when no Cloudflare header is present (local/dev or
+// direct internal calls).
+function getClientIp(req) {
+  const cf = req.headers['cf-connecting-ip'];
+  const cfIp = (Array.isArray(cf) ? cf[0] : cf || '').trim();
+  if (cfIp) return cfIp;
+  return req.ip || req.connection?.remoteAddress || 'unknown';
 }
 
 function isLocalhostRequest(req) {
@@ -401,8 +428,20 @@ async function logAiCall(provider, model, type, source, latency, status = 'ok') 
 }
 
 // Middleware
-app.set('trust proxy', true); // Trust Cloudflare/reverse proxy headers
-app.use(express.json());
+// Trust proxy is configurable (TRUST_PROXY: true|false|<hop count>|<subnet list>).
+// Default true so req.secure / x-forwarded-proto work behind Cloudflare+nginx.
+// NOTE: req.ip stays spoofable under `true`, so security decisions (rate limit,
+// lockout) use getClientIp() → CF-Connecting-IP instead.
+function parseTrustProxy(value) {
+  if (value === undefined || value === '') return true;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  const asNumber = Number(value);
+  if (Number.isInteger(asNumber) && asNumber >= 0) return asNumber;
+  return value; // subnet/IP list passed through to Express
+}
+app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '2mb' }));
 app.use((req, res, next) => {
   req.cookies = parseCookies(req.headers.cookie || '');
   next();
@@ -428,7 +467,8 @@ app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(self), camera=()');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
+  // Note: X-XSS-Protection intentionally omitted — deprecated in modern browsers
+  // and superseded by Content-Security-Policy (security assessment F-005).
 
   // Embed routes: allow iframe embedding + CORS
   const isEmbedRoute = req.path.startsWith('/embed') || req.path.startsWith('/api/embed');
@@ -460,7 +500,10 @@ const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, 'uploads/'),
   filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
 });
-const upload = multer({ storage });
+// Cap upload size to protect disk/OCR/embedding from oversized files (DoS).
+// Aligns with nginx `client_max_body_size 100M`; override via MAX_UPLOAD_MB.
+const MAX_UPLOAD_BYTES = (Number(process.env.MAX_UPLOAD_MB) || 100) * 1024 * 1024;
+const upload = multer({ storage, limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } });
 
 // Auth middleware
 const auth = async (req, res, next) => {
@@ -514,7 +557,18 @@ const hasPermission = (...requiredPermissions) => {
         return next();
       }
     }
-    
+
+    // Manager (department-scoped): can only manage users within their department.
+    // Never passes no-arg hasPermission() (developer/admin-only routes) nor
+    // org:manage (cannot create/edit departments). Scope is still enforced by
+    // actorCanManageUser / actorCanAccessOrg inside each handler.
+    if (req.user.role === 'manager') {
+      const allowedForManager = ['user:manage'];
+      if (requiredPermissions.length > 0 && requiredPermissions.some(p => allowedForManager.includes(p))) {
+        return next();
+      }
+    }
+
     return res.status(403).json({ error: 'Insufficient permissions' });
   };
 };
@@ -522,7 +576,7 @@ const hasPermission = (...requiredPermissions) => {
 // ─── Login Rate Limiter ────────────────────────────────────────
 const loginAttempts = new Map(); // key: ip → { count, lockedUntil }
 function loginRateLimit(req, res, next) {
-  const ip = req.ip || req.connection.remoteAddress;
+  const ip = getClientIp(req);
   const now = Date.now();
   const entry = loginAttempts.get(ip) || { count: 0, lockedUntil: 0 };
   if (entry.lockedUntil > now) {
@@ -585,7 +639,7 @@ async function incrementRateLimit(key, limit, windowMs) {
 
 function apiRateLimit(limit = 60, windowMs = 60000) {
   return async (req, res, next) => {
-    const key = req.apiKey?._id?.toString() || req.user?.id || req.ip;
+    const key = req.apiKey?._id?.toString() || req.user?.id || getClientIp(req);
     try {
       const entry = await incrementRateLimit(`${key}:${windowMs}`, limit, windowMs);
       res.setHeader('X-RateLimit-Limit', limit);
@@ -778,7 +832,7 @@ app.post('/api/login', loginRateLimit, validateRequestBody({
       $set: { 
         activeSessionToken: token,
         lastLoginAt: new Date(),
-        lastLoginIP: req.ip
+        lastLoginIP: getClientIp(req)
       } 
     }
   );
@@ -868,7 +922,7 @@ app.post('/api/change-password-first-login', validateRequestBody({
         $set: {
           activeSessionToken: token,
           lastLoginAt: new Date(),
-          lastLoginIP: req.ip,
+          lastLoginIP: getClientIp(req),
         },
       }
     );
@@ -1075,23 +1129,10 @@ app.post('/api/organizations', auth, hasPermission('org:manage'), validateReques
       }
     }
     
-    // Check department limit from package
+    // Check department limit from the nearest effective package on the parent hierarchy
     if (type === 'department' && parentId) {
-      // Find the top-level org for this parent
-      const allOrgs = await db.collection('organizations').find({}).toArray();
-      let topOrg = await db.collection('organizations').findOne({ _id: new ObjectId(parentId) });
-      while (topOrg && topOrg.parentId) {
-        topOrg = allOrgs.find(o => o._id.toString() === topOrg.parentId.toString());
-      }
-      if (topOrg?.groupId) {
-        const group = await db.collection('groups').findOne({ _id: topOrg.groupId });
-        if (group && group.departmentLimit > 0) {
-          const deptCount = allOrgs.filter(o => o.type === 'department' && o.path?.[0] === topOrg.name).length;
-          if (deptCount >= group.departmentLimit) {
-            return res.status(400).json({ error: `Department limit reached (${group.departmentLimit}). Upgrade your package to add more.` });
-          }
-        }
-      }
+      const limitError = await checkDepartmentLimit(parentId);
+      if (limitError) return res.status(400).json({ error: limitError });
     }
     
     let path = [name];
@@ -1124,8 +1165,148 @@ app.post('/api/organizations', auth, hasPermission('org:manage'), validateReques
   }
 });
 
-// Assign user to organizations
-// ─── Create New Client (all-in-one) ─────────────────────────────
+// Enforce the effective package's departmentLimit for a new department under parentId.
+// Returns an error string if the limit is reached, otherwise null.
+async function checkDepartmentLimit(parentId) {
+  if (!parentId) return null;
+  const allOrgs = await db.collection('organizations').find({}).toArray();
+  const effective = await resolveEffectivePackageForOrg(parentId, allOrgs);
+  const group = effective.group;
+  if (group && group.departmentLimit > 0) {
+    const packageOwnerId = effective.packageOwnerOrgId || new ObjectId(parentId);
+    const scopedIds = new Set(getPackageScopedOrgIds(packageOwnerId, allOrgs).map(id => id.toString()));
+    const deptCount = allOrgs.filter(o => o.type === 'department' && scopedIds.has(o._id.toString())).length;
+    if (deptCount >= group.departmentLimit) {
+      return `Department limit reached (${group.departmentLimit}). Upgrade your package to add more.`;
+    }
+  }
+  return null;
+}
+
+// Create a department-scoped manager user + assignment. Throws { status, message }.
+async function createManagerForOrg({ actorId, organizationId, name, email, password }) {
+  const fullName = String(name || '').trim();
+  const cleanEmail = String(email || '').trim();
+  if (!fullName || !cleanEmail || !password) { const e = new Error('Manager name, email and password are required'); e.status = 400; throw e; }
+  if (await db.collection('users').findOne({ email: cleanEmail })) { const e = new Error('Manager email already exists'); e.status = 400; throw e; }
+  const pwError = validatePassword(password);
+  if (pwError) { const e = new Error(pwError); e.status = 400; throw e; }
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const userResult = await db.collection('users').insertOne({
+    email: cleanEmail,
+    password: hashedPassword,
+    fullName,
+    role: 'manager',
+    status: 'active',
+    canUploadFiles: true,
+    mustChangePassword: true, // force password change on first login
+    createdBy: actorId,
+    createdAt: new Date(),
+  });
+  await db.collection('user_organization_assignments').insertOne({
+    userId: userResult.insertedId,
+    userIdStr: userResult.insertedId.toString(),
+    organizationId: new ObjectId(organizationId),
+    assignedBy: actorId,
+    assignedAt: new Date(),
+  });
+  return userResult.insertedId;
+}
+
+// Combined create: department + its manager in one call (admin/developer).
+// Manager fields optional; when any is present, all are required.
+app.post('/api/create-department', auth, hasPermission('org:manage'), validateRequestBody({
+  name: { required: true, type: 'string', minLength: 1, maxLength: 160 },
+  parentId: { required: true, objectId: true },
+  systemPrompt: { type: 'string', maxLength: 8000 },
+  managerName: { type: 'string', maxLength: 160 },
+  managerEmail: { type: 'string', maxLength: 320 },
+  managerPassword: { type: 'string', maxLength: 200 },
+}), async (req, res) => {
+  try {
+    if (req.user.role !== 'developer' && req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    const { name, parentId, systemPrompt, managerName, managerEmail, managerPassword } = req.body;
+
+    // Parent must be inside the actor's hierarchy.
+    if (!(await actorCanAccessOrg(req.user, parentId))) return forbidden(res, 'You can only create departments under your own organization');
+    const parent = await db.collection('organizations').findOne({ _id: new ObjectId(parentId) });
+    if (!parent) return res.status(404).json({ error: 'Parent not found' });
+
+    const wantsManager = Boolean(managerName || managerEmail || managerPassword);
+    if (wantsManager && !(managerName && managerEmail && managerPassword)) {
+      return res.status(400).json({ error: 'Manager name, email and password are all required' });
+    }
+    // Validate manager email uniqueness up-front so we do not create an orphan department.
+    if (wantsManager && await db.collection('users').findOne({ email: String(managerEmail).trim() })) {
+      return res.status(400).json({ error: 'Manager email already exists' });
+    }
+
+    const limitError = await checkDepartmentLimit(parentId);
+    if (limitError) return res.status(400).json({ error: limitError });
+
+    const orgDoc = {
+      name,
+      type: 'department',
+      parentId: new ObjectId(parentId),
+      path: [...(parent.path || [parent.name]), name],
+      ...(systemPrompt && String(systemPrompt).trim() ? { systemPrompt: String(systemPrompt).trim() } : {}),
+      createdBy: req.user.id,
+      createdAt: new Date(),
+    };
+    const result = await db.collection('organizations').insertOne(orgDoc);
+    await logAudit(req.user.id, 'org.create', `Created department: ${name}`);
+
+    let managerId = null;
+    if (wantsManager) {
+      try {
+        managerId = await createManagerForOrg({
+          actorId: req.user.id,
+          organizationId: result.insertedId,
+          name: managerName,
+          email: managerEmail,
+          password: managerPassword,
+        });
+        await logAudit(req.user.id, 'user.create', `Created manager ${managerEmail} for department ${name}`);
+      } catch (mgrErr) {
+        // Roll back the department so the form can be retried cleanly.
+        await db.collection('organizations').deleteOne({ _id: result.insertedId });
+        return res.status(mgrErr.status || 500).json({ error: mgrErr.message || 'Failed to create manager' });
+      }
+    }
+
+    res.json({ success: true, departmentId: result.insertedId, managerId });
+  } catch (error) {
+    console.error('Create department error:', error.message);
+    res.status(500).json({ error: 'Failed to create department' });
+  }
+});
+
+// Add another manager to an existing department/org node (admin/developer).
+app.post('/api/organizations/:id/managers', auth, hasPermission('org:manage'), validateRequestBody({
+  managerName: { required: true, type: 'string', minLength: 1, maxLength: 160 },
+  managerEmail: { required: true, type: 'string', minLength: 3, maxLength: 320 },
+  managerPassword: { required: true, type: 'string', minLength: 8, maxLength: 200 },
+}), async (req, res) => {
+  try {
+    if (req.user.role !== 'developer' && req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    if (!(await actorCanAccessOrg(req.user, req.params.id))) return forbidden(res, 'Organization is outside your scope');
+    const org = await db.collection('organizations').findOne({ _id: new ObjectId(req.params.id) });
+    if (!org) return res.status(404).json({ error: 'Organization not found' });
+
+    const managerId = await createManagerForOrg({
+      actorId: req.user.id,
+      organizationId: req.params.id,
+      name: req.body.managerName,
+      email: req.body.managerEmail,
+      password: req.body.managerPassword,
+    });
+    await logAudit(req.user.id, 'user.create', `Added manager ${req.body.managerEmail} to ${org.name}`);
+    res.json({ success: true, managerId });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || 'Failed to add manager' });
+  }
+});
+
 app.post('/api/create-client', auth, hasPermission(), async (req, res) => {
   try {
     if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
@@ -1188,8 +1369,16 @@ app.post('/api/user-assignments', auth, hasPermission('user:manage'), validateRe
 }), async (req, res) => {
   try {
     const { userId, organizationIds } = req.body; // organizationIds is array
-    
-    
+
+    // Scope guard: non-developers may only (re)assign users they manage, and
+    // only to organizations inside their own subtree.
+    if (req.user.role !== 'developer') {
+      if (!(await actorCanManageUser(req.user, userId))) return forbidden(res, 'You cannot manage this user');
+      for (const orgId of organizationIds) {
+        if (!(await actorCanAccessOrg(req.user, orgId))) return forbidden(res, 'You cannot assign users to an organization outside your scope');
+      }
+    }
+
     // Remove existing assignments
     const deleteResult = await db.collection('user_organization_assignments').deleteMany({ 
       userId: new ObjectId(userId) 
@@ -1235,43 +1424,540 @@ app.get('/api/my-organizations', auth, async (req, res) => {
   }
 });
 
-// Get user's organizations with hierarchy (assigned + all children)
+async function getUserOrganizationHierarchyIds(userId) {
+  const assignments = await db.collection('user_organization_assignments')
+    .find({ userId })
+    .toArray();
+  const assignedOrgIds = assignments.map(a => a.organizationId).filter(Boolean);
+  const assignedIdSet = new Set(assignedOrgIds.map(id => id.toString()));
+
+  if (assignedOrgIds.length === 0) {
+    return { assignedOrgIds, hierarchyOrgIds: [] };
+  }
+
+  const allOrgs = await db.collection('organizations').find({}).toArray();
+  const byId = new Map(allOrgs.map(org => [org._id.toString(), org]));
+  const childrenByParent = new Map();
+  allOrgs.forEach(org => {
+    const parentKey = org.parentId?.toString?.() || '';
+    if (!childrenByParent.has(parentKey)) childrenByParent.set(parentKey, []);
+    childrenByParent.get(parentKey).push(org);
+  });
+
+  const hierarchyIds = new Set(assignedIdSet);
+  const addAncestors = (org) => {
+    let current = org;
+    while (current?.parentId) {
+      const parent = byId.get(current.parentId.toString());
+      if (!parent) break;
+      hierarchyIds.add(parent._id.toString());
+      current = parent;
+    }
+  };
+  const addDescendants = (org) => {
+    const children = childrenByParent.get(org._id.toString()) || [];
+    children.forEach(child => {
+      hierarchyIds.add(child._id.toString());
+      addDescendants(child);
+    });
+  };
+
+  assignedOrgIds.forEach(id => {
+    const org = byId.get(id.toString());
+    if (!org) return;
+    addAncestors(org);
+    addDescendants(org);
+  });
+
+  return {
+    assignedOrgIds,
+    hierarchyOrgIds: Array.from(hierarchyIds).map(id => new ObjectId(id)),
+  };
+}
+
+async function getUserFileScope(userId) {
+  const assignments = await db.collection('user_organization_assignments')
+    .find({ userId })
+    .toArray();
+  const assignedOrgIds = assignments.map(a => a.organizationId).filter(Boolean);
+  const assignedIdSet = new Set(assignedOrgIds.map(id => id.toString()));
+
+  if (assignedOrgIds.length === 0) {
+    return { assignedOrgIds: [], visibleOrgIds: [], visibleOrgIdSet: new Set() };
+  }
+
+  const allOrgs = await db.collection('organizations').find({}).toArray();
+  const childrenByParent = new Map();
+  allOrgs.forEach(org => {
+    const parentKey = org.parentId?.toString?.() || '';
+    if (!childrenByParent.has(parentKey)) childrenByParent.set(parentKey, []);
+    childrenByParent.get(parentKey).push(org);
+  });
+
+  const visibleIdSet = new Set(assignedIdSet);
+  const addDescendants = (orgId) => {
+    const children = childrenByParent.get(orgId) || [];
+    children.forEach(child => {
+      const childId = child._id.toString();
+      visibleIdSet.add(childId);
+      addDescendants(childId);
+    });
+  };
+  assignedIdSet.forEach(addDescendants);
+
+  return {
+    assignedOrgIds,
+    visibleOrgIds: Array.from(visibleIdSet).filter(ObjectId.isValid).map(id => new ObjectId(id)),
+    visibleOrgIdSet: visibleIdSet,
+  };
+}
+
+async function canUserAccessFile(userId, file) {
+  if (!file) return false;
+  const userIdString = userId.toString();
+  const fileUserId = file.userId?.toString?.() || file.userId;
+  if (fileUserId === userIdString) return true;
+  if (file.isPublic || file.sharedWith?.includes?.('PUBLIC')) return true;
+
+  const { visibleOrgIdSet } = await getUserFileScope(userId);
+  if (visibleOrgIdSet.size === 0) return false;
+
+  const organizationId = file.organizationId?.toString?.() || file.organizationId;
+  if (organizationId && visibleOrgIdSet.has(organizationId)) return true;
+
+  const sharedWith = Array.isArray(file.sharedWith) ? file.sharedWith : [];
+  return sharedWith.some(id => visibleOrgIdSet.has(id?.toString?.() || id));
+}
+
+// ─── Authorization scope helpers ───────────────────────────────
+// Developers manage everything. Admin/manager may only manage org nodes and
+// users within their own hierarchy subtree (assigned orgs + descendants), and
+// only for roles strictly below their own. Prevents cross-tenant access and
+// privilege escalation via id-guessing on "developer-only" endpoints.
+const ROLE_RANK = { developer: 3, admin: 2, manager: 1, user: 0 };
+const roleRank = (role) => ROLE_RANK[role] ?? 0;
+
+// Org is within actor's subtree (assigned root + descendants). Used for config
+// actions (system prompt, AI roles) and as a base for structural checks.
+async function actorCanAccessOrg(actor, orgId) {
+  if (actor.role === 'developer') return true;
+  const id = orgId?.toString?.() || String(orgId || '');
+  if (!ObjectId.isValid(id)) return false;
+  const { visibleOrgIdSet } = await getUserFileScope(new ObjectId(actor.id));
+  return visibleOrgIdSet.has(id);
+}
+
+// Structural changes (rename/delete org). Admin may touch descendants only,
+// never their own assigned root org (that boundary belongs to the developer).
+async function actorCanManageOrg(actor, orgId) {
+  if (actor.role === 'developer') return true;
+  const id = orgId?.toString?.() || String(orgId || '');
+  if (!ObjectId.isValid(id)) return false;
+  const { assignedOrgIds, visibleOrgIdSet } = await getUserFileScope(new ObjectId(actor.id));
+  const assignedSet = new Set(assignedOrgIds.map(x => x.toString()));
+  return visibleOrgIdSet.has(id) && !assignedSet.has(id);
+}
+
+// Actor may manage the target user only if the target's role rank is strictly
+// lower AND the target belongs to an org in the actor's subtree.
+async function actorCanManageUser(actor, targetUserId) {
+  if (actor.role === 'developer') return true;
+  const id = targetUserId?.toString?.() || String(targetUserId || '');
+  if (!ObjectId.isValid(id)) return false;
+  const target = await db.collection('users').findOne({ _id: new ObjectId(id) });
+  if (!target) return false;
+  if (roleRank(actor.role) <= roleRank(target.role)) return false;
+  const { visibleOrgIdSet } = await getUserFileScope(new ObjectId(actor.id));
+  if (visibleOrgIdSet.size === 0) return false;
+  const assignments = await db.collection('user_organization_assignments')
+    .find({ userId: new ObjectId(id) }).toArray();
+  return assignments.some(a => visibleOrgIdSet.has(a.organizationId?.toString?.() || String(a.organizationId)));
+}
+
+function forbidden(res, message = 'Insufficient permissions for this resource') {
+  return res.status(403).json({ error: message });
+}
+
+// Distinct user ids assigned to any org in the actor's subtree (assigned +
+// descendants). Used so managers can view chats of users under them.
+async function getManagedUserIds(actorId) {
+  const { visibleOrgIds } = await getUserFileScope(new ObjectId(actorId));
+  if (!visibleOrgIds.length) return [];
+  const assignments = await db.collection('user_organization_assignments')
+    .find({ organizationId: { $in: visibleOrgIds } }).toArray();
+  return [...new Set(assignments.map(a => a.userId?.toString?.() || String(a.userId)).filter(Boolean))];
+}
+
+// Distinct user ids assigned DIRECTLY to the actor's own org node(s) — NOT
+// descendants. Used so an org admin sees chats of their organization's users
+// only, while each department's chats stay scoped to its manager.
+async function getOrgDirectUserIds(actorId) {
+  const own = await db.collection('user_organization_assignments')
+    .find({ userId: new ObjectId(actorId) }).toArray();
+  const orgIds = own.map(a => a.organizationId).filter(Boolean);
+  if (!orgIds.length) return [];
+  const members = await db.collection('user_organization_assignments')
+    .find({ organizationId: { $in: orgIds } }).toArray();
+  return [...new Set(members.map(a => a.userId?.toString?.() || String(a.userId)).filter(Boolean))];
+}
+
+// messages.userId is stored inconsistently (ObjectId in browser chat, string in
+// API chat), so match both forms.
+function userIdVariants(ids) {
+  const out = [];
+  for (const id of ids) {
+    const s = id?.toString?.() || String(id);
+    if (!s) continue;
+    out.push(s);
+    if (ObjectId.isValid(s)) out.push(new ObjectId(s));
+  }
+  return out;
+}
+
+
+function addAncestorOrgIds(orgIds, organizations) {
+  const byId = new Map(organizations.map(org => [org._id.toString(), org]));
+  const result = new Set(orgIds.map(id => id.toString()));
+
+  orgIds.forEach(id => {
+    let current = byId.get(id.toString());
+    while (current?.parentId) {
+      const parent = byId.get(current.parentId.toString());
+      if (!parent) break;
+      result.add(parent._id.toString());
+      current = parent;
+    }
+  });
+
+  return Array.from(result).map(id => new ObjectId(id));
+}
+
+const idString = (value) => value?._id?.toString?.() || value?.toString?.() || value || '';
+
+function getDescendantOrgIds(rootId, organizations) {
+  const rootKey = idString(rootId);
+  const childrenByParent = new Map();
+  organizations.forEach(org => {
+    const parentKey = idString(org.parentId);
+    if (!childrenByParent.has(parentKey)) childrenByParent.set(parentKey, []);
+    childrenByParent.get(parentKey).push(org);
+  });
+
+  const ids = new Set([rootKey]);
+  const visit = (parentKey) => {
+    (childrenByParent.get(parentKey) || []).forEach(child => {
+      const childKey = idString(child._id);
+      ids.add(childKey);
+      visit(childKey);
+    });
+  };
+  visit(rootKey);
+  return ids;
+}
+
+function getPackageScopedOrgIds(packageOwnerOrgId, organizations) {
+  const ownerKey = idString(packageOwnerOrgId);
+  const scopedIds = getDescendantOrgIds(ownerKey, organizations);
+
+  organizations.forEach(org => {
+    const orgKey = idString(org._id);
+    if (orgKey === ownerKey || !scopedIds.has(orgKey) || !org.groupId) return;
+    getDescendantOrgIds(orgKey, organizations).forEach(id => scopedIds.delete(id));
+  });
+
+  return Array.from(scopedIds).filter(Boolean).map(id => new ObjectId(id));
+}
+
+async function resolveEffectivePackageForOrg(organizationId, organizations = null) {
+  const orgId = idString(organizationId);
+  if (!orgId || !ObjectId.isValid(orgId)) return { group: null, organization: null, packageOwnerOrg: null, packageOwnerOrgId: null, isInherited: false };
+
+  const allOrgs = organizations || await db.collection('organizations').find({}).toArray();
+  const byId = new Map(allOrgs.map(org => [idString(org._id), org]));
+  const organization = byId.get(orgId);
+  if (!organization) return { group: null, organization: null, packageOwnerOrg: null, packageOwnerOrgId: null, isInherited: false };
+
+  let current = organization;
+  while (current) {
+    if (current.groupId) {
+      const group = await db.collection('groups').findOne({ _id: typeof current.groupId === 'string' ? new ObjectId(current.groupId) : current.groupId });
+      if (group) {
+        const ownerId = current._id;
+        return {
+          group,
+          organization,
+          packageOwnerOrg: current,
+          packageOwnerOrgId: ownerId,
+          isInherited: idString(ownerId) !== idString(organization._id),
+        };
+      }
+    }
+    current = current.parentId ? byId.get(idString(current.parentId)) : null;
+  }
+
+  return { group: null, organization, packageOwnerOrg: null, packageOwnerOrgId: null, isInherited: false };
+}
+
+async function decorateOrganizationsWithEffectivePackages(organizations) {
+  return Promise.all(organizations.map(async (org) => {
+    const effective = await resolveEffectivePackageForOrg(org._id, organizations);
+    return {
+      ...org,
+      effectiveGroupId: effective.group?._id || null,
+      effectiveGroupName: effective.group?.name || null,
+      packageOwnerOrgId: effective.packageOwnerOrgId || null,
+      packageOwnerOrgName: effective.packageOwnerOrg?.name || null,
+      packageInherited: Boolean(effective.group && effective.isInherited),
+    };
+  }));
+}
+
+async function resolveUserPackageContext(user, requestedOrganizationId = null) {
+  const assignments = await db.collection('user_organization_assignments').find({ userId: user._id }).toArray();
+  const assignedOrgIds = assignments.map(a => a.organizationId).filter(Boolean);
+  let organizationId = assignedOrgIds[0] || null;
+
+  if (requestedOrganizationId && ObjectId.isValid(idString(requestedOrganizationId))) {
+    const requestedId = idString(requestedOrganizationId);
+    if (user.role === 'developer') {
+      organizationId = new ObjectId(requestedId);
+    } else {
+      const { hierarchyOrgIds } = await getUserOrganizationHierarchyIds(user._id);
+      const allowedIds = new Set(hierarchyOrgIds.map(id => idString(id)));
+      if (allowedIds.has(requestedId)) organizationId = new ObjectId(requestedId);
+    }
+  }
+
+  const effective = organizationId ? await resolveEffectivePackageForOrg(organizationId) : { group: null, packageOwnerOrgId: null };
+  let group = effective.group;
+  let groupId = group?._id || null;
+  let quotaOrganizationId = effective.packageOwnerOrgId || organizationId;
+
+  if (!group && user.groupId) {
+    groupId = typeof user.groupId === 'string' ? new ObjectId(user.groupId) : user.groupId;
+    group = await db.collection('groups').findOne({ _id: groupId });
+    quotaOrganizationId = organizationId;
+  }
+
+  return {
+    assignments,
+    organizationId,
+    quotaOrganizationId,
+    group,
+    groupId,
+    packageOwnerOrgId: effective.packageOwnerOrgId,
+    packageInherited: Boolean(effective.isInherited),
+  };
+}
+
+async function resetGroupQuotaIfNeeded(group) {
+  const currentMonth = new Date().toISOString().substring(0, 7);
+  const today = new Date().getDate();
+  if (today === group.renewDay) {
+    const lastReset = await db.collection('chat_resets').findOne({ groupId: group._id, month: currentMonth });
+    if (!lastReset) {
+      await db.collection('chat_counts').deleteMany({ groupId: group._id, month: { $lt: currentMonth } });
+      await db.collection('chat_resets').insertOne({ groupId: group._id, month: currentMonth, resetAt: new Date() });
+      await db.collection('groups').updateOne({ _id: group._id }, { $set: { bonusQuota: 0 } });
+      group.bonusQuota = 0;
+    }
+  }
+  return currentMonth;
+}
+
+async function enforceChatQuota(user, packageContext) {
+  const group = packageContext.group;
+  if (!group || group.chatQuota <= 0) return { allowed: true, currentMonth: new Date().toISOString().substring(0, 7) };
+
+  const currentMonth = await resetGroupQuotaIfNeeded(group);
+  const effectiveQuota = group.chatQuota + (group.bonusQuota || 0);
+  const bucketOrgId = packageContext.quotaOrganizationId || packageContext.organizationId || null;
+
+  if (group.quotaType === 'individual') {
+    const userCount = await db.collection('chat_counts').findOne({
+      groupId: group._id,
+      organizationId: bucketOrgId,
+      userId: user._id,
+      month: currentMonth,
+    });
+    const currentCount = userCount?.count || 0;
+    if (currentCount >= effectiveQuota) return { allowed: false, used: currentCount, limit: effectiveQuota, currentMonth };
+  } else {
+    const counts = await db.collection('chat_counts').find({
+      groupId: group._id,
+      organizationId: bucketOrgId,
+      month: currentMonth,
+    }).toArray();
+    const totalCount = counts.reduce((sum, c) => sum + c.count, 0);
+    if (totalCount >= effectiveQuota) return { allowed: false, used: totalCount, limit: effectiveQuota, currentMonth };
+  }
+
+  return { allowed: true, currentMonth };
+}
+
+async function incrementChatUsage(user, packageContext) {
+  if (!packageContext.groupId) return;
+  const currentMonth = new Date().toISOString().substring(0, 7);
+  await db.collection('chat_counts').updateOne(
+    {
+      groupId: packageContext.groupId,
+      organizationId: packageContext.quotaOrganizationId || packageContext.organizationId || null,
+      userId: user._id,
+      month: currentMonth,
+    },
+    { $inc: { count: 1 }, $setOnInsert: { createdAt: new Date() }, $set: { updatedAt: new Date() } },
+    { upsert: true }
+  );
+}
+
+async function getPackageStorageUsage(packageOwnerOrgId, groupId) {
+  if (!packageOwnerOrgId) return 0;
+  const organizations = await db.collection('organizations').find({}).toArray();
+  const scopedOrgIds = getPackageScopedOrgIds(packageOwnerOrgId, organizations);
+  const groupObjectId = groupId && typeof groupId === 'string' ? new ObjectId(groupId) : groupId;
+  const files = await db.collection('files').find({
+    $or: [
+      { packageOwnerOrgId: packageOwnerOrgId },
+      { organizationId: { $in: scopedOrgIds }, groupId: groupObjectId },
+      { organizationId: { $in: scopedOrgIds }, packageOwnerOrgId: { $exists: false } },
+    ],
+  }).toArray();
+  return files.reduce((sum, f) => sum + (f.size || 0), 0);
+}
+
+// Resolve org sharing + package/storage context for an upload of a given size.
+// Mirrors the scoping logic in POST /api/upload so other ingest endpoints
+// (e.g. text notes) share the exact same access + storage rules.
+// Returns { error, status } on failure, otherwise the resolved context.
+async function resolveUploadContext(req, requestedSharedWith, fileSize) {
+  const userId = new ObjectId(req.user.id);
+  const userAssignments = await db.collection('user_organization_assignments').find({ userId }).toArray();
+
+  let sharedWith = Array.isArray(requestedSharedWith) ? requestedSharedWith : [];
+  let uploadOwnerOrgId = null;
+
+  if (req.user.role !== 'developer') {
+    const { assignedOrgIds, hierarchyOrgIds } = await getUserOrganizationHierarchyIds(userId);
+    const allowedIds = new Set(hierarchyOrgIds.map(id => id.toString()));
+    const fallbackIds = assignedOrgIds.map(id => id.toString());
+    const validSelectedIds = sharedWith
+      .map(id => id?.toString?.() || String(id || ''))
+      .filter(id => ObjectId.isValid(id) && allowedIds.has(id));
+    const selectedObjectIds = (validSelectedIds.length > 0 ? validSelectedIds : fallbackIds)
+      .filter(id => ObjectId.isValid(id))
+      .map(id => new ObjectId(id));
+    uploadOwnerOrgId = selectedObjectIds[0] || null;
+    const scopedOrgs = await db.collection('organizations').find({ _id: { $in: hierarchyOrgIds } }).toArray();
+    sharedWith = addAncestorOrgIds(selectedObjectIds, scopedOrgs).map(id => id.toString());
+    if (sharedWith.length === 0) {
+      return { error: 'No organization access for upload. Please contact your admin.', status: 403 };
+    }
+  }
+
+  let userGroupId = null, userOrgId = null, packageOwnerOrgId = null, packageInherited = false;
+  if (userAssignments.length > 0 || req.user.role === 'developer') {
+    const userOrgIds = userAssignments.map(a => a.organizationId);
+    if (!uploadOwnerOrgId && sharedWith.length > 0 && ObjectId.isValid(sharedWith[0])) {
+      uploadOwnerOrgId = new ObjectId(sharedWith[0]);
+    }
+    userOrgId = uploadOwnerOrgId || userOrgIds[0] || null;
+    if (userOrgId) {
+      const effective = await resolveEffectivePackageForOrg(userOrgId);
+      if (effective.group) {
+        const group = effective.group;
+        userGroupId = group._id;
+        packageOwnerOrgId = effective.packageOwnerOrgId;
+        packageInherited = effective.isInherited;
+        const currentUsage = await getPackageStorageUsage(packageOwnerOrgId, userGroupId);
+        const limitBytes = group.storageLimitGB * 1024 * 1024 * 1024;
+        if (currentUsage + fileSize > limitBytes) {
+          return {
+            error: `Storage limit exceeded. Limit: ${group.storageLimitGB}GB, Used: ${(currentUsage / 1024 / 1024 / 1024).toFixed(2)}GB`,
+            status: 400,
+          };
+        }
+      }
+    }
+  }
+
+  return { sharedWith, userGroupId, userOrgId, packageOwnerOrgId, packageInherited };
+}
+
+// Get user's organizations with hierarchy (assigned + parents + children)
 app.get('/api/my-organizations-hierarchy', auth, async (req, res) => {
   try {
     const userId = new ObjectId(req.user.id);
-    
-    // Get directly assigned orgs
-    const assignments = await db.collection('user_organization_assignments')
-      .find({ userId: userId })
-      .toArray();
-    
-    const assignedOrgIds = assignments.map(a => a.organizationId);
-    
-    const assignedOrgs = await db.collection('organizations')
-      .find({ _id: { $in: assignedOrgIds } })
-      .toArray();
-    
-    // For each assigned org, find all children
-    const allOrgIds = new Set(assignedOrgIds.map(id => id.toString()));
-    
-    for (const org of assignedOrgs) {
-      // Find all orgs where path contains this org's name
-      const children = await db.collection('organizations')
-        .find({ path: org.name })
-        .toArray();
-      
-      children.forEach(child => allOrgIds.add(child._id.toString()));
-    }
-    
-    // Get all orgs (assigned + children)
+
+    const { assignedOrgIds, hierarchyOrgIds } = await getUserOrganizationHierarchyIds(userId);
+    if (hierarchyOrgIds.length === 0) return res.json({ organizations: [] });
+
+    const assignedIdSet = new Set(assignedOrgIds.map(id => id.toString()));
     const allOrgs = await db.collection('organizations')
-      .find({ _id: { $in: Array.from(allOrgIds).map(id => new ObjectId(id)) } })
+      .find({ _id: { $in: hierarchyOrgIds } })
       .toArray();
-    
-    res.json({ organizations: allOrgs });
+
+    res.json({
+      organizations: allOrgs.map(org => ({
+        ...org,
+        isAssigned: assignedIdSet.has(org._id.toString()),
+      })),
+    });
   } catch (error) {
     console.error('Error in my-organizations-hierarchy:', error.message);
     res.status(500).json({ error: 'Failed to get organizations hierarchy' });
+  }
+});
+
+// Requester's own subtree (assigned orgs + descendants, NO ancestors) — used by
+// the Organizations page tree for admin/manager. Developer gets all.
+app.get('/api/my-subtree-organizations', auth, async (req, res) => {
+  try {
+    if (req.user.role === 'developer') {
+      const organizations = await db.collection('organizations').find({}).toArray();
+      return res.json({ organizations });
+    }
+    const { visibleOrgIds } = await getUserFileScope(new ObjectId(req.user.id));
+    if (!visibleOrgIds.length) return res.json({ organizations: [] });
+    const organizations = await db.collection('organizations').find({ _id: { $in: visibleOrgIds } }).toArray();
+    res.json({ organizations });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get subtree organizations' });
+  }
+});
+
+// Members (users + managers) grouped by organization node, scoped to the
+// requester: developer=all, admin/manager=their subtree. Developer users are
+// never exposed. Shape: { members: { <orgId>: [{ id, fullName, email, role }] } }
+app.get('/api/organization-members', auth, async (req, res) => {
+  try {
+    let orgFilter = null; // null = all (developer)
+    if (req.user.role === 'admin' || req.user.role === 'manager') {
+      const { visibleOrgIds } = await getUserFileScope(new ObjectId(req.user.id));
+      if (!visibleOrgIds.length) return res.json({ members: {} });
+      orgFilter = visibleOrgIds;
+    } else if (req.user.role !== 'developer') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+
+    const assignQuery = orgFilter ? { organizationId: { $in: orgFilter } } : {};
+    const assignments = await db.collection('user_organization_assignments').find(assignQuery).toArray();
+    const userIds = [...new Set(assignments.map(a => a.userId?.toString?.()).filter(Boolean))]
+      .filter(ObjectId.isValid).map(id => new ObjectId(id));
+    const users = await db.collection('users').find({ _id: { $in: userIds } }).toArray();
+    const userById = new Map(users.map(u => [u._id.toString(), u]));
+
+    const members = {};
+    for (const a of assignments) {
+      const orgId = a.organizationId?.toString?.();
+      const u = userById.get(a.userId?.toString?.());
+      if (!orgId || !u || u.role === 'developer') continue;
+      if (!members[orgId]) members[orgId] = [];
+      members[orgId].push({ id: u._id.toString(), fullName: u.fullName || u.email, email: u.email, role: u.role });
+    }
+    res.json({ members });
+  } catch (error) {
+    console.error('Error in organization-members:', error.message);
+    res.status(500).json({ error: 'Failed to get organization members' });
   }
 });
 
@@ -1280,7 +1966,7 @@ app.get('/api/organizations', auth, hasPermission('org:manage'), async (req, res
   try {
     if (req.user.role === 'developer') {
       const organizations = await db.collection('organizations').find({}).toArray();
-      return res.json({ organizations });
+      return res.json({ organizations: await decorateOrganizationsWithEffectivePackages(organizations) });
     }
     
     // Admin: only see their assigned orgs and children
@@ -1311,7 +1997,7 @@ app.get('/api/organizations', auth, hasPermission('org:manage'), async (req, res
     
     assignedOrgIds.forEach(id => addOrgAndChildren(id));
     
-    res.json({ organizations: result });
+    res.json({ organizations: await decorateOrganizationsWithEffectivePackages(result) });
   } catch (error) {
     res.status(500).json({ error: 'Failed to get organizations' });
   }
@@ -1321,12 +2007,9 @@ app.get('/api/organizations', auth, hasPermission('org:manage'), async (req, res
 app.put('/api/organizations/:id/system-prompt', auth, async (req, res) => {
   try {
     const orgId = new ObjectId(req.params.id);
-    // Verify user is admin and assigned to this org
-    if (req.user.role === 'user') return res.status(403).json({ error: 'Admin only' });
-    if (req.user.role === 'admin') {
-      const assigned = await db.collection('user_organization_assignments').findOne({ userId: new ObjectId(req.user.id), organizationId: orgId });
-      if (!assigned) return res.status(403).json({ error: 'Not assigned to this organization' });
-    }
+    // Only admin/developer may set the org system prompt, and admin only within scope.
+    if (req.user.role !== 'developer' && req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    if (!(await actorCanAccessOrg(req.user, req.params.id))) return forbidden(res, 'Organization is outside your scope');
     await db.collection('organizations').updateOne({ _id: orgId }, { $set: { systemPrompt: req.body.systemPrompt || '', updatedAt: new Date() } });
     await logAudit(req.user.id, 'org.update', `Updated system prompt for org ${req.params.id}`);
     res.json({ success: true });
@@ -1336,7 +2019,8 @@ app.put('/api/organizations/:id/system-prompt', auth, async (req, res) => {
 // ─── AI Roles (Multi-role per org) ────────────────────────────
 app.get('/api/organizations/:id/ai-roles', auth, async (req, res) => {
   try {
-    if (req.user.role === 'user') return res.status(403).json({ error: 'Admin only' });
+    if (req.user.role !== 'developer' && req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    if (!(await actorCanAccessOrg(req.user, req.params.id))) return forbidden(res, 'Organization is outside your scope');
     const org = await db.collection('organizations').findOne({ _id: new ObjectId(req.params.id) });
     if (!org) return res.status(404).json({ error: 'Org not found' });
     res.json(org.roles || []);
@@ -1345,7 +2029,8 @@ app.get('/api/organizations/:id/ai-roles', auth, async (req, res) => {
 
 app.post('/api/organizations/:id/ai-roles', auth, async (req, res) => {
   try {
-    if (req.user.role === 'user') return res.status(403).json({ error: 'Admin only' });
+    if (req.user.role !== 'developer' && req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    if (!(await actorCanAccessOrg(req.user, req.params.id))) return forbidden(res, 'Organization is outside your scope');
     const { name, description, systemPrompt, fileIds, isDefault } = req.body;
     if (!name) return res.status(400).json({ error: 'Name required' });
     const role = { id: new ObjectId().toString(), name, description: description || '', systemPrompt: systemPrompt || '', fileIds: fileIds || [], isDefault: isDefault || false, createdAt: new Date() };
@@ -1361,7 +2046,8 @@ app.post('/api/organizations/:id/ai-roles', auth, async (req, res) => {
 
 app.put('/api/organizations/:id/ai-roles/:roleId', auth, async (req, res) => {
   try {
-    if (req.user.role === 'user') return res.status(403).json({ error: 'Admin only' });
+    if (req.user.role !== 'developer' && req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    if (!(await actorCanAccessOrg(req.user, req.params.id))) return forbidden(res, 'Organization is outside your scope');
     const { name, description, systemPrompt, fileIds, isDefault } = req.body;
     if (isDefault) {
       await db.collection('organizations').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { 'roles.$[].isDefault': false } });
@@ -1377,7 +2063,8 @@ app.put('/api/organizations/:id/ai-roles/:roleId', auth, async (req, res) => {
 
 app.delete('/api/organizations/:id/ai-roles/:roleId', auth, async (req, res) => {
   try {
-    if (req.user.role === 'user') return res.status(403).json({ error: 'Admin only' });
+    if (req.user.role !== 'developer' && req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    if (!(await actorCanAccessOrg(req.user, req.params.id))) return forbidden(res, 'Organization is outside your scope');
     await db.collection('organizations').updateOne({ _id: new ObjectId(req.params.id) }, { $pull: { roles: { id: req.params.roleId } } });
     await logAudit(req.user.id, 'org.role.delete', `Deleted AI role: ${req.params.roleId}`);
     res.json({ success: true });
@@ -1387,6 +2074,7 @@ app.delete('/api/organizations/:id/ai-roles/:roleId', auth, async (req, res) => 
 // Update organization (Developer only)
 app.put('/api/organizations/:id', auth, hasPermission(), async (req, res) => {
   try {
+    if (!(await actorCanManageOrg(req.user, req.params.id))) return forbidden(res, 'You cannot modify this organization');
     const { name, type, parentId } = req.body;
     
     let path = [name];
@@ -1420,6 +2108,7 @@ app.put('/api/organizations/:id', auth, hasPermission(), async (req, res) => {
 // Delete organization (Developer only)
 app.delete('/api/organizations/:id', auth, hasPermission(), async (req, res) => {
   try {
+    if (!(await actorCanManageOrg(req.user, req.params.id))) return forbidden(res, 'You cannot delete this organization');
     const delOrg = await db.collection('organizations').findOne({ _id: new ObjectId(req.params.id) });
     await db.collection('organizations').deleteOne({ _id: new ObjectId(req.params.id) });
     await db.collection('user_organization_assignments').deleteMany({ organizationId: new ObjectId(req.params.id) });
@@ -1480,6 +2169,7 @@ app.get('/api/users', auth, hasPermission('user:manage'), async (req, res) => {
 // Update user (Developer only)
 app.put('/api/users/:id', auth, hasPermission(), async (req, res) => {
   try {
+    if (!(await actorCanManageUser(req.user, req.params.id))) return forbidden(res, 'You cannot manage this user');
     const { fullName, password, canUploadFiles } = req.body;
     const updateData = { fullName, updatedAt: new Date() };
     
@@ -1521,6 +2211,7 @@ app.delete('/api/users/:id', auth, hasPermission(), async (req, res) => {
     if (user?.role === 'developer') {
       return res.status(403).json({ error: 'Cannot delete developer account' });
     }
+    if (!(await actorCanManageUser(req.user, req.params.id))) return forbidden(res, 'You cannot delete this user');
     await db.collection('users').deleteOne({ _id: new ObjectId(req.params.id) });
     // Also remove user assignments
     await db.collection('user_organization_assignments').deleteMany({ userId: new ObjectId(req.params.id) });
@@ -1570,100 +2261,15 @@ app.post('/api/chat', auth, apiRateLimit(30, 60000), validateRequestBody({
     const startedByEmail = user?.email || 'Unknown';
     const startedByName = startedByEmail.split('@')[0];
     
-    // Get user's groupId and orgId from their organization assignments
-    let groupId = user.groupId;
-    let userOrgIdForQuota = null;
-    
-    if (!groupId) {
-      const assignments = await db.collection('user_organization_assignments').find({ 
-        userId: user._id
-      }).toArray();
-      
-      if (assignments.length > 0) {
-        userOrgIdForQuota = assignments[0].organizationId;
-        const org = await db.collection('organizations').findOne({ 
-          _id: assignments[0].organizationId 
-        });
-        groupId = org?.groupId;
-      }
-    }
-    
-    // Check chat quota if user has groupId
-    if (groupId) {
-      const group = await db.collection('groups').findOne({ _id: groupId });
-      
-      if (group && group.chatQuota > 0) {
-        const currentMonth = new Date().toISOString().substring(0, 7); // "2026-02"
-        
-        // Check if need to reset (today is renew day)
-        const today = new Date().getDate();
-        if (today === group.renewDay) {
-          const lastReset = await db.collection('chat_resets').findOne({ 
-            groupId: group._id, 
-            month: currentMonth 
-          });
-          
-          if (!lastReset) {
-            // Reset counts AND bonus quota for this group
-            await db.collection('chat_counts').deleteMany({ 
-              groupId: group._id, 
-              month: { $lt: currentMonth } 
-            });
-            
-            await db.collection('chat_resets').insertOne({ 
-              groupId: group._id, 
-              month: currentMonth, 
-              resetAt: new Date() 
-            });
-            
-            // Reset bonus quota to 0
-            await db.collection('groups').updateOne(
-              { _id: group._id },
-              { $set: { bonusQuota: 0 } }
-            );
-          }
-        }
-        
-        // Calculate effective quota (base + bonus)
-        const effectiveQuota = group.chatQuota + (group.bonusQuota || 0);
-        
-        // Check quota (per-org, not per-group)
-        if (group.quotaType === 'individual') {
-          const userCount = await db.collection('chat_counts').findOne({ 
-            groupId: group._id,
-            organizationId: userOrgIdForQuota,
-            userId: user._id, 
-            month: currentMonth 
-          });
-          
-          const currentCount = userCount?.count || 0;
-          if (currentCount >= effectiveQuota) {
-            return res.status(429).json({ 
-              error: 'quota_exceeded',
-              message: 'Your quota exceeded limit, please contact Admin',
-              used: currentCount,
-              limit: effectiveQuota
-            });
-          }
-        } else {
-          // Total quota for entire org (not group)
-          const counts = await db.collection('chat_counts').find({ 
-            groupId: group._id,
-            organizationId: userOrgIdForQuota,
-            month: currentMonth 
-          }).toArray();
-          
-          const totalCount = counts.reduce((sum, c) => sum + c.count, 0);
-          if (totalCount >= effectiveQuota) {
-            return res.status(429).json({ 
-              error: 'quota_exceeded',
-              message: 'Your quota exceeded limit, please contact Admin',
-              used: totalCount,
-              limit: effectiveQuota
-            });
-          }
-        }
-      }
+    const packageContext = await resolveUserPackageContext(user, currentOrganizationId || null);
+    const quotaCheck = await enforceChatQuota(user, packageContext);
+    if (!quotaCheck.allowed) {
+      return res.status(429).json({
+        error: 'quota_exceeded',
+        message: 'Your quota exceeded limit, please contact Admin',
+        used: quotaCheck.used,
+        limit: quotaCheck.limit,
+      });
     }
     
     // Save user message with current org context
@@ -1694,6 +2300,7 @@ app.post('/api/chat', auth, apiRateLimit(30, 60000), validateRequestBody({
     const verboseMode = userPrefs?.verboseMode || false;
     const isDev = req.user.role === 'developer';
     const sourceCitations = isDev && showSources ? result.sources : [];
+    const attachments = result.attachmentFiles || [];
 
     await db.collection('messages').insertOne({
       userId: req.user.id,
@@ -1704,6 +2311,7 @@ app.post('/api/chat', auth, apiRateLimit(30, 60000), validateRequestBody({
       role: 'bot',
       content: botContent,
       sources: sourceCitations,
+      attachments,
       artifacts: result.artifacts || [],
       responseTimeMs: verboseMode ? responseTimeMs : undefined,
       chatType: 'browser',
@@ -1711,21 +2319,19 @@ app.post('/api/chat', auth, apiRateLimit(30, 60000), validateRequestBody({
       createdAt: new Date()
     });
 
-    // Increment chat count if user has groupId
-    if (groupId) {
-      const currentMonth = new Date().toISOString().substring(0, 7);
-      await db.collection('chat_counts').updateOne(
-        { groupId: groupId, organizationId: userOrgIdForQuota, userId: user._id, month: currentMonth },
-        { 
-          $inc: { count: 1 },
-          $setOnInsert: { createdAt: new Date() },
-          $set: { updatedAt: new Date() }
-        },
-        { upsert: true }
-      );
-    }
+    await incrementChatUsage(user, packageContext);
 
-    res.json({ response: botContent, sources: sourceCitations, artifacts: result.artifacts || [], responseTimeMs: verboseMode ? responseTimeMs : undefined, sessionId: chatSessionId, debug: isDev ? result.debug : undefined });
+    res.json({
+      response: botContent,
+      sources: sourceCitations,
+      attachments,
+      artifacts: result.artifacts || [],
+      responseTimeMs: verboseMode ? responseTimeMs : undefined,
+      sessionId: chatSessionId,
+      debug: isDev ? result.debug : undefined,
+      blocked: result.blocked || false,
+      blockReason: result.blockReason,
+    });
   } catch (error) {
     console.error('Chat error:', error.message);
     res.status(500).json({ 
@@ -1756,88 +2362,15 @@ app.post('/api/chat/stream', auth, apiRateLimit(30, 60000), validateRequestBody(
     const startedByEmail = user?.email || 'Unknown';
     const startedByName = startedByEmail.split('@')[0];
 
-    let groupId = user.groupId;
-    let userOrgIdForQuota = null;
-
-    if (!groupId) {
-      const assignments = await db.collection('user_organization_assignments').find({
-        userId: user._id
-      }).toArray();
-
-      if (assignments.length > 0) {
-        userOrgIdForQuota = assignments[0].organizationId;
-        const org = await db.collection('organizations').findOne({
-          _id: assignments[0].organizationId
-        });
-        groupId = org?.groupId;
-      }
-    }
-
-    if (groupId) {
-      const group = await db.collection('groups').findOne({ _id: groupId });
-
-      if (group && group.chatQuota > 0) {
-        const currentMonth = new Date().toISOString().substring(0, 7);
-        const today = new Date().getDate();
-        if (today === group.renewDay) {
-          const lastReset = await db.collection('chat_resets').findOne({
-            groupId: group._id,
-            month: currentMonth
-          });
-
-          if (!lastReset) {
-            await db.collection('chat_counts').deleteMany({
-              groupId: group._id,
-              month: { $lt: currentMonth }
-            });
-            await db.collection('chat_resets').insertOne({
-              groupId: group._id,
-              month: currentMonth,
-              resetAt: new Date()
-            });
-            await db.collection('groups').updateOne(
-              { _id: group._id },
-              { $set: { bonusQuota: 0 } }
-            );
-          }
-        }
-
-        const effectiveQuota = group.chatQuota + (group.bonusQuota || 0);
-        if (group.quotaType === 'individual') {
-          const userCount = await db.collection('chat_counts').findOne({
-            groupId: group._id,
-            organizationId: userOrgIdForQuota,
-            userId: user._id,
-            month: currentMonth
-          });
-
-          const currentCount = userCount?.count || 0;
-          if (currentCount >= effectiveQuota) {
-            return res.status(429).json({
-              error: 'quota_exceeded',
-              message: 'Your quota exceeded limit, please contact Admin',
-              used: currentCount,
-              limit: effectiveQuota
-            });
-          }
-        } else {
-          const counts = await db.collection('chat_counts').find({
-            groupId: group._id,
-            organizationId: userOrgIdForQuota,
-            month: currentMonth
-          }).toArray();
-
-          const totalCount = counts.reduce((sum, c) => sum + c.count, 0);
-          if (totalCount >= effectiveQuota) {
-            return res.status(429).json({
-              error: 'quota_exceeded',
-              message: 'Your quota exceeded limit, please contact Admin',
-              used: totalCount,
-              limit: effectiveQuota
-            });
-          }
-        }
-      }
+    const packageContext = await resolveUserPackageContext(user, currentOrganizationId || null);
+    const quotaCheck = await enforceChatQuota(user, packageContext);
+    if (!quotaCheck.allowed) {
+      return res.status(429).json({
+        error: 'quota_exceeded',
+        message: 'Your quota exceeded limit, please contact Admin',
+        used: quotaCheck.used,
+        limit: quotaCheck.limit,
+      });
     }
 
     streamStarted = true;
@@ -1875,6 +2408,7 @@ app.post('/api/chat/stream', auth, apiRateLimit(30, 60000), validateRequestBody(
     const verboseMode = userPrefs?.verboseMode || false;
     const isDev = req.user.role === 'developer';
     const sourceCitations = isDev && showSources ? result.sources : [];
+    const attachments = result.attachmentFiles || [];
 
     if (result.blocked) {
       sendEvent('replace', { content: botContent });
@@ -1889,6 +2423,7 @@ app.post('/api/chat/stream', auth, apiRateLimit(30, 60000), validateRequestBody(
       role: 'bot',
       content: botContent,
       sources: sourceCitations,
+      attachments,
       artifacts: result.artifacts || [],
       responseTimeMs: verboseMode ? responseTimeMs : undefined,
       chatType: 'browser',
@@ -1896,22 +2431,12 @@ app.post('/api/chat/stream', auth, apiRateLimit(30, 60000), validateRequestBody(
       createdAt: new Date()
     });
 
-    if (groupId) {
-      const currentMonth = new Date().toISOString().substring(0, 7);
-      await db.collection('chat_counts').updateOne(
-        { groupId: groupId, organizationId: userOrgIdForQuota, userId: user._id, month: currentMonth },
-        {
-          $inc: { count: 1 },
-          $setOnInsert: { createdAt: new Date() },
-          $set: { updatedAt: new Date() }
-        },
-        { upsert: true }
-      );
-    }
+    await incrementChatUsage(user, packageContext);
 
     sendEvent('done', {
       response: botContent,
       sources: sourceCitations,
+      attachments,
       artifacts: result.artifacts || [],
       responseTimeMs: verboseMode ? responseTimeMs : undefined,
       sessionId: chatSessionId,
@@ -2120,227 +2645,54 @@ function requireApiScope(scope) {
   };
 }
 
-// Public chat API endpoint (uses API key)
-app.post('/api/v1/chat', authenticateApiKey, requireApiScope('chat'), apiRateLimit(60, 60000), validateRequestBody({
-  message: { required: true, type: 'string', minLength: 1, maxLength: 20000 },
-  sessionId: { type: 'string', maxLength: 120 },
-  organizationId: { objectId: true },
-}), async (req, res) => {
-  const usageStart = Date.now();
-  let usageLogged = false;
-  let message = req.body?.message;
-  let sessionId = req.body?.sessionId;
-  let chatSessionId = sessionId || null;
-  let currentOrganizationId = req.body?.organizationId || null;
-  let chatMode = req.apiKey.chatMode || 'webhook';
-  let llmProvider = null;
-  let llmModel = null;
-  let botContent = '';
+function unavailableStoredFileResponse(res, file) {
+  return res.status(410).json({
+    error: 'Original file is not available for download. The searchable content is still stored in Genia, but this file was uploaded before Genia started keeping the original file copy. Please upload the file again to enable downloads.',
+    code: 'FILE_CONTENT_MISSING',
+    fileName: file?.name || 'file',
+  });
+}
 
-  const recordUsage = async (extra = {}) => {
-    if (usageLogged) return;
-    usageLogged = true;
-    await logApiUsage({
-      apiKeyId: req.apiKey._id,
-      apiKeyName: req.apiKey.name,
-      endpoint: '/api/v1/chat',
-      method: 'POST',
-      responseStatus: 200,
-      ipAddress: req.ip,
-      userId: req.user.id,
-      sessionId: chatSessionId,
-      organizationId: currentOrganizationId,
-      chatMode,
-      streaming: false,
-      provider: llmProvider,
-      model: llmModel,
-      messageLength: typeof message === 'string' ? message.length : 0,
-      responseLength: typeof botContent === 'string' ? botContent.length : 0,
-      latencyMs: Date.now() - usageStart,
-      ...extra,
-    });
-  };
-
-  try {
-    const { organizationId, filter } = req.body;
-
-    if (!message) {
-      await recordUsage({ responseStatus: 400, errorCode: 'BAD_REQUEST', errorMessage: 'Message is required' });
-      return res.status(400).json({ error: 'Message is required' });
-    }
-
-    chatSessionId = sessionId || new ObjectId().toString();
-    
-    // Get user info
-    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
-    const startedByEmail = user?.email || 'API User';
-    const startedByName = startedByEmail.split('@')[0];
-    
-    const orgScope = await resolveApiOrganizationScope(req.user.id, organizationId || null);
-    if (!orgScope.allowed) {
-      await recordUsage({ responseStatus: orgScope.status, errorCode: orgScope.code, errorMessage: orgScope.message });
-      return res.status(orgScope.status).json({ error: orgScope.message, code: orgScope.code });
-    }
-    currentOrganizationId = orgScope.currentOrganizationId;
-
-    // Save user message
-    await db.collection('messages').insertOne({
-      userId: req.user.id,
-      sessionId: chatSessionId,
-      currentOrganizationId: currentOrganizationId ? new ObjectId(currentOrganizationId) : null,
-      startedBy: startedByName,
-      startedByEmail: startedByEmail,
-      role: 'user',
-      content: message,
-      chatType: 'API',
-      chatName: req.apiKey.name,
-      source: 'api',
-      apiKeyId: req.apiKey._id,
-      createdAt: new Date()
-    });
-
-    // Input guardrail check
-    const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
-    if (settings.guardrailEnabled) {
-      const inputCheck = await checkGuardrail(message, settings.guardrailInputPrompt, settings, db);
-      if (!inputCheck.safe) {
-        botContent = 'Sorry, I\'m unable to process this request.\n\nMaaf, saya tidak dapat memproses permintaan ini.\n\nமன்னிக்கவும், இந்தக் கோரிக்கையை செயல்படுத்த இயலவில்லை.\n\n抱歉，无法处理此请求。';
-        await db.collection('guardrail_logs').insertOne({ userId: req.user.id, sessionId: chatSessionId, type: 'input', source: 'api', message, reason: inputCheck.reason, createdAt: new Date() });
-        await recordUsage({ blocked: true, guardrailType: 'input', responseLength: botContent.length });
-        return res.json({ response: { text: botContent, speak: '' }, sessionId: chatSessionId, blocked: true });
-      }
-    }
-
-    if (chatMode === 'native') {
-      // ─── Native mode: search Qdrant → build context → call LLM ───
-      const settings = await db.collection('settings').findOne({ _id: 'config' }) || {};
-      const pk = await resolveProviderKeys(currentOrganizationId?.toString());
-
-      // 1. Embed the query
-      const embProvider = settings.embeddingProvider || 'gemini';
-      const embModel = settings.embeddingModel || 'gemini-embedding-001';
-      const embKey = settings.embeddingApiKey || pk[embProvider] || '';
-      let queryVector;
-      const embStart = Date.now();
-
-      if (embProvider === 'gemini') {
-        const r = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${embModel}:embedContent?key=${embKey}`, { content: { parts: [{ text: message }] }, taskType: 'RETRIEVAL_QUERY' });
-        queryVector = r.data.embedding.values;
-      } else if (embProvider === 'openai') {
-        const oai = new OpenAI({ apiKey: embKey });
-        const r = await oai.embeddings.create({ model: embModel, input: [message] });
-        queryVector = r.data[0].embedding;
-      } else if (embProvider === 'mistral') {
-        const r = await axios.post('https://api.mistral.ai/v1/embeddings', { model: embModel, input: [message] }, { headers: { 'Authorization': `Bearer ${embKey}` } });
-        queryVector = r.data.data[0].embedding;
-      }
-      await logAiCall(embProvider, embModel, 'embedding', 'api_v1', Date.now() - embStart);
-
-      // 2. Search Qdrant
-      const qdrantHost = settings.qdrantHost || settings.offlineQdrantHost || 'qdrant';
-      const qdrantPort = settings.qdrantPort || settings.offlineQdrantPort || 6333;
-      const qdrant = new QdrantClient({ host: qdrantHost, port: qdrantPort });
-      const maxChunks = settings.chatMaxChunks || 5;
-      let context = '';
-      try {
-        const searchFilter = buildApiRagFilter(req.apiKey, orgScope.accessibleOrgIds, filter);
-        const results = await qdrant.search('documents', { vector: queryVector, limit: maxChunks, with_payload: true, filter: searchFilter });
-        context = results.map(r => r.payload?.content || '').filter(Boolean).join('\n\n---\n\n');
-      } catch (e) { console.error('Qdrant search error:', e.message); }
-
-      // 3. Build prompt and call LLM — API key prompt → org prompt → global prompt
-      const llmStartTime = Date.now();
-      let systemPrompt = req.apiKey.systemPrompt || settings.chatSystemPrompt || 'You are a helpful AI assistant.';
-      if (!req.apiKey.systemPrompt && req.apiKey.organizationId) {
-        const org = await db.collection('organizations').findOne({ _id: new ObjectId(req.apiKey.organizationId) });
-        if (org?.systemPrompt) systemPrompt = org.systemPrompt;
-      }
-      llmProvider = settings.chatLlmProvider || 'gemini';
-      llmModel = settings.chatLlmModel || 'gemini-2.5-flash';
-      const llmKey = settings.chatLlmApiKey || pk[llmProvider] || '';
-      const fullPrompt = context ? `${systemPrompt}\n\nContext from documents:\n${context}\n\nUser question: ${message}` : `${systemPrompt}\n\nUser question: ${message}`;
-
-      if (llmProvider === 'gemini') {
-        const r = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${llmModel}:generateContent?key=${llmKey}`, {
-          contents: [{ role: 'user', parts: [{ text: fullPrompt }] }]
-        });
-        botContent = r.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      } else if (llmProvider === 'openai' || llmProvider === 'groq') {
-        const baseURL = llmProvider === 'groq' ? 'https://api.groq.com/openai/v1' : undefined;
-        const oai = new OpenAI({ apiKey: llmKey, ...(baseURL && { baseURL }) });
-        const r = await oai.chat.completions.create({ model: llmModel, messages: [{ role: 'system', content: systemPrompt }, ...(context ? [{ role: 'user', content: `Context:\n${context}` }] : []), { role: 'user', content: message }] });
-        botContent = r.choices[0]?.message?.content || '';
-      } else if (llmProvider === 'mistral') {
-        const r = await axios.post('https://api.mistral.ai/v1/chat/completions', { model: llmModel, messages: [{ role: 'system', content: systemPrompt }, ...(context ? [{ role: 'user', content: `Context:\n${context}` }] : []), { role: 'user', content: message }] }, { headers: { 'Authorization': `Bearer ${llmKey}` } });
-        botContent = r.data.choices?.[0]?.message?.content || '';
-      }
-      await logAiCall(llmProvider, llmModel, 'chat', 'api_v1', Date.now() - llmStartTime);
-    } else {
-      // ─── Webhook mode: forward to n8n ───
-      const webhookUrl = req.apiKey.webhookUrl;
-      if (!webhookUrl) {
-        await recordUsage({ responseStatus: 400, errorCode: 'WEBHOOK_NOT_CONFIGURED', errorMessage: 'No webhook URL configured for this API key' });
-        return res.status(400).json({ error: 'No webhook URL configured for this API key' });
-      }
-      const { data } = await axios.post(webhookUrl, {
-        message, userId: req.user.id.toString(), currentOrganizationId, sessionId: chatSessionId, fileId: null, chatType: 'API', chatName: req.apiKey.name
-      }, { timeout: 60000 });
-      botContent = typeof data.response === 'object' ? data.response.text : data.response;
-    }
-    
-    await db.collection('messages').insertOne({
-      userId: req.user.id,
-      sessionId: chatSessionId,
-      currentOrganizationId: currentOrganizationId ? new ObjectId(currentOrganizationId) : null,
-      startedBy: startedByName,
-      startedByEmail: startedByEmail,
-      role: 'bot',
-      content: botContent || '',
-      chatType: 'API',
-      chatName: req.apiKey.name,
-      source: 'api',
-      apiKeyId: req.apiKey._id,
-      createdAt: new Date()
-    });
-
-    // Output guardrail check
-    if (settings.guardrailEnabled && botContent) {
-      const outputCheck = await checkGuardrail(botContent, settings.guardrailOutputPrompt, settings, db);
-      if (!outputCheck.safe) {
-        await db.collection('guardrail_logs').insertOne({ userId: req.user.id, sessionId: chatSessionId, type: 'output', source: 'api', message: botContent.substring(0, 500), reason: outputCheck.reason, createdAt: new Date() });
-        botContent = 'Sorry, I\'m unable to provide that information.\n\nMaaf, saya tidak dapat memberikan maklumat tersebut.\n\nமன்னிக்கவும், அந்தத் தகவலை வழங்க இயலவில்லை.\n\n抱歉，无法提供该信息。';
-        await recordUsage({ blocked: true, guardrailType: 'output', responseLength: botContent.length });
-        return res.json({ response: { text: botContent, speak: '' }, sessionId: chatSessionId, blocked: true });
-      }
-    }
-
-    await recordUsage();
-    res.json({ 
-      response: {
-        text: (botContent.match(/\[TEXT\]([\s\S]*?)\[\/TEXT\]/)?.[1] || botContent).trim(),
-        speak: (botContent.match(/\[SPEAK\]([\s\S]*?)\[\/SPEAK\]/)?.[1] || botContent).trim(),
-      },
-      sessionId: chatSessionId 
-    });
-
-  } catch (error) {
-    console.error('API chat error:', error.message);
-    const apiError = classifyApiChatError(error);
-    await recordUsage({ responseStatus: apiError.status, errorCode: apiError.code, errorMessage: error.message });
-    res.status(apiError.status).json({ error: apiError.message, code: apiError.code });
+function getAvailableLocalFilePath(file) {
+  const candidates = [];
+  if (file?.url?.startsWith('file://')) {
+    let localPath = file.url.replace('file://', '');
+    if (!localPath.startsWith('/')) localPath = join(__dirname, localPath);
+    candidates.push(localPath);
   }
-});
+
+  const safeName = String(file?.name || '').split(/[\\/]/).pop();
+  if (safeName) {
+    const uploadDirs = [
+      join(__dirname, 'uploads'),
+      join(process.cwd(), 'uploads'),
+    ];
+
+    for (const dir of uploadDirs) {
+      candidates.push(join(dir, safeName));
+      try {
+        const found = fs.readdirSync(dir).find(name => name === safeName || name.endsWith(`-${safeName}`));
+        if (found) candidates.push(join(dir, found));
+      } catch {
+        // Ignore missing upload folders; the caller will return a clear unavailable-file response.
+      }
+    }
+  }
+
+  return candidates.find(path => path && fs.existsSync(path)) || null;
+}
 
 // Public streaming chat API endpoint (uses API key)
 app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), apiRateLimit(60, 60000), validateRequestBody({
-  message: { required: true, type: 'string', minLength: 1, maxLength: 20000 },
+  message: { type: 'string', minLength: 1, maxLength: 20000 },
+  prompt: { type: 'string', minLength: 1, maxLength: 20000 },
   sessionId: { type: 'string', maxLength: 120 },
   organizationId: { objectId: true },
 }), async (req, res) => {
   const usageStart = Date.now();
   let streamStarted = false;
   let usageLogged = false;
-  let message = req.body?.message;
+  let message = req.body?.message || req.body?.prompt;
   let sessionId = req.body?.sessionId;
   let chatSessionId = sessionId || null;
   let currentOrganizationId = req.body?.organizationId || null;
@@ -2349,11 +2701,9 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
   let llmModel = null;
   let botContent = '';
   let blocked = false;
-  const streamFormat = String(req.query.format || req.headers['x-stream-format'] || '').toLowerCase();
-  const wantsSse = streamFormat === 'sse';
-  let rawWroteAny = false;
+  let streamedAnyToken = false;
   let deferWebhookStream = false;
-  let rawWriteQueue = Promise.resolve();
+  let streamWriteQueue = Promise.resolve();
   const apiStreamChunkSize = Math.min(40, Math.max(2, Math.round(Number(req.apiKey.streamChunkSize) || 10)));
   const apiStreamDelayMs = Math.min(250, Math.max(0, Math.round(Number(req.apiKey.streamDelayMs) || 22)));
 
@@ -2366,7 +2716,7 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
       endpoint: '/api/v1/chat/stream',
       method: 'POST',
       responseStatus: 200,
-      ipAddress: req.ip,
+      ipAddress: getClientIp(req),
       userId: req.user.id,
       sessionId: chatSessionId,
       organizationId: currentOrganizationId,
@@ -2382,10 +2732,10 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
     });
   };
 
-  const sendEvent = (event, data) => {
+  const streamModelName = () => llmModel || req.body?.model || 'genia';
+  const writeJsonLine = (data) => {
     if (res.writableEnded) return;
-    res.write(`event: ${event}\n`);
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    res.write(`${JSON.stringify(data)}\n`);
   };
   const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
   const splitApiStreamText = (text) => {
@@ -2403,46 +2753,63 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
     if (chunk) chunks.push(chunk);
     return chunks;
   };
-  const queueRawText = (text) => {
+  const queueStreamText = (text) => {
     const chunks = splitApiStreamText(text);
-    rawWriteQueue = rawWriteQueue.then(async () => {
+    streamWriteQueue = streamWriteQueue.then(async () => {
       for (const chunk of chunks) {
         if (res.writableEnded) break;
-        rawWroteAny = true;
-        res.write(chunk);
+        streamedAnyToken = true;
+        writeJsonLine({
+          model: streamModelName(),
+          created_at: new Date().toISOString(),
+          response: chunk,
+          done: false,
+        });
         if (apiStreamDelayMs > 0) await wait(apiStreamDelayMs);
       }
     });
-    return rawWriteQueue;
+    return streamWriteQueue;
   };
-  const sendStatus = (status) => {
-    if (wantsSse) sendEvent('status', { status });
-  };
+  const sendStatus = () => {};
   const sendToken = (token) => {
     if (!token || res.writableEnded) return;
-    if (wantsSse) sendEvent('token', { token });
-    else queueRawText(token);
+    queueStreamText(token);
   };
   const sendReplace = (content) => {
-    if (wantsSse) sendEvent('replace', { content });
-    else if (!rawWroteAny && content) {
-      queueRawText(content);
+    if (!streamedAnyToken && content) {
+      queueStreamText(content);
     }
   };
-  const sendDone = (data) => {
-    if (wantsSse) sendEvent('done', data);
+  const sendDone = (data = {}) => {
+    streamWriteQueue = streamWriteQueue.then(async () => {
+      writeJsonLine({
+        model: streamModelName(),
+        created_at: new Date().toISOString(),
+        response: '',
+        done: true,
+        done_reason: data.error ? 'error' : 'stop',
+        session_id: chatSessionId,
+        sources: data.sources || [],
+        artifacts: data.artifacts || [],
+        blocked: Boolean(data.blocked || blocked),
+        response_time_ms: Date.now() - usageStart,
+        total_duration: (Date.now() - usageStart) * 1000000,
+        ...(data.error ? { error: data.error, code: data.code } : {}),
+      });
+    });
+    return streamWriteQueue;
   };
   const sendStreamError = (data) => {
-    if (wantsSse) sendEvent('error', data);
-    else if (!res.writableEnded) queueRawText(`\n${data.error || 'Stream failed'}`);
+    if (!res.writableEnded) return sendDone({ error: data.error || 'Stream failed', code: data.code, blocked });
+    return streamWriteQueue;
   };
 
   try {
     const { organizationId, filter } = req.body;
 
     if (!message) {
-      await recordUsage({ responseStatus: 400, errorCode: 'BAD_REQUEST', errorMessage: 'Message is required' });
-      return res.status(400).json({ error: 'Message is required' });
+      await recordUsage({ responseStatus: 400, errorCode: 'BAD_REQUEST', errorMessage: 'Message or prompt is required' });
+      return res.status(400).json({ error: 'Message or prompt is required' });
     }
 
     chatSessionId = sessionId || new ObjectId().toString();
@@ -2458,14 +2825,13 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
     currentOrganizationId = orgScope.currentOrganizationId;
 
     streamStarted = true;
-    res.setHeader('Content-Type', wantsSse ? 'text/event-stream' : 'text/plain; charset=utf-8');
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
-    res.setHeader('X-Stream-Format', wantsSse ? 'sse' : 'raw');
+    res.setHeader('X-Stream-Format', 'ollama-jsonl');
     res.setHeader('X-Session-ID', chatSessionId);
     res.flushHeaders?.();
-    if (wantsSse) res.write(': connected\n\n');
 
     await db.collection('messages').insertOne({
       userId: req.user.id,
@@ -2495,7 +2861,7 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
         sendReplace(botContent);
         sendDone({ response: { text: botContent, speak: '' }, sessionId: chatSessionId, blocked: true });
         await recordUsage({ guardrailType: 'input', responseLength: botContent.length });
-        await rawWriteQueue;
+        await streamWriteQueue;
         return res.end();
       }
     }
@@ -2574,7 +2940,7 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
       if (!webhookUrl) {
         sendStreamError({ error: 'No webhook URL configured for this API key' });
         await recordUsage({ responseStatus: 400, errorCode: 'WEBHOOK_NOT_CONFIGURED', errorMessage: 'No webhook URL configured for this API key' });
-        await rawWriteQueue;
+        await streamWriteQueue;
         return res.end();
       }
       sendStatus('Calling webhook...');
@@ -2600,7 +2966,7 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
     if (deferWebhookStream && botContent) {
       sendToken(botContent);
     }
-    await rawWriteQueue;
+    await streamWriteQueue;
 
     await db.collection('messages').insertOne({
       userId: req.user.id,
@@ -2617,12 +2983,12 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
       createdAt: new Date()
     });
 
-    sendDone({
+    await sendDone({
       response: {
         text: (botContent.match(/\[TEXT\]([\s\S]*?)\[\/TEXT\]/)?.[1] || botContent).trim(),
         speak: (botContent.match(/\[SPEAK\]([\s\S]*?)\[\/SPEAK\]/)?.[1] || botContent).trim(),
       },
-      sessionId: chatSessionId,
+      session_id: chatSessionId,
       sources,
     });
     await recordUsage({ responseLength: botContent.length });
@@ -2633,7 +2999,7 @@ app.post('/api/v1/chat/stream', authenticateApiKey, requireApiScope('chat'), api
     await recordUsage({ responseStatus: apiError.status, errorCode: apiError.code, errorMessage: error.message });
     if (streamStarted && !res.writableEnded) {
       sendStreamError({ error: apiError.message, code: apiError.code });
-      await rawWriteQueue;
+      await streamWriteQueue;
       return res.end();
     }
     res.status(apiError.status).json({ error: apiError.message, code: apiError.code });
@@ -2646,15 +3012,19 @@ app.get('/api/messages', auth, async (req, res) => {
   let query = {};
   
   if (req.user.role === 'developer') {
-    // Developer sees all chats in their org
-    query = {
-      organizationId: req.user.organizationId
-    };
+    // Developer sees all chats (optionally filtered by session below).
+    query = {};
+  } else if (req.user.role === 'admin') {
+    // Admin sees chats of users assigned directly to their organization (not departments).
+    const orgUserIds = await getOrgDirectUserIds(req.user.id);
+    query = { userId: { $in: userIdVariants(orgUserIds) } };
+  } else if (req.user.role === 'manager') {
+    // Manager sees chats of every user in their department subtree.
+    const managedIds = await getManagedUserIds(req.user.id);
+    query = { userId: { $in: userIdVariants(managedIds) } };
   } else {
-    // Admin/Manager/User see only own chats
-    query = {
-      userId: req.user.id
-    };
+    // Users see only own chats.
+    query = { userId: req.user.id };
   }
   
   if (sessionId) query.sessionId = sessionId;
@@ -2669,6 +3039,7 @@ app.get('/api/messages', auth, async (req, res) => {
     createdAt: m.createdAt,
     startedBy: m.startedBy,
     sources: m.sources || [],
+    attachments: m.attachments || [],
     artifacts: m.artifacts || [],
     responseTimeMs: m.responseTimeMs
   })));
@@ -2684,6 +3055,20 @@ app.get('/api/sessions', auth, async (req, res) => {
     
     if (req.user.role === 'developer') {
       // Developer sees all sessions
+      if (currentOrganizationId) {
+        matchQuery.currentOrganizationId = new ObjectId(currentOrganizationId);
+      }
+    } else if (req.user.role === 'admin') {
+      // Admin sees sessions of users assigned directly to their organization (not departments).
+      const orgUserIds = await getOrgDirectUserIds(req.user.id);
+      matchQuery.userId = { $in: userIdVariants(orgUserIds) };
+      if (currentOrganizationId) {
+        matchQuery.currentOrganizationId = new ObjectId(currentOrganizationId);
+      }
+    } else if (req.user.role === 'manager') {
+      // Manager sees sessions of every user in their department subtree.
+      const managedIds = await getManagedUserIds(req.user.id);
+      matchQuery.userId = { $in: userIdVariants(managedIds) };
       if (currentOrganizationId) {
         matchQuery.currentOrganizationId = new ObjectId(currentOrganizationId);
       }
@@ -2752,21 +3137,62 @@ app.delete('/api/sessions/:id/share', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-function getSafeSharedMessages(messages = []) {
-  return messages.map((message) => ({
-    role: message.role,
-    content: message.content,
-    createdAt: message.createdAt,
-    artifacts: Array.isArray(message.artifacts)
-      ? message.artifacts
-        .filter((artifact) => artifact?.type === 'echart' && artifact.option)
-        .map((artifact) => ({
+function sanitizeSharedContent(content = '') {
+  let cleaned = String(content || '');
+  cleaned = cleaned.replace(/```([a-zA-Z0-9_-]*)\s*\n?([\s\S]*?)```/g, (full, language, body) => {
+    const lang = String(language || '').toLowerCase();
+    const looksLikeChartSpec = /"?(chart_?type|series|x_?axis|y_?axis|datasets|echarts?|chartjs|tooltip)"?\s*[:=]/i.test(body)
+      || ['echart', 'echarts', 'chart'].includes(lang);
+    return looksLikeChartSpec ? '' : full;
+  });
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+  return cleaned;
+}
+
+function getSafeSharedArtifacts(artifacts = []) {
+  if (!Array.isArray(artifacts)) return [];
+  return artifacts
+    .map((artifact) => {
+      if (artifact?.type === 'echart' && artifact.option) {
+        return {
           id: artifact.id,
           type: 'echart',
           title: artifact.title || artifact.option?.title?.text || 'Chart',
           option: artifact.option,
-        }))
-      : [],
+        };
+      }
+      if (artifact?.type === 'dashboard' && Array.isArray(artifact.charts)) {
+        return {
+          id: artifact.id,
+          type: 'dashboard',
+          title: artifact.title || 'Dashboard',
+          kpis: Array.isArray(artifact.kpis) ? artifact.kpis.map(kpi => ({
+            label: String(kpi?.label || ''),
+            value: kpi?.value ?? '',
+            detail: kpi?.detail ?? '',
+          })) : [],
+          charts: artifact.charts
+            .filter(chart => chart?.option)
+            .map(chart => ({
+              id: chart.id,
+              title: chart.title || chart.option?.title?.text || 'Chart',
+              option: chart.option,
+              size: chart.size || 'medium',
+            })),
+          table: Array.isArray(artifact.table) ? artifact.table.slice(0, 20) : [],
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+}
+
+function getSafeSharedMessages(messages = []) {
+  return messages.map((message) => ({
+    role: message.role,
+    content: sanitizeSharedContent(message.content),
+    createdAt: message.createdAt,
+    artifacts: getSafeSharedArtifacts(message.artifacts),
   }));
 }
 
@@ -2961,7 +3387,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     const uploaderName = uploaderEmail.split('@')[0];
     
     // Get sharedWith from request (array of org IDs)
-    const sharedWith = req.body.sharedWith ? JSON.parse(req.body.sharedWith) : [];
+    const requestedSharedWith = req.body.sharedWith ? JSON.parse(req.body.sharedWith) : [];
     const isPublic = req.body.isPublic === 'true' || req.body.isPublic === true;
     
     // Check storage limit for user's org (plan is template, each org has own limit)
@@ -2971,32 +3397,56 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     const userAssignments = await db.collection('user_organization_assignments').find({ 
       userId: userId 
     }).toArray();
+
+    let sharedWith = Array.isArray(requestedSharedWith) ? requestedSharedWith : [];
+    let uploadOwnerOrgId = null;
+    if (req.user.role !== 'developer') {
+      const { assignedOrgIds, hierarchyOrgIds } = await getUserOrganizationHierarchyIds(userId);
+      const allowedIds = new Set(hierarchyOrgIds.map(id => id.toString()));
+      const fallbackIds = assignedOrgIds.map(id => id.toString());
+      const validSelectedIds = sharedWith
+        .map(id => id?.toString?.() || String(id || ''))
+        .filter(id => ObjectId.isValid(id) && allowedIds.has(id));
+
+      const selectedObjectIds = (validSelectedIds.length > 0 ? validSelectedIds : fallbackIds)
+        .filter(id => ObjectId.isValid(id))
+        .map(id => new ObjectId(id));
+      uploadOwnerOrgId = selectedObjectIds[0] || null;
+      const scopedOrgs = await db.collection('organizations')
+        .find({ _id: { $in: hierarchyOrgIds } })
+        .toArray();
+      sharedWith = addAncestorOrgIds(selectedObjectIds, scopedOrgs).map(id => id.toString());
+
+      if (sharedWith.length === 0) {
+        if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        return res.status(403).json({ error: 'No organization access for upload. Please contact your admin.' });
+      }
+    }
     
-    if (userAssignments.length > 0) {
+    let packageOwnerOrgId = null;
+    let packageInherited = false;
+    if (userAssignments.length > 0 || req.user.role === 'developer') {
       const userOrgIds = userAssignments.map(a => a.organizationId);
-      const userOrgs = await db.collection('organizations').find({
-        _id: { $in: userOrgIds.map(id => new ObjectId(id)) }
-      }).toArray();
-      
-      // Find group (plan template) and org
-      const orgWithGroup = userOrgs.find(o => o.groupId);
-      const groupId = orgWithGroup?.groupId;
-      userOrgId = orgWithGroup?._id || userOrgIds[0];
-      
-      if (groupId) {
-        userGroupId = groupId;
-        const group = await db.collection('groups').findOne({ _id: groupId });
-        
-        if (group) {
-          // Count storage per-org, not per-group
-          const files = await db.collection('files').find({ organizationId: userOrgId }).toArray();
-          const currentUsage = files.reduce((sum, f) => sum + (f.size || 0), 0);
+      if (!uploadOwnerOrgId && sharedWith.length > 0 && ObjectId.isValid(sharedWith[0])) {
+        uploadOwnerOrgId = new ObjectId(sharedWith[0]);
+      }
+      userOrgId = uploadOwnerOrgId || userOrgIds[0] || null;
+
+      if (userOrgId) {
+        const effective = await resolveEffectivePackageForOrg(userOrgId);
+        if (effective.group) {
+          const group = effective.group;
+          userGroupId = group._id;
+          packageOwnerOrgId = effective.packageOwnerOrgId;
+          packageInherited = effective.isInherited;
+
+          const currentUsage = await getPackageStorageUsage(packageOwnerOrgId, userGroupId);
           const limitBytes = group.storageLimitGB * 1024 * 1024 * 1024;
-          
+
           if (currentUsage + req.file.size > limitBytes) {
             fs.unlinkSync(req.file.path);
-            return res.status(400).json({ 
-              error: `Storage limit exceeded. Limit: ${group.storageLimitGB}GB, Used: ${(currentUsage / 1024 / 1024 / 1024).toFixed(2)}GB` 
+            return res.status(400).json({
+              error: `Storage limit exceeded. Limit: ${group.storageLimitGB}GB, Used: ${(currentUsage / 1024 / 1024 / 1024).toFixed(2)}GB`
             });
           }
         }
@@ -3036,6 +3486,8 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       userId: req.user.id,
       groupId: userGroupId,
       organizationId: userOrgId,
+      packageOwnerOrgId,
+      packageInherited,
       sharedWith: sharedWith.map(id => new ObjectId(id)), // Array of org IDs
       type: 'document',
       isPublic: isPublic,
@@ -3069,7 +3521,44 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     };
       sendProgress('upload', 'File saved, starting processing...');
 
+      const uploadExt = (req.file.originalname.split('.').pop() || '').toLowerCase();
+      const isTabularUpload = TABULAR_EXTENSIONS.includes(uploadExt);
+
       try {
+        if (isTabularUpload) {
+          // Tabular file → store as SQL data source(s), skip vector embedding.
+          const created = await processTabularFile(
+            req.file.path,
+            req.file.originalname,
+            result.insertedId.toString(),
+            { organizationIds: sharedWith, sourceApp: 'file-upload' },
+            sendProgress
+          );
+          const totalRows = created.reduce((sum, c) => sum + c.rows, 0);
+
+          await db.collection('files').updateOne(
+            { _id: result.insertedId },
+            { $set: {
+              isTabular: true,
+              vectorized: false,
+              isVectorized: false,
+              chunks: 0,
+              dataSourceIds: created.map(c => c.dataSourceId),
+              tableNames: created.map(c => c.tableName),
+            } }
+          );
+
+          if (fileUrl.startsWith('https://') && fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+          }
+
+          const msg = created.length
+            ? `Imported ${totalRows.toLocaleString()} row(s) into ${created.length} data table(s). Ask the chatbot about this data.`
+            : 'No table rows found to import.';
+          sendProgress('done', msg);
+          res.write(`data: ${JSON.stringify({ success: true, fileId: result.insertedId, message: msg, chunks: 0, tables: created.length, rows: totalRows })}\n\n`);
+          res.end();
+        } else {
         const pipelineResult = await processUploadedFile(
           req.file.path,
           req.file.originalname,
@@ -3098,6 +3587,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         sendProgress('done', pipelineResult.message);
         res.write(`data: ${JSON.stringify({ success: true, fileId: result.insertedId, message: pipelineResult.message, chunks: pipelineResult.chunks })}\n\n`);
         res.end();
+        }
       } catch (pipelineError) {
         console.error('Upload pipeline error:', pipelineError.message);
         if (fileUrl.startsWith('https://') && fs.existsSync(req.file.path)) {
@@ -3113,57 +3603,538 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
   }
 });
 
+// ─── Text Notes (typed knowledge entries) ──────────────────────
+// Sanitize a title into a safe markdown filename.
+const textNoteFileName = (title) =>
+  `${(title || '').trim().replace(/[^a-zA-Z0-9-_ ]/g, '').trim().slice(0, 80) || 'note'}.md`;
+
+// Create a text note: typed content stored in MongoDB + vectorized like a file.
+app.post('/api/upload-text', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+    const { title, content } = req.body;
+    if (!title || !title.trim()) return res.status(400).json({ error: 'Title required' });
+    if (!content || !content.trim()) return res.status(400).json({ error: 'Content required' });
+
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const uploaderEmail = user?.email || 'Unknown';
+    const uploaderName = uploaderEmail.split('@')[0];
+
+    const requestedSharedWith = Array.isArray(req.body.sharedWith)
+      ? req.body.sharedWith
+      : (req.body.sharedWith ? JSON.parse(req.body.sharedWith) : []);
+    const isPublic = req.body.isPublic === 'true' || req.body.isPublic === true;
+
+    const fileSize = Buffer.byteLength(content, 'utf-8');
+    const ctx = await resolveUploadContext(req, requestedSharedWith, fileSize);
+    if (ctx.error) return res.status(ctx.status || 400).json({ error: ctx.error });
+
+    // Persist content to disk as markdown so the standard pipeline + re-embed work identically.
+    const fileName = textNoteFileName(title);
+    const storedName = `${Date.now()}-${fileName}`;
+    const filePath = `uploads/${storedName}`;
+    fs.writeFileSync(filePath, content, 'utf-8');
+
+    const file = {
+      userId: req.user.id,
+      groupId: ctx.userGroupId,
+      organizationId: ctx.userOrgId,
+      packageOwnerOrgId: ctx.packageOwnerOrgId,
+      packageInherited: ctx.packageInherited,
+      sharedWith: ctx.sharedWith.map(id => new ObjectId(id)),
+      type: 'document',
+      isTextNote: true,
+      title: title.trim(),
+      content, // original text retained for in-place editing
+      isPublic,
+      isVectorized: true,
+      uploadedBy: uploaderName,
+      uploadedByEmail: uploaderEmail,
+      name: fileName,
+      storedName,
+      path: filePath,
+      size: fileSize,
+      url: `file://${filePath}`,
+      uploadedAt: new Date(),
+    };
+    const result = await db.collection('files').insertOne(file);
+
+    await db.collection('audit_logs').insertOne({
+      action: 'file_upload', userId: new ObjectId(req.user.id), userEmail: uploaderEmail,
+      organizationId: ctx.userOrgId || null,
+      details: { fileName, fileId: result.insertedId.toString(), fileSize, kind: 'text-note' },
+      createdAt: new Date(),
+    });
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    const sendProgress = (step, detail) => { try { res.write(`data: ${JSON.stringify({ step, detail })}\n\n`); } catch {} };
+    sendProgress('upload', 'Text saved, starting processing...');
+
+    try {
+      const pipelineResult = await processUploadedFile(
+        filePath, fileName, result.insertedId.toString(),
+        {
+          user_id: req.user.id, uploaded_by: uploaderName, uploaded_by_email: uploaderEmail,
+          shared_with: ctx.sharedWith, is_public: isPublic, uploaded_at: new Date().toISOString(),
+        },
+        settings, sendProgress
+      );
+      await db.collection('files').updateOne(
+        { _id: result.insertedId },
+        { $set: { vectorized: true, chunks: pipelineResult.chunks, pages: pipelineResult.pages } }
+      );
+      sendProgress('done', pipelineResult.message);
+      res.write(`data: ${JSON.stringify({ success: true, fileId: result.insertedId, message: pipelineResult.message, chunks: pipelineResult.chunks })}\n\n`);
+      res.end();
+    } catch (pipelineError) {
+      console.error('Text note pipeline error:', pipelineError.message);
+      sendProgress('error', pipelineError.message);
+      res.write(`data: ${JSON.stringify({ success: false, error: pipelineError.message })}\n\n`);
+      res.end();
+    }
+  } catch (error) {
+    console.error('Upload text error:', error.message);
+    if (!res.headersSent) res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Fetch a text note's original content (for editing).
+app.get('/api/files/:id/text', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+    if (!ObjectId.isValid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+    const file = await db.collection('files').findOne({ _id: new ObjectId(req.params.id) });
+    if (!file) return res.status(404).json({ error: 'Not found' });
+    if (!file.isTextNote) return res.status(400).json({ error: 'Not a text note' });
+    res.json({ title: file.title || (file.name || '').replace(/\.md$/, ''), content: file.content || '' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Edit a text note in place: update content, delete old vectors, re-embed.
+app.put('/api/files/:id/text', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+    if (!ObjectId.isValid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+    const file = await db.collection('files').findOne({ _id: new ObjectId(req.params.id) });
+    if (!file) return res.status(404).json({ error: 'Not found' });
+    if (!file.isTextNote) return res.status(400).json({ error: 'Not a text note' });
+
+    const { title, content } = req.body;
+    if (!content || !content.trim()) return res.status(400).json({ error: 'Content required' });
+
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const newTitle = (title && title.trim()) || file.title || 'note';
+    const fileName = textNoteFileName(newTitle);
+    const fileSize = Buffer.byteLength(content, 'utf-8');
+
+    // Reuse the same stored file where possible; otherwise create a new one.
+    const filePath = file.path || `uploads/${Date.now()}-${fileName}`;
+    fs.writeFileSync(filePath, content, 'utf-8');
+
+    await db.collection('files').updateOne(
+      { _id: file._id },
+      { $set: { title: newTitle, content, name: fileName, path: filePath, size: fileSize, url: `file://${filePath}`, uploadedAt: new Date() } }
+    );
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    const sendProgress = (step, detail) => { try { res.write(`data: ${JSON.stringify({ step, detail })}\n\n`); } catch {} };
+
+    try {
+      sendProgress('deleting', 'Removing old vectors...');
+      await deleteFileVectors(file._id.toString(), settings);
+      const pipelineResult = await processUploadedFile(
+        filePath, fileName, file._id.toString(),
+        {
+          user_id: file.userId, uploaded_by: file.uploadedBy || '', uploaded_by_email: file.uploadedByEmail || '',
+          shared_with: (file.sharedWith || []).map(id => id.toString()), is_public: file.isPublic, uploaded_at: new Date().toISOString(),
+        },
+        settings, sendProgress
+      );
+      await db.collection('files').updateOne(
+        { _id: file._id },
+        { $set: { vectorized: true, chunks: pipelineResult.chunks, pages: pipelineResult.pages } }
+      );
+      sendProgress('done', pipelineResult.message);
+      res.write(`data: ${JSON.stringify({ success: true, fileId: file._id, message: pipelineResult.message, chunks: pipelineResult.chunks })}\n\n`);
+      res.end();
+    } catch (pipelineError) {
+      console.error('Text note edit pipeline error:', pipelineError.message);
+      sendProgress('error', pipelineError.message);
+      res.write(`data: ${JSON.stringify({ success: false, error: pipelineError.message })}\n\n`);
+      res.end();
+    }
+  } catch (error) {
+    console.error('Edit text error:', error.message);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── WebView proxy (display external links that block iframe embedding) ──
+// Some sites send X-Frame-Options / CSP frame-ancestors and refuse to be
+// embedded. For those we proxy the top HTML document and strip those headers
+// so the split-screen panel can render them. Sub-resources load directly from
+// the origin site via an injected <base> tag.
+function parsePublicHttpUrl(raw) {
+  let u;
+  try { u = new URL(raw); } catch { return null; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  return u;
+}
+
+function isPrivateIp(ip) {
+  if (!ip) return true;
+  if (ip === '::1') return true;
+  const lower = ip.toLowerCase();
+  if (lower.startsWith('fe80') || lower.startsWith('fc') || lower.startsWith('fd')) return true;
+  const m = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!m) return false;
+  const a = parseInt(m[1]), b = parseInt(m[2]);
+  if (a === 10 || a === 127 || a === 0) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  return false;
+}
+
+// Block requests to internal/private hosts (SSRF guard).
+async function assertSafeUrl(u) {
+  const dns = await import('dns/promises');
+  const { address } = await dns.lookup(u.hostname);
+  if (isPrivateIp(address)) throw new Error('Blocked host');
+  return true;
+}
+
+function frameBlocked(headers) {
+  const xfo = (headers['x-frame-options'] || '').toString().toLowerCase();
+  if (xfo.includes('deny') || xfo.includes('sameorigin') || xfo.includes('allow-from')) return true;
+  const csp = (headers['content-security-policy'] || '').toString().toLowerCase();
+  const fa = csp.match(/frame-ancestors([^;]*)/);
+  if (fa && !fa[1].includes('*')) return true; // restricted to none/self/specific origins
+  return false;
+}
+
+const WEBVIEW_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+
+// Report whether a URL can be embedded directly, plus its final (post-redirect) URL.
+app.get('/api/webview-check', auth, async (req, res) => {
+  const u = parsePublicHttpUrl(req.query.url);
+  if (!u) return res.status(400).json({ error: 'Invalid url' });
+  try {
+    await assertSafeUrl(u);
+    const r = await axios.get(u.href, {
+      maxRedirects: 5, timeout: 15000, responseType: 'stream', validateStatus: () => true,
+      headers: { 'User-Agent': WEBVIEW_UA, Accept: 'text/html,application/xhtml+xml,*/*' },
+    });
+    try { r.data.destroy(); } catch {}
+    const finalUrl = r.request?.res?.responseUrl || u.href;
+    res.json({ embeddable: !frameBlocked(r.headers), finalUrl });
+  } catch (e) {
+    res.json({ embeddable: false, finalUrl: u.href, error: e.message });
+  }
+});
+
+// Proxy the top HTML document, stripping frame-blocking headers.
+app.get('/api/webview-proxy', auth, async (req, res) => {
+  const u = parsePublicHttpUrl(req.query.url);
+  if (!u) return res.status(400).send('Invalid url');
+  try {
+    await assertSafeUrl(u);
+    const r = await axios.get(u.href, {
+      maxRedirects: 5, timeout: 20000, responseType: 'arraybuffer', validateStatus: () => true,
+      headers: { 'User-Agent': WEBVIEW_UA, Accept: 'text/html,application/xhtml+xml,*/*' },
+    });
+    const finalUrl = r.request?.res?.responseUrl || u.href;
+    const ct = (r.headers['content-type'] || '').toString();
+
+    // Allow our own origin to frame the proxied content.
+    res.removeHeader('X-Frame-Options');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+
+    if (ct.includes('text/html')) {
+      let html = Buffer.from(r.data).toString('utf-8');
+      const baseTag = `<base href="${finalUrl}">`;
+      if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, (m) => `${m}${baseTag}`);
+      else html = baseTag + html;
+      // Strip in-document CSP / frame-busting meta tags.
+      html = html.replace(/<meta[^>]+http-equiv=["']?(content-security-policy|x-frame-options)["']?[^>]*>/gi, '');
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.send(html);
+    }
+    if (ct) res.setHeader('Content-Type', ct);
+    return res.send(Buffer.from(r.data));
+  } catch (e) {
+    console.error('webview-proxy error:', e.message);
+    return res.status(502).send('Failed to load page');
+  }
+});
+
+// Convert an already-uploaded CSV/Excel file into SQL data source table(s).
+// Deletes existing vector data for the file first, then ingests to MySQL.
+app.post('/api/files/:id/convert-to-table', auth, async (req, res) => {
+  try {
+    if (!ObjectId.isValid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+    const file = await db.collection('files').findOne({ _id: new ObjectId(req.params.id) });
+    if (!file) return res.status(404).json({ error: 'File not found' });
+    if (file.userId?.toString() !== req.user.id.toString() && req.user.role !== 'developer') {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    const ext = (file.name || '').split('.').pop()?.toLowerCase() || '';
+    if (!TABULAR_EXTENSIONS.includes(ext)) return res.status(400).json({ error: 'Only CSV/Excel files can be converted to a table' });
+    if (!mysqlPool) return res.status(503).json({ error: 'MySQL data source storage is not available' });
+
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    const sendProgress = (step, detail) => { try { res.write(`data: ${JSON.stringify({ step, detail })}\n\n`); } catch {} };
+
+    let tempPath = null;
+    try {
+      // 1. Resolve file bytes (local, else download from S3)
+      sendProgress('locating', 'Locating stored file...');
+      let localPath = getAvailableLocalFilePath(file);
+      if (!localPath && file.url?.startsWith('https://') && file.url.includes('.s3.')) {
+        sendProgress('downloading', 'Fetching file from storage...');
+        const s3Client = await getS3Client();
+        if (!s3Client) throw new Error('File storage not available');
+        const { GetObjectCommand } = await import('@aws-sdk/client-s3');
+        const urlParts = file.url.replace('https://', '').split('/');
+        const bucket = urlParts[0].split('.')[0];
+        const key = urlParts.slice(1).join('/');
+        const obj = await s3Client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        const chunks = [];
+        for await (const c of obj.Body) chunks.push(c);
+        tempPath = join(__dirname, 'uploads', `convert-${Date.now()}-${(file.name || 'file').split(/[\\/]/).pop()}`);
+        fs.writeFileSync(tempPath, Buffer.concat(chunks));
+        localPath = tempPath;
+      }
+      if (!localPath) throw new Error('File content is not available on the server. Please re-upload the file instead.');
+
+      // 2. Remove any existing vector data for this file
+      sendProgress('cleaning', 'Removing existing vector data (if any)...');
+      try { await deleteFileVectors(req.params.id, settings); } catch (e) { console.error('vector cleanup:', e.message); }
+
+      // 3. Drop any previously-linked tables (idempotent re-convert)
+      const existing = await db.collection('data_sources').find({ sourceFileId: req.params.id }).toArray();
+      for (const ds of existing) {
+        if (ds.tableName) { try { await mysqlPool.query(`DROP TABLE IF EXISTS \`${ds.tableName}\``); } catch {} }
+      }
+      if (existing.length) await db.collection('data_sources').deleteMany({ sourceFileId: req.params.id });
+
+      // 4. Convert to table(s)
+      const orgIds = (file.sharedWith || []).map(id => id.toString());
+      const created = await processTabularFile(localPath, file.name, req.params.id, { organizationIds: orgIds, sourceApp: 'file-upload' }, sendProgress);
+      const totalRows = created.reduce((s, c) => s + c.rows, 0);
+
+      await db.collection('files').updateOne(
+        { _id: file._id },
+        { $set: { isTabular: true, vectorized: false, isVectorized: false, chunks: 0, dataSourceIds: created.map(c => c.dataSourceId), tableNames: created.map(c => c.tableName) } }
+      );
+
+      if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+
+      const msg = created.length
+        ? `Converted to ${created.length} data table(s), ${totalRows.toLocaleString()} row(s).`
+        : 'No table rows found to import.';
+      sendProgress('done', msg);
+      res.write(`data: ${JSON.stringify({ success: true, fileId: file._id, message: msg, tables: created.length, rows: totalRows })}\n\n`);
+      res.end();
+    } catch (convErr) {
+      if (tempPath && fs.existsSync(tempPath)) { try { fs.unlinkSync(tempPath); } catch {} }
+      console.error('Convert to table error:', convErr.message);
+      sendProgress('error', convErr.message);
+      res.write(`data: ${JSON.stringify({ success: false, error: convErr.message })}\n\n`);
+      res.end();
+    }
+  } catch (error) {
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+});
+
+// Migrate a locally-stored file to S3 (developer only): upload to S3 if not
+// already there, update the stored URL, then delete the local copy.
+app.post('/api/files/:id/convert-s3', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+    if (!ObjectId.isValid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+    const file = await db.collection('files').findOne({ _id: new ObjectId(req.params.id) });
+    if (!file) return res.status(404).json({ error: 'File not found' });
+
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const s3Client = await getS3Client();
+    if (!s3Client || !settings?.s3Bucket) {
+      return res.status(400).json({ error: 'S3 is not configured. Set it in Settings first.' });
+    }
+
+    const alreadyS3 = Boolean(file.url && file.url.startsWith('https://') && file.url.includes('.s3.'));
+    const localPath = getAvailableLocalFilePath(file);
+    const localSize = (localPath && fs.existsSync(localPath)) ? fs.statSync(localPath).size : null;
+    let verifyKey = null;
+
+    if (!alreadyS3) {
+      if (!localPath) return res.status(400).json({ error: 'No local copy available to migrate.' });
+      const body = fs.readFileSync(localPath);
+      const ext = (file.name || '').split('.').pop()?.toLowerCase() || '';
+      const mimeMap = {
+        pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+        webp: 'image/webp', bmp: 'image/bmp', tiff: 'image/tiff', txt: 'text/plain', csv: 'text/csv',
+        tsv: 'text/tab-separated-values', md: 'text/markdown', json: 'application/json', html: 'text/html',
+        doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      };
+      const contentType = mimeMap[ext] || 'application/octet-stream';
+      const safeName = (file.name || 'file').split(/[\\/]/).pop();
+      const s3Key = `uploads/${file.userId}/${Date.now()}-${safeName}`;
+      // Step 1: upload to S3 FIRST (local copy untouched).
+      await s3Client.send(new PutObjectCommand({ Bucket: settings.s3Bucket, Key: s3Key, Body: body, ContentType: contentType }));
+      const s3Url = `https://${settings.s3Bucket}.s3.${settings.s3Region}.amazonaws.com/${s3Key}`;
+      await db.collection('files').updateOne({ _id: file._id }, { $set: { url: s3Url } });
+      verifyKey = s3Key;
+    } else {
+      // Already on S3 — resolve the object key from the stored URL for verification.
+      try { verifyKey = decodeURIComponent(new URL(file.url).pathname.replace(/^\//, '')); } catch { verifyKey = null; }
+    }
+
+    // Step 2: verify the object is really on S3 (and byte size matches the local
+    // file) BEFORE deleting the local copy. If anything is off, keep local.
+    if (localPath && fs.existsSync(localPath)) {
+      if (!verifyKey) {
+        return res.status(500).json({ error: 'Could not resolve S3 object key for verification — local copy kept.' });
+      }
+      let head;
+      try {
+        head = await s3Client.send(new HeadObjectCommand({ Bucket: settings.s3Bucket, Key: verifyKey }));
+      } catch (e) {
+        return res.status(500).json({ error: `S3 verification failed (${e.message}) — local copy kept.` });
+      }
+      if (localSize != null && typeof head.ContentLength === 'number' && head.ContentLength !== localSize) {
+        return res.status(500).json({ error: `Size mismatch: local ${localSize} bytes vs S3 ${head.ContentLength} bytes — local copy kept.` });
+      }
+      // Step 3: verified — safe to delete the local copy.
+      try { fs.unlinkSync(localPath); } catch (e) { console.error('Local delete after S3 migrate:', e.message); }
+    }
+
+    const actor = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    await db.collection('audit_logs').insertOne({
+      action: 'file_migrate_s3', userId: new ObjectId(req.user.id), userEmail: actor?.email || 'Unknown',
+      details: { fileId: file._id.toString(), fileName: file.name, migrated: !alreadyS3 }, createdAt: new Date(),
+    });
+
+    res.json({
+      success: true,
+      migrated: !alreadyS3,
+      message: alreadyS3 ? 'File already on S3 — local copy removed.' : 'File migrated to S3 and local copy removed.',
+    });
+  } catch (error) {
+    console.error('Convert to S3 error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Re-embed the rows of a tabular file's data source(s) into the vector store
+// (developer only). Deletes old row vectors first, then embeds afresh. SSE.
+app.post('/api/files/:id/reembed-rows', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+    if (!ObjectId.isValid(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+    const file = await db.collection('files').findOne({ _id: new ObjectId(req.params.id) });
+    if (!file) return res.status(404).json({ error: 'File not found' });
+    if (!mysqlPool) return res.status(503).json({ error: 'MySQL data source storage is not available' });
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    const sendProgress = (step, detail) => { try { res.write(`data: ${JSON.stringify({ step, detail })}\n\n`); } catch {} };
+
+    try {
+      const sources = await db.collection('data_sources').find({ sourceFileId: req.params.id }).toArray();
+      if (!sources.length) {
+        sendProgress('done', 'No data tables linked to this file. Convert it to a table first.');
+        res.write(`data: ${JSON.stringify({ success: false, message: 'No linked data sources' })}\n\n`);
+        return res.end();
+      }
+
+      sendProgress('cleaning', 'Removing old row vectors...');
+      try { await deleteFileVectors(req.params.id, settings); } catch (e) { console.error('vector cleanup:', e.message); }
+
+      let totalEmbedded = 0;
+      let skipped = 0;
+      for (const ds of sources) {
+        if (!ds.tableName) continue;
+        const [rows] = await mysqlPool.query(`SELECT * FROM \`${ds.tableName}\` LIMIT ${TABULAR_EMBED_MAX_ROWS + 1}`);
+        if (!Array.isArray(rows) || rows.length === 0) continue;
+        if (rows.length > TABULAR_EMBED_MAX_ROWS) {
+          skipped++;
+          sendProgress('skipping', `Skipping "${ds.name}" — ${rows.length}+ rows exceed the ${TABULAR_EMBED_MAX_ROWS.toLocaleString()} embed limit.`);
+          continue;
+        }
+        sendProgress('embedding_rows', `Embedding ${rows.length.toLocaleString()} row(s) from "${ds.name}"...`);
+        const r = await embedTabularRows({
+          fileId: req.params.id, fileName: file.name, sourceName: ds.name, dataSourceId: ds._id,
+          columns: ds.columns || [], rows, settings, onProgress: sendProgress,
+        });
+        totalEmbedded += r.embedded;
+      }
+
+      await db.collection('files').updateOne({ _id: file._id }, { $set: { rowsEmbedded: totalEmbedded, rowsEmbeddedAt: new Date() } });
+      const msg = `Embedded ${totalEmbedded.toLocaleString()} row(s)${skipped ? `, skipped ${skipped} large table(s)` : ''}.`;
+      sendProgress('done', msg);
+      res.write(`data: ${JSON.stringify({ success: true, embedded: totalEmbedded, message: msg })}\n\n`);
+      res.end();
+    } catch (err) {
+      console.error('reembed-rows error:', err.message);
+      try { res.write(`data: ${JSON.stringify({ success: false, error: err.message })}\n\n`); res.end(); } catch {}
+    }
+  } catch (error) {
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+});
+
+// Whether S3 storage is configured (used by UI to show/hide the Move-to-S3 action).
+app.get('/api/s3-status', auth, async (req, res) => {
+  try {
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const s3Client = await getS3Client();
+    res.json({ enabled: Boolean(s3Client && settings?.s3Bucket) });
+  } catch {
+    res.json({ enabled: false });
+  }
+});
+
 // Get storage info for user's group
 app.get('/api/storage-info', auth, async (req, res) => {
   try {
-    
-    // Convert to ObjectId for query
     const userId = new ObjectId(req.user.id);
-    
-    const userAssignments = await db.collection('user_organization_assignments').find({ 
-      userId: userId 
-    }).toArray();
-    
-    
-    if (userAssignments.length === 0) {
+    const user = await db.collection('users').findOne({ _id: userId });
+    const packageContext = await resolveUserPackageContext(user);
+
+    if (!packageContext.organizationId) {
       return res.json({ used: 0, limit: 0 });
     }
-    
-    const userOrgIds = userAssignments.map(a => a.organizationId);
-    
-    const userOrgs = await db.collection('organizations').find({
-      _id: { $in: userOrgIds.map(id => typeof id === 'string' ? new ObjectId(id) : id) }
-    }).toArray();
-    
-    
-    const groupId = userOrgs.find(o => o.groupId)?.groupId;
-    
-    
-    if (!groupId) {
-      return res.json({ used: 0, limit: 0 });
-    }
-    
-    // Convert groupId to ObjectId if it's a string
-    const groupObjectId = typeof groupId === 'string' ? new ObjectId(groupId) : groupId;
-    
-    
-    const group = await db.collection('groups').findOne({ _id: groupObjectId });
-    
+
+    const group = packageContext.group;
     if (!group) {
       return res.json({ used: 0, limit: 0 });
     }
-    
-    const files = await db.collection('files').find({ 
-      organizationId: { $in: userOrgIds.map(id => typeof id === 'string' ? new ObjectId(id) : id) }
-    }).toArray();
-    
-    
-    const usedBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
-    
-    
-    res.json({ 
+
+    const usedBytes = await getPackageStorageUsage(packageContext.packageOwnerOrgId || packageContext.organizationId, packageContext.groupId);
+
+    res.json({
       used: usedBytes,
-      limit: group.storageLimitGB 
+      limit: group.storageLimitGB,
+      packageName: group.name,
+      packageInherited: packageContext.packageInherited,
+      packageOwnerOrgId: packageContext.packageOwnerOrgId,
     });
   } catch (error) {
     console.error('Storage info error:', error.message);
@@ -3182,43 +4153,18 @@ app.get('/api/files', auth, async (req, res) => {
     // Developer sees all files
     if (req.user.role !== 'developer') {
       const userId = new ObjectId(req.user.id);
-      
-      // Get all user's assigned orgs
-      const assignments = await db.collection('user_organization_assignments')
-        .find({ userId: userId })
-        .toArray();
-      
-      
-      if (assignments.length === 0) {
+      const { visibleOrgIds } = await getUserFileScope(userId);
+
+      if (visibleOrgIds.length === 0) {
         return res.json([]);
       }
-      
-      const assignedOrgIds = assignments.map(a => a.organizationId.toString());
-      
-      // Get all assigned orgs
-      const assignedOrgs = await db.collection('organizations')
-        .find({ _id: { $in: assignments.map(a => a.organizationId) } })
-        .toArray();
-      
-      
-      // For each assigned org, get all parents (NOT children)
-      // User can see files shared with their org or any parent org
-      const allOrgIds = new Set(assignedOrgIds);
-      
-      for (const org of assignedOrgs) {
-        // Add all orgs in the path (parents)
-        if (org.path && Array.isArray(org.path)) {
-          const parents = await db.collection('organizations')
-            .find({ name: { $in: org.path } })
-            .toArray();
-          parents.forEach(p => allOrgIds.add(p._id.toString()));
-        }
-      }
-      
-      const hierarchyOrgIds = Array.from(allOrgIds);
-      
-      // Files shared with any accessible org
-      query.sharedWith = { $in: hierarchyOrgIds.map(id => new ObjectId(id)) };
+
+      query.$or = [
+        { sharedWith: { $in: visibleOrgIds } },
+        { organizationId: { $in: visibleOrgIds } },
+        { userId: req.user.id },
+        { userId },
+      ];
     }
     
     
@@ -3228,6 +4174,25 @@ app.get('/api/files', auth, async (req, res) => {
       .toArray();
     
     
+    // For tabular files, determine if any linked sheet is small enough to embed
+    // (row-level semantic search), so the UI can show/hide the re-embed action.
+    const embedThreshold = 5000;
+    const tabularFileIds = files.filter(f => f.isTabular).map(f => f._id.toString());
+    const embeddableByFile = {};
+    if (tabularFileIds.length) {
+      const dsList = await db.collection('data_sources')
+        .find({ sourceFileId: { $in: tabularFileIds } })
+        .project({ sourceFileId: 1, rowCount: 1 })
+        .toArray();
+      for (const ds of dsList) {
+        const fid = String(ds.sourceFileId);
+        const rc = Number(ds.rowCount) || 0;
+        if (!embeddableByFile[fid]) embeddableByFile[fid] = { embeddable: false, totalRows: 0 };
+        embeddableByFile[fid].totalRows += rc;
+        if (rc > 0 && rc <= embedThreshold) embeddableByFile[fid].embeddable = true;
+      }
+    }
+
     // Include uploader info and shared org names
     const filesWithInfo = await Promise.all(files.map(async (f) => {
       let sharedOrgNames = [];
@@ -3237,13 +4202,20 @@ app.get('/api/files', auth, async (req, res) => {
         }).toArray();
         sharedOrgNames = orgs.map(o => o.name);
       }
-      
+
+      const emb = embeddableByFile[f._id.toString()];
       return {
         id: f._id,
         name: f.name,
         uploadedAt: f.uploadedAt,
         uploadedBy: f.uploadedBy || 'Unknown',
         userId: f.userId?.toString(),
+        isTextNote: f.isTextNote || false,
+        isTabular: f.isTabular || false,
+        tabularRows: emb ? emb.totalRows : undefined,
+        embeddable: emb ? emb.embeddable : false,
+        hasS3: Boolean(f.url && f.url.startsWith('https://') && f.url.includes('.s3.')),
+        hasLocal: Boolean(getAvailableLocalFilePath(f)),
         sharedWith: sharedOrgNames
       };
     }));
@@ -3270,38 +4242,9 @@ app.get('/api/files/:id/view', auth, async (req, res) => {
     }
 
     if (req.user.role !== 'developer') {
-      const sharedWith = Array.isArray(file.sharedWith) ? file.sharedWith : [];
-      if (sharedWith.length > 0) {
-        const userId = new ObjectId(req.user.id);
-        const assignments = await db.collection('user_organization_assignments')
-          .find({ userId })
-          .toArray();
-
-        if (assignments.length === 0) {
-          return res.status(403).json({ error: 'No organization access' });
-        }
-
-        const assignedOrgs = await db.collection('organizations')
-          .find({ _id: { $in: assignments.map(a => a.organizationId) } })
-          .toArray();
-
-        const allOrgIds = new Set(assignments.map(a => a.organizationId.toString()));
-
-        for (const org of assignedOrgs) {
-          if (org.path && Array.isArray(org.path)) {
-            const parents = await db.collection('organizations')
-              .find({ name: { $in: org.path } })
-              .toArray();
-            parents.forEach(p => allOrgIds.add(p._id.toString()));
-          }
-        }
-
-        const sharedWithIds = sharedWith.map(id => id.toString());
-        const hasAccess = sharedWithIds.some(id => allOrgIds.has(id));
-
-        if (!hasAccess) {
-          return res.status(403).json({ error: 'Access denied' });
-        }
+      const hasAccess = await canUserAccessFile(new ObjectId(req.user.id), file);
+      if (!hasAccess) {
+        return res.status(403).json({ error: 'Access denied' });
       }
     }
 
@@ -3313,8 +4256,8 @@ app.get('/api/files/:id/view', auth, async (req, res) => {
           const bucket = urlParts[0].split('.')[0];
           const key = urlParts.slice(1).join('/');
 
-          const { GetObjectCommand } = require('@aws-sdk/client-s3');
-          const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+          const { GetObjectCommand } = await import('@aws-sdk/client-s3');
+          const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
 
           const command = new GetObjectCommand({
             Bucket: bucket,
@@ -3330,13 +4273,14 @@ app.get('/api/files/:id/view', auth, async (req, res) => {
       }
     }
 
-    if (file.url?.startsWith('file://')) {
-      let localPath = file.url.replace('file://', '');
-      if (!localPath.startsWith('/')) localPath = join(__dirname, localPath);
-      if (fs.existsSync(localPath)) {
-        res.setHeader('Content-Disposition', `inline; filename="${file.name}"`);
-        return res.sendFile(localPath, { root: '/' });
-      }
+    const viewLocalPath = getAvailableLocalFilePath(file);
+    if (viewLocalPath) {
+      res.setHeader('Content-Disposition', `inline; filename="${file.name}"`);
+      return res.sendFile(viewLocalPath, { root: '/' });
+    }
+
+    if (file.url?.startsWith('file://') || !file.url) {
+      return unavailableStoredFileResponse(res, file);
     }
 
     if (file.url?.startsWith('http://') || file.url?.startsWith('https://')) {
@@ -3369,61 +4313,31 @@ app.get('/api/files/:id/download', auth, async (req, res) => {
       return res.status(404).json({ error: 'File not found' });
     }
 
-    // Access control for non-developers when file is restricted
     if (req.user.role !== 'developer') {
-      const sharedWith = Array.isArray(file.sharedWith) ? file.sharedWith : [];
-      if (sharedWith.length > 0) {
-        const userId = new ObjectId(req.user.id);
-        const assignments = await db.collection('user_organization_assignments')
-          .find({ userId })
-          .toArray();
-        
-        if (assignments.length === 0) {
-          return res.status(403).json({ error: 'No organization access' });
-        }
-        
-        const assignedOrgs = await db.collection('organizations')
-          .find({ _id: { $in: assignments.map(a => a.organizationId) } })
-          .toArray();
-        
-        const allOrgIds = new Set(assignments.map(a => a.organizationId.toString()));
-        
-        for (const org of assignedOrgs) {
-          if (org.path && Array.isArray(org.path)) {
-            const parents = await db.collection('organizations')
-              .find({ name: { $in: org.path } })
-              .toArray();
-            parents.forEach(p => allOrgIds.add(p._id.toString()));
-          }
-        }
-        
-        const sharedWithIds = sharedWith.map(id => id.toString());
-        const hasAccess = sharedWithIds.some(id => allOrgIds.has(id));
-        
-        if (!hasAccess) {
-          return res.status(403).json({ error: 'Access denied' });
-        }
+      const hasAccess = await canUserAccessFile(new ObjectId(req.user.id), file);
+      if (!hasAccess) {
+        return res.status(403).json({ error: 'Access denied' });
       }
     }
-    
-    // Track download
-    await db.collection('download_tracking').insertOne({
-      fileId: file._id,
-      fileName: file.name,
-      userId: new ObjectId(req.user.id),
-      userEmail: req.user.email,
-      organizationId: req.user.organizationId,
-      downloadedAt: new Date(),
-      ipAddress: req.ip
-    });
 
-    // Audit log for download
-    await db.collection('audit_logs').insertOne({
-      action: 'file_download', userId: new ObjectId(req.user.id), userEmail: req.user.email,
-      organizationId: req.user.organizationId || null,
-      details: { fileName: file.name, fileId: file._id.toString() },
-      createdAt: new Date()
-    });
+    const trackDownload = async () => {
+      await db.collection('download_tracking').insertOne({
+        fileId: file._id,
+        fileName: file.name,
+        userId: new ObjectId(req.user.id),
+        userEmail: req.user.email,
+        organizationId: req.user.organizationId,
+        downloadedAt: new Date(),
+        ipAddress: getClientIp(req)
+      });
+
+      await db.collection('audit_logs').insertOne({
+        action: 'file_download', userId: new ObjectId(req.user.id), userEmail: req.user.email,
+        organizationId: req.user.organizationId || null,
+        details: { fileName: file.name, fileId: file._id.toString() },
+        createdAt: new Date()
+      });
+    };
     
     // Generate S3 signed URL if using S3
     if (file.url?.startsWith('https://') && file.url.includes('.s3.')) {
@@ -3434,8 +4348,8 @@ app.get('/api/files/:id/download', auth, async (req, res) => {
           const bucket = urlParts[0].split('.')[0];
           const key = urlParts.slice(1).join('/');
           
-          const { GetObjectCommand } = require('@aws-sdk/client-s3');
-          const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+          const { GetObjectCommand } = await import('@aws-sdk/client-s3');
+          const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
           
           const command = new GetObjectCommand({
             Bucket: bucket,
@@ -3444,27 +4358,120 @@ app.get('/api/files/:id/download', auth, async (req, res) => {
           });
           
           const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+          await trackDownload();
           return res.json({ downloadUrl: signedUrl, fileName: file.name });
         } catch (s3Error) {
           console.error('S3 signed URL error:', s3Error);
+          return unavailableStoredFileResponse(res, file);
         }
       }
+      return unavailableStoredFileResponse(res, file);
     }
     
     // Fallback: serve local file directly
-    if (file.url?.startsWith('file://')) {
-      let localPath = file.url.replace('file://', '');
-      // Handle relative paths (e.g. "uploads/...") 
-      if (!localPath.startsWith('/')) localPath = join(__dirname, localPath);
-      if (fs.existsSync(localPath)) {
-        res.setHeader('Content-Disposition', `attachment; filename="${file.name}"`);
-        return res.sendFile(localPath, { root: '/' });
-      }
+    const localPath = getAvailableLocalFilePath(file);
+    if (localPath) {
+      await trackDownload();
+      res.setHeader('Content-Disposition', `attachment; filename="${file.name}"`);
+      return res.sendFile(localPath, { root: '/' });
     }
-    res.json({ downloadUrl: file.url, fileName: file.name });
+
+    if (file.url?.startsWith('http://') || file.url?.startsWith('https://')) {
+      await trackDownload();
+      return res.json({ downloadUrl: file.url, fileName: file.name });
+    }
+
+    return unavailableStoredFileResponse(res, file);
   } catch (error) {
     console.error('Download error:', error.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Download multiple files as a single ZIP (used by chat "Download all" for attachments)
+app.post('/api/files/download-zip', auth, async (req, res) => {
+  try {
+    const { fileIds } = req.body || {};
+    if (!Array.isArray(fileIds) || fileIds.length === 0) {
+      return res.status(400).json({ error: 'fileIds array required' });
+    }
+    const ids = fileIds.filter(id => ObjectId.isValid(id)).slice(0, 50).map(id => new ObjectId(id));
+    if (ids.length === 0) return res.status(400).json({ error: 'No valid fileIds' });
+
+    const files = await db.collection('files').find({ _id: { $in: ids } }).toArray();
+    if (files.length === 0) return res.status(404).json({ error: 'No files found' });
+
+    // Access control (developers see all)
+    let accessible = files;
+    if (req.user.role !== 'developer') {
+      accessible = [];
+      for (const f of files) {
+        if (await canUserAccessFile(new ObjectId(req.user.id), f)) accessible.push(f);
+      }
+    }
+    if (accessible.length === 0) return res.status(403).json({ error: 'Access denied' });
+
+    const archiver = (await import('archiver')).default;
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    const zipName = `genia-documents-${Date.now()}.zip`;
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
+    archive.on('error', (err) => {
+      console.error('ZIP archive error:', err.message);
+      if (!res.headersSent) res.status(500).json({ error: 'Failed to build ZIP' });
+      else try { res.end(); } catch { /* ignore */ }
+    });
+    archive.pipe(res);
+
+    // Keep entry names unique inside the archive
+    const usedNames = new Set();
+    const uniqueName = (name) => {
+      let n = String(name || 'file').split(/[\\/]/).pop() || 'file';
+      if (!usedNames.has(n)) { usedNames.add(n); return n; }
+      const dot = n.lastIndexOf('.');
+      const base = dot > 0 ? n.slice(0, dot) : n;
+      const ext = dot > 0 ? n.slice(dot) : '';
+      let i = 2;
+      while (usedNames.has(`${base} (${i})${ext}`)) i++;
+      const final = `${base} (${i})${ext}`;
+      usedNames.add(final);
+      return final;
+    };
+
+    for (const file of accessible) {
+      const entryName = uniqueName(file.name);
+      // S3-stored file → fetch bytes and append the stream
+      if (file.url?.startsWith('https://') && file.url.includes('.s3.')) {
+        const s3Client = await getS3Client();
+        if (!s3Client) continue;
+        try {
+          const urlParts = file.url.replace('https://', '').split('/');
+          const bucket = urlParts[0].split('.')[0];
+          const key = urlParts.slice(1).join('/');
+          const { GetObjectCommand } = await import('@aws-sdk/client-s3');
+          const obj = await s3Client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+          if (obj.Body) archive.append(obj.Body, { name: entryName });
+        } catch (e) {
+          console.error('ZIP S3 fetch failed for', file.name, e.message);
+        }
+        continue;
+      }
+      // Local file
+      const localPath = getAvailableLocalFilePath(file);
+      if (localPath) {
+        archive.file(localPath, { name: entryName });
+        db.collection('download_tracking').insertOne({
+          fileId: file._id, fileName: file.name, userId: new ObjectId(req.user.id),
+          userEmail: req.user.email, organizationId: req.user.organizationId,
+          downloadedAt: new Date(), ipAddress: getClientIp(req), viaZip: true,
+        }).catch(() => { /* best-effort tracking */ });
+      }
+    }
+
+    await archive.finalize();
+  } catch (error) {
+    console.error('Download-zip error:', error.message);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
   }
 });
 
@@ -3516,6 +4523,22 @@ app.delete('/api/files/:id', auth, async (req, res) => {
       const settings = await db.collection('settings').findOne({ _id: 'config' });
       await deleteFileVectors(req.params.id, settings);
     } catch (vecErr) { console.error('Vector delete error:', vecErr.message); }
+
+    // Clear any Genform ingest ledger entry linked to this file (resume ingestion).
+    try { await db.collection('genform_ingests').deleteMany({ geniaFileId: req.params.id }); } catch (e) { console.error('Ledger cleanup error:', e.message); }
+
+    // Drop linked SQL data source table(s) for tabular files
+    try {
+      if (file.isTabular || (file.dataSourceIds && file.dataSourceIds.length) || (file.tableNames && file.tableNames.length)) {
+        const linked = await db.collection('data_sources').find({ sourceFileId: req.params.id }).toArray();
+        for (const ds of linked) {
+          if (ds.tableName && mysqlPool) {
+            try { await mysqlPool.query(`DROP TABLE IF EXISTS \`${ds.tableName}\``); } catch (e) { console.error('Drop table error:', e.message); }
+          }
+        }
+        await db.collection('data_sources').deleteMany({ sourceFileId: req.params.id });
+      }
+    } catch (dsErr) { console.error('Data source cleanup error:', dsErr.message); }
     
     // Delete from legacy embedding_files collection
     const deleteResult = await db.collection('embedding_files').deleteMany({ 
@@ -3668,7 +4691,7 @@ app.delete('/api/departments/:id', auth, hasPermission('dept:manage', 'system:de
 // ============= USERS =============
 app.post('/api/users', auth, hasPermission('user:manage'), async (req, res) => {
   try {
-    const { email, password, fullName, canUploadFiles, isAdmin } = req.body;
+    const { email, password, fullName, canUploadFiles, isAdmin, organizationIds } = req.body;
     
     const existingUser = await db.collection('users').findOne({ email });
     if (existingUser) {
@@ -3680,6 +4703,21 @@ app.post('/api/users', auth, hasPermission('user:manage'), async (req, res) => {
     
     const pwError = validatePassword(password);
     if (pwError) return res.status(400).json({ error: pwError });
+
+    // Resolve + validate the org assignments BEFORE creating the user (no orphan on failure).
+    let assignOrgIds = Array.isArray(organizationIds)
+      ? [...new Set(organizationIds.map(id => id?.toString?.() || String(id)).filter(id => ObjectId.isValid(id)))]
+      : [];
+    if (req.user.role === 'manager') {
+      // Managers create users only inside their own department subtree; default to their dept.
+      const { visibleOrgIdSet, assignedOrgIds } = await getUserFileScope(new ObjectId(req.user.id));
+      if (assignOrgIds.length === 0) assignOrgIds = assignedOrgIds.map(id => id.toString());
+      else if (assignOrgIds.some(id => !visibleOrgIdSet.has(id))) return forbidden(res, 'You can only create users in your own department');
+      if (assignOrgIds.length === 0) return res.status(400).json({ error: 'You are not assigned to a department yet' });
+    } else if (req.user.role === 'admin' && assignOrgIds.length > 0) {
+      const { visibleOrgIdSet } = await getUserFileScope(new ObjectId(req.user.id));
+      if (assignOrgIds.some(id => !visibleOrgIdSet.has(id))) return forbidden(res, 'You can only assign users within your organization');
+    }
     
     const hashedPassword = await bcrypt.hash(password, 10);
     
@@ -3694,6 +4732,17 @@ app.post('/api/users', auth, hasPermission('user:manage'), async (req, res) => {
       createdBy: req.user.id,
       createdAt: new Date()
     });
+
+    // Assign to organizations now (managers auto-assign to their dept; others when provided).
+    if (assignOrgIds.length > 0) {
+      await db.collection('user_organization_assignments').insertMany(assignOrgIds.map(orgId => ({
+        userId: result.insertedId,
+        userIdStr: result.insertedId.toString(),
+        organizationId: new ObjectId(orgId),
+        assignedBy: req.user.id,
+        assignedAt: new Date(),
+      })));
+    }
     
     res.json({ success: true, userId: result.insertedId });
     await logAudit(req.user.id, 'user.create', `Created user: ${email} (${role})`);
@@ -3715,7 +4764,9 @@ app.post('/api/users/:id/reset-password', auth, hasPermission(), async (req, res
     if (req.params.id === req.user.id.toString()) {
       return res.status(400).json({ error: 'Cannot reset your own password' });
     }
-    
+
+    if (!(await actorCanManageUser(req.user, req.params.id))) return forbidden(res, 'You cannot reset this user\'s password');
+
     const user = await db.collection('users').findOne({ _id: new ObjectId(req.params.id) });
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
@@ -4031,24 +5082,58 @@ app.put('/api/groups/:id', auth, hasPermission(), async (req, res) => {
   }
 });
 
+// Assign or clear a package for one organization/entity/department node from the hierarchy view
+app.put('/api/organizations/:id/package', auth, hasPermission(), async (req, res) => {
+  try {
+    if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+    const orgId = new ObjectId(req.params.id);
+    const { groupId } = req.body;
+
+    const org = await db.collection('organizations').findOne({ _id: orgId });
+    if (!org) return res.status(404).json({ error: 'Organization node not found' });
+
+    let nextGroupId = null;
+    let packageName = 'No package';
+    if (groupId) {
+      if (!ObjectId.isValid(groupId)) return res.status(400).json({ error: 'Invalid package id' });
+      const group = await db.collection('groups').findOne({ _id: new ObjectId(groupId) });
+      if (!group) return res.status(404).json({ error: 'Package not found' });
+      nextGroupId = group._id;
+      packageName = group.name;
+    }
+
+    await db.collection('organizations').updateOne(
+      { _id: orgId },
+      { $set: { groupId: nextGroupId, updatedAt: new Date() } }
+    );
+
+    await logAudit(req.user.id, 'org.package.update', `Updated package for ${org.name}: ${packageName}`);
+    res.json({ success: true, groupId: nextGroupId });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update package' });
+  }
+});
+
 app.delete('/api/groups/:id', auth, hasPermission(), async (req, res) => {
   try {
     const groupId = req.params.id;
-    
-    // Remove groupId from all orgs in this group
-    await db.collection('organizations').updateMany(
-      { groupId: new ObjectId(groupId) },
-      { $set: { groupId: null } }
-    );
+    const groupObjectId = new ObjectId(groupId);
+
+    const assignedOrgCount = await db.collection('organizations').countDocuments({ groupId: groupObjectId });
+    if (assignedOrgCount > 0) {
+      return res.status(400).json({
+        error: `Package is assigned to ${assignedOrgCount} hierarchy node${assignedOrgCount === 1 ? '' : 's'}. Reassign or clear the package first.`
+      });
+    }
     
     // Delete related chat_counts
     await db.collection('chat_counts').deleteMany({ groupId: groupId });
     
     // Delete related chat_resets
-    await db.collection('chat_resets').deleteMany({ groupId: new ObjectId(groupId) });
+    await db.collection('chat_resets').deleteMany({ groupId: groupObjectId });
     
     // Delete the group
-    await db.collection('groups').deleteOne({ _id: new ObjectId(groupId) });
+    await db.collection('groups').deleteOne({ _id: groupObjectId });
     
     res.json({ success: true });
   } catch (error) {
@@ -4137,37 +5222,23 @@ app.put('/api/groups/:id/renew-day', auth, hasPermission(), async (req, res) => 
 app.get('/api/chat-usage', auth, async (req, res) => {
   try {
     const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
-    
-    // Get user's groupId from their organization assignments
-    let groupId = user.groupId;
-    
-    if (!groupId) {
-      // Get from user's organizations
-      const assignments = await db.collection('user_organization_assignments').find({ 
-        userId: user._id
-      }).toArray();
-      
-      if (assignments.length > 0) {
-        const org = await db.collection('organizations').findOne({ 
-          _id: assignments[0].organizationId 
-        });
-        groupId = org?.groupId;
-      }
-    }
-    
-    if (!groupId) {
+    const packageContext = await resolveUserPackageContext(user);
+    const group = packageContext.group;
+
+    if (!group) {
       return res.json({ 
         hasQuota: false,
         unlimited: true
       });
     }
-    
-    const group = await db.collection('groups').findOne({ _id: groupId });
-    
-    if (!group || group.chatQuota === 0) {
+
+    if (group.chatQuota === 0) {
       return res.json({ 
         hasQuota: false,
-        unlimited: true
+        unlimited: true,
+        packageName: group.name,
+        packageInherited: packageContext.packageInherited,
+        packageOwnerOrgId: packageContext.packageOwnerOrgId,
       });
     }
     
@@ -4177,6 +5248,7 @@ app.get('/api/chat-usage', auth, async (req, res) => {
     if (group.quotaType === 'individual') {
       const userCount = await db.collection('chat_counts').findOne({ 
         groupId: group._id, 
+        organizationId: packageContext.quotaOrganizationId || packageContext.organizationId || null,
         userId: user._id, 
         month: currentMonth 
       });
@@ -4184,6 +5256,7 @@ app.get('/api/chat-usage', auth, async (req, res) => {
     } else {
       const counts = await db.collection('chat_counts').find({ 
         groupId: group._id, 
+        organizationId: packageContext.quotaOrganizationId || packageContext.organizationId || null,
         month: currentMonth 
       }).toArray();
       used = counts.reduce((sum, c) => sum + c.count, 0);
@@ -4208,7 +5281,10 @@ app.get('/api/chat-usage', auth, async (req, res) => {
       percentage: parseFloat(percentage),
       quotaType: group.quotaType,
       resetDate: resetDate.toISOString(),
-      renewDay: group.renewDay
+      renewDay: group.renewDay,
+      packageName: group.name,
+      packageInherited: packageContext.packageInherited,
+      packageOwnerOrgId: packageContext.packageOwnerOrgId,
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to get chat usage' });
@@ -4931,12 +6007,19 @@ app.get('/api/embed/config/:widgetId', async (req, res) => {
       }
     }
 
+    // Rewrite per-tenant widget asset URLs so they carry the widgetId. This lets
+    // the Gateway route the asset request to the owning tenant on a single domain.
+    const scopedAsset = (u) =>
+      (typeof u === 'string' && u.startsWith('/embed/logos/'))
+        ? `/api/embed/logos/${req.params.widgetId}/${u.split('/').pop()}`
+        : (u || null);
+
     res.json({
       name: widget.name,
       shape: widget.shape || 'circle',
       color: widget.color || '#3B82F6',
       position: widget.position || 'bottom-right',
-      logoUrl: widget.logoUrl || null,
+      logoUrl: scopedAsset(widget.logoUrl),
       welcomeMessage: widget.welcomeMessage || 'Hi! How can I help you?',
       headerTitle: widget.headerTitle || 'Chat with us',
       theme: widget.theme || 'light',
@@ -4945,7 +6028,7 @@ app.get('/api/embed/config/:widgetId', async (req, res) => {
       bubbleStyle: widget.bubbleStyle || 'modern',
       fontSize: widget.fontSize || 'md',
       windowRadius: widget.windowRadius || 16,
-      buttonIconUrl: widget.buttonIconUrl || null,
+      buttonIconUrl: scopedAsset(widget.buttonIconUrl),
       inputPlaceholder: widget.inputPlaceholder || 'Type a message...',
       showPoweredBy: widget.showPoweredBy !== false,
       accessMode: widget.accessMode || 'private',
@@ -4954,6 +6037,22 @@ app.get('/api/embed/config/:widgetId', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to get widget config' });
+  }
+});
+
+// Serve a widget's uploaded logo, scoped by widgetId so the Gateway can route
+// it to the owning tenant on a single shared domain. The widgetId is used only
+// for routing; the file itself lives in this tenant's public/embed/logos.
+app.get('/api/embed/logos/:widgetId/:file', async (req, res) => {
+  try {
+    const file = String(req.params.file || '');
+    if (!/^[\w.\-]+$/.test(file) || file.includes('..')) return res.status(400).end();
+    const filePath = join(__dirname, 'public', 'embed', 'logos', file);
+    if (!fs.existsSync(filePath)) return res.status(404).end();
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.sendFile(filePath);
+  } catch {
+    return res.status(500).end();
   }
 });
 
@@ -4985,7 +6084,7 @@ app.post('/api/embed/login', loginRateLimit, async (req, res) => {
     // Store active session token (single session enforcement)
     await db.collection('users').updateOne(
       { _id: user._id },
-      { $set: { activeSessionToken: token, lastLoginAt: new Date(), lastLoginIP: req.ip } }
+      { $set: { activeSessionToken: token, lastLoginAt: new Date(), lastLoginIP: getClientIp(req) } }
     );
 
     res.json({
@@ -5009,7 +6108,7 @@ app.post('/api/embed/public/chat', async (req, res) => {
     if (!widget || widget.accessMode !== 'public') return res.status(404).json({ error: 'Widget not found' });
 
     // IP rate limit: 30 requests/hour per IP per widget
-    const ipKey = `${req.ip}:${widgetId}`;
+    const ipKey = `${getClientIp(req)}:${widgetId}`;
     const now = Date.now();
     const ipEntry = publicChatRateLimit.get(ipKey) || { count: 0, resetAt: now + 3600000 };
     if (now > ipEntry.resetAt) { ipEntry.count = 0; ipEntry.resetAt = now + 3600000; }
@@ -5038,7 +6137,7 @@ app.post('/api/embed/public/chat', async (req, res) => {
     await db.collection('messages').insertOne({
       sessionId: chatSessionId, role: 'user', content: message,
       chatType: 'embed-public', chatName: widget.name,
-      visitorIp: req.ip, createdAt: new Date()
+      visitorIp: getClientIp(req), createdAt: new Date()
     });
 
     // Get org scope: widget's org + all children
@@ -5104,7 +6203,7 @@ app.post('/api/embed/public/chat/stream', async (req, res) => {
     const widget = await db.collection('embed_widgets').findOne({ _id: new ObjectId(widgetId), isActive: true });
     if (!widget || widget.accessMode !== 'public') return res.status(404).json({ error: 'Widget not found' });
 
-    const ipKey = `${req.ip}:${widgetId}`;
+    const ipKey = `${getClientIp(req)}:${widgetId}`;
     const now = Date.now();
     const ipEntry = publicChatRateLimit.get(ipKey) || { count: 0, resetAt: now + 3600000 };
     if (now > ipEntry.resetAt) { ipEntry.count = 0; ipEntry.resetAt = now + 3600000; }
@@ -5144,7 +6243,7 @@ app.post('/api/embed/public/chat/stream', async (req, res) => {
     await db.collection('messages').insertOne({
       sessionId: chatSessionId, role: 'user', content: message,
       chatType: 'embed-public', chatName: widget.name,
-      visitorIp: req.ip, createdAt: new Date()
+      visitorIp: getClientIp(req), createdAt: new Date()
     });
 
     const orgIds = [];
@@ -5668,18 +6767,27 @@ app.post('/api/internal/create-client', authenticateInternal, async (req, res) =
     // Create group from packageData
     let groupId = null;
     if (packageData) {
-      const groupResult = await db.collection('groups').insertOne({
-        name: packageData.name || 'Default', storageLimitGB: packageData.storageLimitGB || 5,
-        chatQuota: packageData.chatQuota || 0, quotaType: packageData.quotaType || 'individual',
-        renewDay: packageData.renewDay || 1, departmentLimit: packageData.departmentLimit || 0,
-        createdAt: new Date()
-      });
-      groupId = groupResult.insertedId;
+      const groupDoc = {
+        name: packageData.name || 'Default',
+        storageLimitGB: packageData.storageLimitGB || 5,
+        chatQuota: packageData.chatQuota || 0,
+        quotaType: packageData.quotaType || 'individual',
+        renewDay: packageData.renewDay || 1,
+        departmentLimit: packageData.departmentLimit || 0,
+      };
+      const existingGroup = await db.collection('groups').findOne(groupDoc, { sort: { createdAt: -1 } });
+      if (existingGroup) {
+        groupId = existingGroup._id;
+      } else {
+        const groupResult = await db.collection('groups').insertOne({ ...groupDoc, createdAt: new Date() });
+        groupId = groupResult.insertedId;
+      }
     }
 
     const orgResult = await db.collection('organizations').insertOne({
       name: orgName, type: 'organization', parentId: null, path: [orgName],
       publicEnabled: req.body.publicEnabled === true,
+      ...(req.body.systemPrompt && String(req.body.systemPrompt).trim() ? { systemPrompt: String(req.body.systemPrompt).trim() } : {}),
       groupId, createdAt: new Date()
     });
 
@@ -5697,12 +6805,90 @@ app.post('/api/internal/create-client', authenticateInternal, async (req, res) =
   } catch (error) { res.status(500).json({ error: 'Failed to create client: ' + error.message }); }
 });
 
+// Import/update a gateway package template into this tenant and assign it to an organization.
+app.post('/api/internal/gateway-packages/:gatewayPackageId/assign', authenticateInternal, async (req, res) => {
+  try {
+    const sourcePackageId = String(req.params.gatewayPackageId || '').trim();
+    const orgId = String(req.body?.orgId || '').trim();
+    const packageData = req.body?.packageData || {};
+
+    if (!sourcePackageId) return res.status(400).json({ error: 'Gateway package id required' });
+    if (!ObjectId.isValid(orgId)) return res.status(400).json({ error: 'Invalid organization id' });
+    if (!packageData.name) return res.status(400).json({ error: 'Package name required' });
+
+    const orgObjectId = new ObjectId(orgId);
+    const org = await db.collection('organizations').findOne({ _id: orgObjectId, type: 'organization' });
+    if (!org) return res.status(404).json({ error: 'Organization not found' });
+
+    const groupDoc = {
+      name: String(packageData.name),
+      storageLimitGB: Number(packageData.storageLimitGB) || 5,
+      chatQuota: Number(packageData.chatQuota) || 0,
+      quotaType: packageData.quotaType || 'individual',
+      renewDay: Number(packageData.renewDay) || 1,
+      departmentLimit: Number(packageData.departmentLimit) || 0,
+      source: 'gateway',
+      sourcePackageId,
+      updatedAt: new Date(),
+    };
+
+    let group = await db.collection('groups').findOne({ source: 'gateway', sourcePackageId });
+    if (group) {
+      await db.collection('groups').updateOne({ _id: group._id }, { $set: groupDoc });
+      group = { ...group, ...groupDoc };
+    } else {
+      const matchingLocalGroup = await db.collection('groups').findOne({
+        name: groupDoc.name,
+        storageLimitGB: groupDoc.storageLimitGB,
+        chatQuota: groupDoc.chatQuota,
+        quotaType: groupDoc.quotaType,
+        renewDay: groupDoc.renewDay,
+        departmentLimit: groupDoc.departmentLimit,
+      }, { sort: { createdAt: -1 } });
+
+      if (matchingLocalGroup) {
+        await db.collection('groups').updateOne(
+          { _id: matchingLocalGroup._id },
+          { $set: groupDoc }
+        );
+        group = { ...matchingLocalGroup, ...groupDoc };
+      } else {
+        const insert = await db.collection('groups').insertOne({ ...groupDoc, createdAt: new Date() });
+        group = { _id: insert.insertedId, ...groupDoc };
+      }
+    }
+
+    await db.collection('organizations').updateOne(
+      { _id: orgObjectId },
+      { $set: { groupId: group._id, updatedAt: new Date() } }
+    );
+
+    res.json({ success: true, groupId: group._id, group });
+  } catch (error) {
+    console.error('Gateway package assign error:', error.message);
+    res.status(500).json({ error: 'Failed to assign gateway package' });
+  }
+});
+
 // Verify API key exists (for Gateway routing)
 app.get('/api/internal/verify-api-key', authenticateInternal, async (req, res) => {
   const apiKey = req.headers['x-api-key'];
   if (!apiKey) return res.json({ valid: false });
   const keyDoc = await db.collection('api_keys').findOne({ $or: [{ key: apiKey }, { shortKey: apiKey }], isActive: true });
   res.json({ valid: !!keyDoc });
+});
+
+// Resolve whether this tenant owns a given embed widget (for Gateway routing).
+// Existence check only — no domain restriction — so the Gateway can map a
+// widgetId to the correct tenant on a single shared domain.
+app.get('/api/internal/resolve-widget/:widgetId', authenticateInternal, async (req, res) => {
+  try {
+    if (!ObjectId.isValid(req.params.widgetId)) return res.json({ exists: false });
+    const widget = await db.collection('embed_widgets').findOne({ _id: new ObjectId(req.params.widgetId) });
+    res.json({ exists: !!widget });
+  } catch {
+    res.json({ exists: false });
+  }
 });
 
 // List tenants (for Gateway sync)
@@ -5820,6 +7006,45 @@ app.get('/api/ai-usage', auth, async (req, res) => {
 
 const DYNAMIC_INGEST_MAX_RECORDS = 10000;
 const DYNAMIC_INGEST_MAX_FIELDS = 200;
+
+async function getUserAccessibleOrganizationIds(userId) {
+  if (!userId || !ObjectId.isValid(userId)) return [];
+  const assignments = await db.collection('user_organization_assignments')
+    .find({ userId: new ObjectId(userId) })
+    .toArray();
+  const assignedOrgIds = assignments.map(a => a.organizationId).filter(Boolean);
+  if (assignedOrgIds.length === 0) return [];
+
+  const allOrgs = await db.collection('organizations').find({}).toArray();
+  const accessible = new Set(assignedOrgIds.map(id => id.toString()));
+  const addChildren = (orgId) => {
+    for (const org of allOrgs) {
+      if (String(org.parentId || '') === String(orgId) && !accessible.has(org._id.toString())) {
+        accessible.add(org._id.toString());
+        addChildren(org._id);
+      }
+    }
+  };
+  assignedOrgIds.forEach(addChildren);
+  return Array.from(accessible).filter(ObjectId.isValid).map(id => new ObjectId(id));
+}
+
+async function getDataSourceAccessQuery(req, id = null) {
+  const base = id ? { _id: new ObjectId(id) } : {};
+  if (req.user.role === 'developer') return base;
+  if (req.user.role !== 'admin') return null;
+
+  const orgIds = await getUserAccessibleOrganizationIds(req.user.id);
+  if (orgIds.length === 0) return null;
+  return { ...base, organizationIds: { $in: orgIds } };
+}
+
+async function findAccessibleDataSource(req, id) {
+  if (!ObjectId.isValid(id)) return null;
+  const query = await getDataSourceAccessQuery(req, id);
+  if (!query) return null;
+  return db.collection('data_sources').findOne(query);
+}
 
 function slugForIdentifier(value, fallback = 'field', maxLength = 48) {
   const base = String(value || '')
@@ -5997,6 +7222,112 @@ async function insertRowsIntoDataSource(tableName, columns, records) {
   return inserted;
 }
 
+// ─── Tabular file ingest (CSV / Excel → MySQL data source) ──────
+// Tabular files are routed to SQL storage instead of vector embedding, so the
+// chatbot can answer structured questions via text-to-SQL (and huge files no
+// longer blow up the embedding provider with 429s).
+const TABULAR_EXTENSIONS = ['csv', 'tsv', 'xlsx', 'xls'];
+const TABULAR_MAX_ROWS = 1000000; // safety cap per sheet
+const TABULAR_EMBED_MAX_ROWS = 5000; // hybrid: also embed rows for tables up to this size
+
+// Faster multi-row batched insert for large tables.
+async function insertRowsBatched(tableName, columns, records, batchSize = 500, notify = null) {
+  const colNames = columns.map(c => c.name);
+  const colList = colNames.map(c => `\`${c}\``).join(', ');
+  const rowPlaceholder = `(${colNames.map(() => '?').join(', ')})`;
+  const total = records.length;
+  let inserted = 0;
+  let batchIndex = 0;
+  for (let i = 0; i < records.length; i += batchSize) {
+    const batch = records.slice(i, i + batchSize);
+    const placeholders = batch.map(() => rowPlaceholder).join(', ');
+    const values = [];
+    for (const rec of batch) for (const c of colNames) values.push(rec[c] ?? null);
+    await mysqlPool.query(`INSERT INTO \`${tableName}\` (${colList}) VALUES ${placeholders}`, values);
+    inserted += batch.length;
+    batchIndex++;
+    // Heartbeat every few batches so the streaming connection never goes silent
+    // (prevents proxy timeouts on large imports) and drives the progress bar.
+    if (notify && batchIndex % 5 === 0) {
+      notify('inserting', `Inserted ${inserted.toLocaleString()} / ${total.toLocaleString()} rows...`);
+    }
+  }
+  return inserted;
+}
+
+// Parse a CSV/Excel file and create one managed MySQL data source per sheet.
+// Returns an array of { dataSourceId, tableName, rows, sheet }.
+async function processTabularFile(filePath, fileName, fileId, { organizationIds = [], sourceApp = 'file-upload' } = {}, onProgress = null) {
+  if (!mysqlPool) throw new Error('MySQL data source storage is not available');
+  const notify = (step, detail) => { if (onProgress) onProgress(step, detail); };
+  const embedSettings = await db.collection('settings').findOne({ _id: 'config' });
+
+  const buf = fs.readFileSync(filePath);
+  const workbook = XLSX.read(buf, { type: 'buffer', cellDates: true });
+  const orgObjectIds = (organizationIds || [])
+    .map(id => (id?.toString?.() || String(id || '')))
+    .filter(id => ObjectId.isValid(id))
+    .map(id => new ObjectId(id));
+
+  const created = [];
+  const multiSheet = workbook.SheetNames.length > 1;
+
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) continue;
+    notify('parsing', `Reading ${multiSheet ? `sheet "${sheetName}"` : 'table data'}...`);
+    let records = XLSX.utils.sheet_to_json(sheet, { defval: null, raw: true });
+    if (!Array.isArray(records) || records.length === 0) continue;
+    if (records.length > TABULAR_MAX_ROWS) records = records.slice(0, TABULAR_MAX_ROWS);
+
+    const { columns, normalizedRecords } = prepareDynamicIngestRecords([], records);
+    if (!columns.length) continue;
+
+    const baseSlug = slugForIdentifier(`${fileName}${multiSheet ? `_${sheetName}` : ''}`, 'table', 40);
+    const tableName = await makeUniqueDynamicTableName(`file_${baseSlug}`.slice(0, 64));
+
+    notify('table', `Creating table for ${multiSheet ? sheetName : fileName}...`);
+    await recreateDataSourceTable(tableName, columns);
+
+    notify('inserting', `Inserting ${normalizedRecords.length.toLocaleString()} row(s) into ${tableName}...`);
+    const inserted = await insertRowsBatched(tableName, columns, normalizedRecords, 500, notify);
+
+    const displayName = multiSheet ? `${fileName} — ${sheetName}` : fileName;
+    const ins = await db.collection('data_sources').insertOne({
+      name: displayName,
+      description: `Imported from uploaded file ${fileName}`,
+      tableName,
+      columns,
+      organizationIds: orgObjectIds,
+      kind: 'fixed',
+      managed: true,
+      sourceApp,
+      sourceFileId: fileId,
+      sheetName: multiSheet ? sheetName : undefined,
+      rowCount: inserted,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastIngestedAt: new Date(),
+    });
+    created.push({ dataSourceId: ins.insertedId, tableName, rows: inserted, sheet: sheetName });
+
+    // Hybrid ingestion: also embed each row as a semantic "card" for small
+    // reference tables, so entity lookups retrieve rows via RAG (name
+    // variations handled by the embedding model). Never blocks SQL ingestion.
+    if (inserted > 0 && inserted <= TABULAR_EMBED_MAX_ROWS) {
+      try {
+        notify('embedding_rows', `Embedding ${inserted.toLocaleString()} row(s) for semantic search...`);
+        await embedTabularRows({
+          fileId, fileName: displayName, sourceName: displayName, dataSourceId: ins.insertedId,
+          columns, rows: normalizedRecords, settings: embedSettings, onProgress,
+        });
+      } catch (e) { console.error('Row embedding failed:', e.message); }
+    }
+  }
+
+  return created;
+}
+
 // Dynamic ingest endpoint for external apps with changing schemas, such as Genform.
 app.post('/api/v1/ingest/dynamic', authenticateApiKey, requireApiScope('ingest:write'), apiRateLimit(120, 60000), async (req, res) => {
   const started = Date.now();
@@ -6142,11 +7473,168 @@ app.post('/api/v1/ingest/dynamic', authenticateApiKey, requireApiScope('ingest:w
   }
 });
 
+// Ingest a single file (e.g. a Genform resume) into RAG. Idempotent by content
+// hash + resumable: marked "done" only after the whole file is embedded, so a
+// cancelled/half-finished file is safely redone on the next resend.
+app.post('/api/v1/ingest/file', authenticateApiKey, requireApiScope('ingest:write'), apiRateLimit(300, 60000), upload.single('file'), async (req, res) => {
+  const started = Date.now();
+  const cleanupTemp = () => { try { if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch {} };
+  try {
+    if (!mysqlPool) { cleanupTemp(); return res.status(503).json({ error: 'Storage not available' }); }
+    if (!req.file) return res.status(400).json({ error: 'file is required (multipart field "file")' });
+
+    const sourceApp = normalizeIngestSourceApp(req.body?.sourceApp || 'genform');
+    const externalSourceId = String(req.body?.externalSourceId || '').trim();
+    const responseId = String(req.body?.responseId || '').trim();
+    const originalName = String(req.body?.fileName || req.file.originalname || 'file').trim();
+    const candidateName = String(req.body?.candidateName || '').trim();
+    const candidateEmail = String(req.body?.candidateEmail || '').trim();
+    if (!externalSourceId) { cleanupTemp(); return res.status(400).json({ error: 'externalSourceId is required' }); }
+    if (!responseId) { cleanupTemp(); return res.status(400).json({ error: 'responseId is required' }); }
+
+    const orgScope = await resolveApiOrganizationScope(req.apiKey.userId, req.body?.organizationId || null);
+    if (!orgScope.allowed) { cleanupTemp(); return res.status(orgScope.status).json({ error: orgScope.message, code: orgScope.code }); }
+
+    const settings = await db.collection('settings').findOne({ _id: 'config' });
+    const fileBuffer = fs.readFileSync(req.file.path);
+    const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+
+    const ledgerKey = { sourceApp, externalSourceId, responseId };
+    const existing = await db.collection('genform_ingests').findOne(ledgerKey);
+
+    // Idempotent: same response already fully ingested with identical content.
+    if (existing && existing.status === 'done' && existing.fileHash === fileHash) {
+      cleanupTemp();
+      return res.json({ status: 'skipped', reason: 'already_ingested', geniaFileId: existing.geniaFileId, chunks: existing.chunks || 0 });
+    }
+
+    // Clean up any previous (partial/outdated) attempt for this response.
+    if (existing?.geniaFileId) {
+      try { await deleteFileVectors(String(existing.geniaFileId), settings); } catch (e) { console.error('vec cleanup:', e.message); }
+      try { if (ObjectId.isValid(String(existing.geniaFileId))) await db.collection('files').deleteOne({ _id: new ObjectId(String(existing.geniaFileId)) }); } catch {}
+    }
+
+    const orgObjectId = orgScope.currentOrganizationId && ObjectId.isValid(orgScope.currentOrganizationId)
+      ? new ObjectId(orgScope.currentOrganizationId) : null;
+    const sharedWith = orgObjectId ? [orgObjectId] : [];
+
+    // Store the file — S3 if Genia is configured for it, otherwise local disk.
+    let fileUrl = `file://${req.file.path}`;
+    const s3Client = await getS3Client();
+    if (s3Client && settings.s3Bucket) {
+      try {
+        const safeName = originalName.split(/[\\/]/).pop();
+        const s3Key = `uploads/${sourceApp}/${externalSourceId}/${responseId}-${Date.now()}-${safeName}`.replace(/[^\w./-]+/g, '_');
+        await s3Client.send(new PutObjectCommand({ Bucket: settings.s3Bucket, Key: s3Key, Body: fileBuffer, ContentType: req.file.mimetype }));
+        fileUrl = `https://${settings.s3Bucket}.s3.${settings.s3Region}.amazonaws.com/${s3Key}`;
+      } catch (e) { console.error('S3 upload failed, using local:', e.message); }
+    }
+
+    // Org-scoped file doc so the HR org (admin + sub-users) can search it.
+    const fileInsert = await db.collection('files').insertOne({
+      userId: req.apiKey.userId?.toString?.() || String(req.apiKey.userId || ''),
+      organizationId: orgObjectId,
+      sharedWith,
+      type: 'document',
+      isPublic: false,
+      isVectorized: true,
+      uploadedBy: sourceApp,
+      uploadedByEmail: candidateEmail || '',
+      name: originalName,
+      size: req.file.size,
+      url: fileUrl,
+      sourceApp,
+      externalSourceId,
+      responseId,
+      candidateName,
+      candidateEmail,
+      uploadedAt: new Date(),
+    });
+    const geniaFileId = fileInsert.insertedId.toString();
+
+    // Mark in-progress (upsert) BEFORE embedding so a crash leaves it non-done.
+    await db.collection('genform_ingests').updateOne(ledgerKey, {
+      $set: { ...ledgerKey, status: 'in_progress', fileHash, fileName: originalName, geniaFileId, orgId: orgObjectId, candidateName, candidateEmail, updatedAt: new Date() },
+      $setOnInsert: { createdAt: new Date() },
+    }, { upsert: true });
+
+    // Vectorize into RAG, tagging chunks so a hit maps back to the candidate.
+    const pipelineResult = await processUploadedFile(
+      req.file.path, originalName, geniaFileId,
+      {
+        user_id: req.apiKey.userId?.toString?.() || String(req.apiKey.userId || ''),
+        uploaded_by: sourceApp,
+        shared_with: sharedWith.map(id => id.toString()),
+        is_public: false,
+        source_type: 'genform_resume',
+        external_source_id: externalSourceId,
+        response_id: responseId,
+        candidate_name: candidateName,
+        candidate_email: candidateEmail,
+        uploaded_at: new Date().toISOString(),
+      },
+      settings, null
+    );
+
+    await db.collection('files').updateOne({ _id: fileInsert.insertedId }, { $set: { vectorized: true, chunks: pipelineResult.chunks, pages: pipelineResult.pages } });
+
+    // Mark done ONLY after the full file was embedded successfully.
+    await db.collection('genform_ingests').updateOne(ledgerKey, { $set: { status: 'done', chunks: pipelineResult.chunks, updatedAt: new Date() } });
+
+    if (fileUrl.startsWith('https://')) cleanupTemp(); // S3 holds it; drop local temp
+
+    await logApiUsage({
+      apiKeyId: req.apiKey._id, apiKeyName: req.apiKey.name, userId: req.apiKey.userId,
+      endpoint: '/api/v1/ingest/file', responseStatus: 200, latencyMs: Date.now() - started,
+      requestLength: req.file.size, responseLength: pipelineResult.chunks,
+      provider: 'rag', model: 'ingest-file', chatMode: 'ingest', streaming: false,
+    });
+
+    res.json({ status: 'ingested', geniaFileId, chunks: pipelineResult.chunks, pages: pipelineResult.pages });
+  } catch (error) {
+    cleanupTemp();
+    console.error('ingest/file error:', error.message);
+    try {
+      await logApiUsage({
+        apiKeyId: req.apiKey?._id, apiKeyName: req.apiKey?.name, userId: req.apiKey?.userId,
+        endpoint: '/api/v1/ingest/file', responseStatus: 500, latencyMs: Date.now() - started,
+        errorCode: 'INGEST_FILE_ERROR', errorMessage: error.message, provider: 'rag', model: 'ingest-file', chatMode: 'ingest', streaming: false,
+      });
+    } catch {}
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Ingestion progress/resume: which responses are already fully ingested.
+app.get('/api/v1/ingest/status', authenticateApiKey, requireApiScope('ingest:write'), apiRateLimit(300, 60000), async (req, res) => {
+  try {
+    const sourceApp = normalizeIngestSourceApp(req.query?.sourceApp || 'genform');
+    const externalSourceId = String(req.query?.externalSourceId || '').trim();
+    if (!externalSourceId) return res.status(400).json({ error: 'externalSourceId is required' });
+    const docs = await db.collection('genform_ingests')
+      .find({ sourceApp, externalSourceId })
+      .project({ responseId: 1, status: 1, fileHash: 1, chunks: 1, _id: 0 })
+      .toArray();
+    const done = docs.filter(d => d.status === 'done');
+    res.json({
+      externalSourceId,
+      total: docs.length,
+      doneCount: done.length,
+      done: done.map(d => ({ responseId: d.responseId, fileHash: d.fileHash })),
+      pending: docs.filter(d => d.status !== 'done').map(d => d.responseId),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // List data sources
 app.get('/api/data-sources', auth, async (req, res) => {
-  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  if (!['developer', 'admin'].includes(req.user.role)) return res.status(403).json({ error: 'Admin only' });
   try {
-    const sources = await db.collection('data_sources').find().sort({ createdAt: -1 }).toArray();
+    const query = await getDataSourceAccessQuery(req);
+    if (!query) return res.json([]);
+    const sources = await db.collection('data_sources').find(query).sort({ updatedAt: -1, createdAt: -1 }).toArray();
     // Get row counts
     for (const s of sources) {
       s.kind = s.kind || (s.managed ? 'dynamic' : 'fixed');
@@ -6278,9 +7766,9 @@ app.post('/api/data-sources/:id/records', auth, async (req, res) => {
 
 // Browse data source records
 app.get('/api/data-sources/:id/records', auth, async (req, res) => {
-  if (req.user.role !== 'developer') return res.status(403).json({ error: 'Developer only' });
+  if (!['developer', 'admin'].includes(req.user.role)) return res.status(403).json({ error: 'Admin only' });
   try {
-    const source = await db.collection('data_sources').findOne({ _id: new ObjectId(req.params.id) });
+    const source = await findAccessibleDataSource(req, req.params.id);
     if (!source) return res.status(404).json({ error: 'Not found' });
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
@@ -6331,7 +7819,8 @@ app.get('/share/:shareId', async (req, res) => {
 .role{font-size:.65rem;font-weight:600;text-transform:uppercase;margin-bottom:.3rem;color:#888}.user .role{color:#7c8aff}.bot .role{color:#4ecdc4}
 .msg a{color:#7c8aff}.msg code{background:#333;padding:.1em .3em;border-radius:3px;font-size:.85em}.msg pre{background:#222;padding:.8rem;border-radius:6px;overflow-x:auto;margin:.5rem 0}
 .msg table{border-collapse:collapse;width:100%;margin:.5rem 0;font-size:.8rem}.msg th,.msg td{border:1px solid #444;padding:.4rem .6rem;text-align:left}.msg th{background:#2a2a3e}
-.chart-card{margin:.75rem 0 0;border:1px solid #333;border-radius:10px;overflow:hidden;background:#181828}.chart-head{height:32px;padding:0 .75rem;display:flex;align-items:center;border-bottom:1px solid #333;color:#aaa;font-size:.7rem}.chart-canvas{height:360px;min-height:300px;width:100%}
+.chart-card,.dashboard-card{margin:.75rem 0 0;border:1px solid #333;border-radius:10px;overflow:hidden;background:#181828}.chart-head,.dashboard-head{min-height:32px;padding:.5rem .75rem;display:flex;align-items:center;border-bottom:1px solid #333;color:#aaa;font-size:.7rem}.chart-canvas{height:360px;min-height:300px;width:100%}
+.dashboard-body{padding:.75rem}.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:.5rem;margin-bottom:.75rem}.kpi{border:1px solid #333;background:#1f1f33;border-radius:8px;padding:.55rem .65rem}.kpi-label{font-size:.65rem;color:#999}.kpi-value{font-size:1rem;color:#fff;font-weight:700;margin-top:.15rem}.kpi-detail{font-size:.65rem;color:#aaa;margin-top:.1rem}.dashboard-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:.75rem}.dashboard-grid .chart-card{margin:0}.dashboard-grid .chart-card.large{grid-column:1/-1}.dashboard-grid .chart-canvas{height:300px}.table-preview{margin-top:.75rem;overflow:auto;border:1px solid #333;border-radius:8px}.table-preview table{margin:0}.table-preview caption{text-align:left;color:#aaa;padding:.5rem .6rem;font-size:.7rem;border-bottom:1px solid #333}
 .footer{text-align:center;margin-top:2rem;padding-top:1rem;border-top:1px solid #333;font-size:.75rem;color:#666}
 .footer a{color:#7c8aff;text-decoration:none}</style></head><body>
 <div class="header"><h1>Shared Chat</h1><p>Shared on ${shared.createdAt.toLocaleDateString()}</p></div>
@@ -6342,18 +7831,38 @@ function escapeHtml(value){return String(value||'').replace(/[&<>"']/g,ch=>({'&'
 function renderMarkdown(value){return window.marked?marked.parse(value||''):'<p>'+escapeHtml(value).replace(/\\n/g,'<br>')+'</p>';}
 function mapAxis(axis){if(Array.isArray(axis))return axis.map(mapAxis);if(!axis||typeof axis!=='object')return axis;return{...axis,axisLabel:{...(axis.axisLabel||{}),color:'#ccc'},axisLine:{...(axis.axisLine||{}),lineStyle:{...(axis.axisLine?.lineStyle||{}),color:'#555'}},splitLine:{...(axis.splitLine||{}),lineStyle:{...(axis.splitLine?.lineStyle||{}),color:'#333'}}};}
 function darkOption(option){const series=Array.isArray(option.series)?option.series:(option.series?[option.series]:[]);const hasPie=series.some(s=>s?.type==='pie');const hasCartesian=Boolean(option.xAxis||option.yAxis||series.some(s=>['bar','line'].includes(s?.type)));const hideLegend=hasCartesian&&series.length<=1;const next={...option,backgroundColor:'transparent',textStyle:{...(option.textStyle||{}),color:'#e0e0e0'},title:{...(option.title||{}),top:option.title?.top??8,left:option.title?.left??'center',textStyle:{...(option.title?.textStyle||{}),color:'#e0e0e0',fontSize:option.title?.textStyle?.fontSize??16}},legend:hideLegend?{...(option.legend||{}),show:false}:{...(option.legend||{}),top:hasPie?undefined:(option.legend?.top??42),bottom:hasPie?(option.legend?.bottom??0):option.legend?.bottom,textStyle:{...(option.legend?.textStyle||{}),color:'#ccc'}},grid:hasCartesian?{...(option.grid||{}),top:hideLegend?78:102,left:48,right:24,bottom:58,containLabel:true}:option.grid,tooltip:{...(option.tooltip||{}),backgroundColor:'#333',textStyle:{color:'#fff'}}};if(next.xAxis)next.xAxis=mapAxis(next.xAxis);if(next.yAxis)next.yAxis=mapAxis(next.yAxis);if(next.series&&!Array.isArray(next.series))next.series=[next.series];if(next.series)next.series=next.series.map(s=>s.type==='pie'?{...s,label:{...(s.label||{}),color:'#e0e0e0'}}:s);return next;}
-function renderArtifacts(container,artifacts=[]){if(!window.echarts)return;artifacts.filter(a=>a?.type==='echart'&&a.option).forEach((artifact,index)=>{const card=document.createElement('div');card.className='chart-card';const head=document.createElement('div');head.className='chart-head';head.textContent=artifact.title||'Chart';const canvas=document.createElement('div');canvas.className='chart-canvas';card.appendChild(head);card.appendChild(canvas);container.appendChild(card);const chart=echarts.init(canvas,null,{renderer:'canvas'});chart.setOption(darkOption(artifact.option));window.addEventListener('resize',()=>chart.resize());});}
+function renderChart(container,artifact,extraClass){if(!window.echarts||!artifact?.option)return;const card=document.createElement('div');card.className='chart-card '+(extraClass||'');const head=document.createElement('div');head.className='chart-head';head.textContent=artifact.title||'Chart';const canvas=document.createElement('div');canvas.className='chart-canvas';card.appendChild(head);card.appendChild(canvas);container.appendChild(card);const chart=echarts.init(canvas,null,{renderer:'canvas'});chart.setOption(darkOption(artifact.option));window.addEventListener('resize',()=>chart.resize());}
+function renderDashboard(container,artifact){const card=document.createElement('div');card.className='dashboard-card';const head=document.createElement('div');head.className='dashboard-head';head.textContent=artifact.title||'Dashboard';const body=document.createElement('div');body.className='dashboard-body';card.appendChild(head);card.appendChild(body);
+if(Array.isArray(artifact.kpis)&&artifact.kpis.length){const kpis=document.createElement('div');kpis.className='kpi-grid';artifact.kpis.forEach(item=>{const k=document.createElement('div');k.className='kpi';k.innerHTML='<div class="kpi-label">'+escapeHtml(item.label||'Metric')+'</div><div class="kpi-value">'+escapeHtml(item.value??'')+'</div>'+(item.detail!==undefined&&item.detail!==''?'<div class="kpi-detail">'+escapeHtml(item.detail)+'</div>':'');kpis.appendChild(k);});body.appendChild(kpis);}
+const grid=document.createElement('div');grid.className='dashboard-grid';(artifact.charts||[]).forEach(chart=>renderChart(grid,chart,chart.size==='large'?'large':''));body.appendChild(grid);
+if(Array.isArray(artifact.table)&&artifact.table.length){const headers=Object.keys(artifact.table[0]||{});if(headers.length){const wrap=document.createElement('div');wrap.className='table-preview';let html='<table><caption>Data preview</caption><thead><tr>'+headers.map(h=>'<th>'+escapeHtml(h)+'</th>').join('')+'</tr></thead><tbody>';html+=artifact.table.slice(0,8).map(row=>'<tr>'+headers.map(h=>'<td>'+escapeHtml(row[h]??'')+'</td>').join('')+'</tr>').join('');html+='</tbody></table>';wrap.innerHTML=html;body.appendChild(wrap);}}
+container.appendChild(card);}
+function renderArtifacts(container,artifacts=[]){artifacts.forEach(artifact=>{if(artifact?.type==='echart')renderChart(container,artifact);if(artifact?.type==='dashboard')renderDashboard(container,artifact);});}
 msgs.forEach(m=>{if(!m.content&&!m.artifacts?.length)return;const d=document.createElement('div');d.className='msg '+(m.role==='user'?'user':'bot');
 d.innerHTML='<div class="role">'+(m.role==='user'?'You':'Genia')+'</div>'+renderMarkdown(m.content);renderArtifacts(d,m.artifacts);el.appendChild(d)});</script></body></html>`);
   } catch (e) { res.status(500).send('<h1>Error</h1>'); }
 });
 
+const tenantFrontendDist = join(__dirname, 'frontend/dist');
+const noStoreHtmlCache = 'no-cache, no-store, must-revalidate';
+const immutableAssetCache = 'public, max-age=31536000, immutable';
+
+function setFrontendCacheHeaders(res, filePath) {
+  const normalizedPath = filePath.replaceAll('\\', '/');
+  if (normalizedPath.includes('/assets/')) {
+    res.setHeader('Cache-Control', immutableAssetCache);
+  } else if (normalizedPath.endsWith('/index.html') || normalizedPath.endsWith('.html')) {
+    res.setHeader('Cache-Control', noStoreHtmlCache);
+  }
+}
+
 // Serve React app static files after public server-rendered routes.
-app.use(express.static(join(__dirname, 'frontend/dist')));
+app.use(express.static(tenantFrontendDist, { setHeaders: setFrontendCacheHeaders }));
 
 // Serve React app for all other routes
 app.get('*', (req, res) => {
-  res.sendFile(join(__dirname, 'frontend/dist/index.html'));
+  res.setHeader('Cache-Control', noStoreHtmlCache);
+  res.sendFile(join(tenantFrontendDist, 'index.html'));
 });
 
 // ─── Daily Model Health Check (10am) ──────────────────────────
@@ -6477,5 +7986,23 @@ async function checkQuotaAndNotify() {
   } catch {}
 }
 setInterval(() => { const now = new Date(); if (now.getHours() === 2 && now.getMinutes() === 0) checkQuotaAndNotify(); }, 60000);
+
+// ─── Upload error handler (multer) ─────────────────────────────
+// Multer runs before route handlers (before any SSE headers), so oversized /
+// rejected uploads return a clean JSON error instead of a generic 500.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({
+        error: `File too large. Maximum upload size is ${Number(process.env.MAX_UPLOAD_MB) || 100}MB.`,
+        code: 'FILE_TOO_LARGE',
+        requestId: req.requestId,
+      });
+    }
+    return res.status(400).json({ error: err.message, code: err.code, requestId: req.requestId });
+  }
+  return next(err);
+});
 
 app.listen(3000, () => console.log('Server running on port 3000'));

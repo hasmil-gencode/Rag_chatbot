@@ -15,6 +15,7 @@ export const SettingsPage = () => {
   const [showReembedModal, setShowReembedModal] = useState(false);
   const [reembedProgress, setReembedProgress] = useState<{step: string; detail: string; current: number; total: number} | null>(null);
   const [pendingProvider, setPendingProvider] = useState<string | null>(null);
+  const [testingS3, setTestingS3] = useState(false);
 
   useEffect(() => { loadSettings(); loadQdrantInfo(); }, []);
 
@@ -66,6 +67,27 @@ export const SettingsPage = () => {
     setLoadingModels(false); 
   };
   const updateSetting = (key: string, value: any) => setSettings((prev: any) => ({ ...prev, [key]: value }));
+
+  const handleTestS3 = async () => {
+    if (!settings.s3Bucket || !settings.s3Region || !settings.s3AccessKey || !settings.s3SecretKey) {
+      toast.error("Fill in all S3 fields first");
+      return;
+    }
+    setTestingS3(true);
+    try {
+      await api.testS3({
+        s3Bucket: settings.s3Bucket,
+        s3Region: settings.s3Region,
+        s3AccessKey: settings.s3AccessKey,
+        s3SecretKey: settings.s3SecretKey,
+      });
+      toast.success("S3 connection OK");
+    } catch (e: any) {
+      toast.error(e.message || "S3 connection failed");
+    } finally {
+      setTestingS3(false);
+    }
+  };
   const updateSettings = (updates: Record<string, any>) => setSettings((prev: any) => ({ ...prev, ...updates }));
 
   const handleSave = async () => {
@@ -82,6 +104,7 @@ export const SettingsPage = () => {
     { id: 'guardrail', label: 'Guardrail' },
     { id: 'notifications', label: 'Notifications' },
     { id: 'voice', label: 'Voice' },
+    { id: 'storage', label: 'Storage (S3)' },
   ];
 
   return (
@@ -636,6 +659,41 @@ export const SettingsPage = () => {
                     </div>
                   </>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'storage' && (
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">Amazon S3 Storage</p></div>
+            <div className="p-4 space-y-4">
+              <p className="text-[11px] text-muted-foreground">When configured, new uploaded files are stored in S3 instead of the local server disk. Leave blank to keep using local storage.</p>
+              <div>
+                <label className="text-[11px] text-muted-foreground">Bucket Name</label>
+                <input value={settings.s3Bucket || ''} onChange={(e) => updateSetting('s3Bucket', e.target.value)} placeholder="my-genia-bucket"
+                  className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="text-[11px] text-muted-foreground">Region</label>
+                <input value={settings.s3Region || ''} onChange={(e) => updateSetting('s3Region', e.target.value)} placeholder="ap-southeast-1"
+                  className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="text-[11px] text-muted-foreground">Access Key ID</label>
+                <input value={settings.s3AccessKey || ''} onChange={(e) => updateSetting('s3AccessKey', e.target.value)} placeholder="AKIA..." autoComplete="off"
+                  className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div>
+                <label className="text-[11px] text-muted-foreground">Secret Access Key</label>
+                <input type="password" value={settings.s3SecretKey || ''} onChange={(e) => updateSetting('s3SecretKey', e.target.value)} placeholder="••••••••" autoComplete="new-password"
+                  className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div className="flex items-center gap-2 pt-1">
+                <Button size="sm" variant="outline" onClick={handleTestS3} disabled={testingS3} className="text-xs h-8 rounded-lg">
+                  {testingS3 ? 'Testing...' : 'Test S3 Connection'}
+                </Button>
+                <span className="text-[10px] text-muted-foreground">Remember to Save after editing.</span>
               </div>
             </div>
           </div>

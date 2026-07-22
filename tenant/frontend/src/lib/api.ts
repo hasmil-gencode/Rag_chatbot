@@ -15,6 +15,7 @@ interface ChatMessage {
   startedBy?: string
   startedByEmail?: string
   sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[]
+  attachments?: ChatAttachment[]
   artifacts?: ChatArtifact[]
   responseTimeMs?: number
 }
@@ -33,6 +34,12 @@ export interface FileItem {
   uploadedBy?: string
   organizationName?: string
   isAllOrganizations?: boolean
+  isTextNote?: boolean
+  isTabular?: boolean
+  tabularRows?: number
+  embeddable?: boolean
+  hasLocal?: boolean
+  hasS3?: boolean
 }
 
 type UnauthorizedPayload = {
@@ -98,8 +105,14 @@ export interface Message {
   startedBy?: string
   startedByEmail?: string
   sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[]
+  attachments?: ChatAttachment[]
   artifacts?: ChatArtifact[]
   responseTimeMs?: number
+}
+
+export interface ChatAttachment {
+  file_id: string
+  file_name: string
 }
 
 export interface ChatArtifact {
@@ -107,8 +120,11 @@ export interface ChatArtifact {
   type: 'echart' | 'table' | string
   title?: string
   option?: Record<string, any>
+  charts?: { id?: string; title?: string; option: Record<string, any>; size?: string }[]
+  kpis?: { label: string; value: any; detail?: any }[]
   columns?: string[]
   rows?: any[]
+  table?: any[]
   metadata?: Record<string, any>
 }
 
@@ -181,7 +197,7 @@ class API {
     return json
   }
 
-  async sendMessage(message: string, sessionId?: string, fileId?: string, currentOrganizationId?: string | null): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[]; artifacts?: ChatArtifact[]; responseTimeMs?: number; debug?: any }> {
+  async sendMessage(message: string, sessionId?: string, fileId?: string, currentOrganizationId?: string | null): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[]; attachments?: ChatAttachment[]; artifacts?: ChatArtifact[]; responseTimeMs?: number; debug?: any }> {
     const res = await fetchWithAuth(`${API_BASE}/chat`, {
       method: 'POST',
       headers: this.getHeaders(),
@@ -202,7 +218,7 @@ class API {
       onStatus?: (status: string) => void
       onReplace?: (content: string) => void
     } = {}
-  ): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[]; artifacts?: ChatArtifact[]; responseTimeMs?: number; debug?: any; blocked?: boolean }> {
+  ): Promise<{ response: string; sessionId: string; sources?: { file_name: string; page_number: number; file_id?: string; score?: number }[]; attachments?: ChatAttachment[]; artifacts?: ChatArtifact[]; responseTimeMs?: number; debug?: any; blocked?: boolean }> {
     const res = await fetchWithAuth(`${API_BASE}/chat/stream`, {
       method: 'POST',
       headers: this.getHeaders(),
@@ -271,6 +287,20 @@ class API {
     return res.json()
   }
 
+  // Download multiple files as a single ZIP; returns a Blob for the caller to save.
+  async downloadFilesZip(fileIds: string[]): Promise<Blob> {
+    const res = await fetchWithAuth(`${API_BASE}/files/download-zip`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ fileIds }),
+    })
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}))
+      throw new Error(json.error || 'Failed to download ZIP')
+    }
+    return res.blob()
+  }
+
   async getSessions(currentOrganizationId?: string | null): Promise<ChatSession[]> {
     const url = currentOrganizationId 
       ? `${API_BASE}/sessions?currentOrganizationId=${currentOrganizationId}`
@@ -312,19 +342,8 @@ class API {
     return res.json()
   }
 
-  async uploadFile(file: File, sharedWith: string[], onProgress?: (step: string, detail: string) => void, isPublic: boolean = false): Promise<{ success: boolean; fileId: string; message: string; chunks: number }> {
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('sharedWith', JSON.stringify(sharedWith))
-    if (isPublic) formData.append('isPublic', 'true')
-    
-    const res = await fetchWithAuth(`${API_BASE}/upload`, {
-      method: 'POST',
-      headers: this.getAuthHeaders(),
-      body: formData,
-    })
-
-    // Handle SSE stream for document uploads
+  // Shared reader for upload-style SSE progress streams.
+  private async readUploadStream(res: Response, onProgress?: (step: string, detail: string) => void): Promise<{ success: boolean; fileId: string; message: string; chunks: number }> {
     if (res.headers.get('content-type')?.includes('text/event-stream')) {
       const reader = res.body?.getReader()
       const decoder = new TextDecoder()
@@ -356,8 +375,108 @@ class API {
     return json
   }
 
-  async getFiles(currentOrganizationId?: string | null): Promise<FileItem[]> {
-    const url = currentOrganizationId
+  async uploadFile(file: File, sharedWith: string[], onProgress?: (step: string, detail: string) => void, isPublic: boolean = false): Promise<{ success: boolean; fileId: string; message: string; chunks: number }> {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('sharedWith', JSON.stringify(sharedWith))
+    if (isPublic) formData.append('isPublic', 'true')
+    
+    const res = await fetchWithAuth(`${API_BASE}/upload`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: formData,
+    })
+
+    return this.readUploadStream(res, onProgress)
+  }
+
+  // Create a text note (typed knowledge entry) — vectorized like a file.
+  async uploadText(title: string, content: string, sharedWith: string[], onProgress?: (step: string, detail: string) => void, isPublic: boolean = false): Promise<{ success: boolean; fileId: string; message: string; chunks: number }> {
+    const res = await fetchWithAuth(`${API_BASE}/upload-text`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ title, content, sharedWith, isPublic }),
+    })
+
+    // Errors before the stream starts come back as JSON.
+    if (!res.ok && !res.headers.get('content-type')?.includes('text/event-stream')) {
+      const json = await res.json().catch(() => ({}))
+      throw new Error(json.error || 'Failed to create text note')
+    }
+
+    return this.readUploadStream(res, onProgress)
+  }
+
+  // Fetch a text note's original content for editing.
+  async getTextNote(fileId: string): Promise<{ title: string; content: string }> {
+    const res = await fetchWithAuth(`${API_BASE}/files/${fileId}/text`, { headers: this.getHeaders() })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(json.error || 'Failed to load text note')
+    return json
+  }
+
+  // Edit a text note in place (re-embeds).
+  async updateTextNote(fileId: string, title: string, content: string, onProgress?: (step: string, detail: string) => void): Promise<{ success: boolean; fileId: string; message: string; chunks: number }> {
+    const res = await fetchWithAuth(`${API_BASE}/files/${fileId}/text`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ title, content }),
+    })
+
+    if (!res.ok && !res.headers.get('content-type')?.includes('text/event-stream')) {
+      const json = await res.json().catch(() => ({}))
+      throw new Error(json.error || 'Failed to update text note')
+    }
+
+    return this.readUploadStream(res, onProgress)
+  }
+
+  // Convert an uploaded CSV/Excel file into SQL data table(s). Streams progress.
+  async convertToTable(fileId: string, onProgress?: (step: string, detail: string) => void): Promise<{ success: boolean; message: string; tables?: number; rows?: number }> {
+    const res = await fetchWithAuth(`${API_BASE}/files/${fileId}/convert-to-table`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({}),
+    })
+    if (!res.ok && !res.headers.get('content-type')?.includes('text/event-stream')) {
+      const json = await res.json().catch(() => ({}))
+      throw new Error(json.error || 'Failed to convert file')
+    }
+    return this.readUploadStream(res, onProgress) as any
+  }
+
+  // Re-embed a tabular file's rows into the vector store (developer only). SSE.
+  async reembedRows(fileId: string, onProgress?: (step: string, detail: string) => void): Promise<{ success: boolean; message?: string; embedded?: number }> {
+    const res = await fetchWithAuth(`${API_BASE}/files/${fileId}/reembed-rows`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({}),
+    })
+    if (!res.ok && !res.headers.get('content-type')?.includes('text/event-stream')) {
+      const json = await res.json().catch(() => ({}))
+      throw new Error(json.error || 'Failed to re-embed rows')
+    }
+    return this.readUploadStream(res, onProgress) as any
+  }
+  async getS3Status(): Promise<{ enabled: boolean }> {
+    const res = await fetchWithAuth(`${API_BASE}/s3-status`, { headers: this.getHeaders() })
+    if (!res.ok) return { enabled: false }
+    return res.json()
+  }
+
+  // Migrate a locally-stored file to S3 (developer only).
+  async convertToS3(fileId: string): Promise<{ success: boolean; migrated?: boolean; message?: string }> {
+    const res = await fetchWithAuth(`${API_BASE}/files/${fileId}/convert-s3`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({}),
+    })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(json.error || 'Failed to migrate file to S3')
+    return json
+  }
+
+  async getFiles(currentOrganizationId?: string | null): Promise<FileItem[]> {    const url = currentOrganizationId
       ? `${API_BASE}/files?organizationId=${currentOrganizationId}`
       : `${API_BASE}/files`;
     const res = await fetchWithAuth(url, {
@@ -727,6 +846,37 @@ class API {
     return json
   }
 
+  async updateOrganizationPackage(orgId: string, groupId: string | null) {
+    const res = await fetchWithAuth(`${API_BASE}/organizations/${orgId}/package`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ groupId }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to update organization package')
+    return json
+  }
+
+  async getGatewayPackageTemplates() {
+    const res = await fetchWithAuth('/api/gateway/package-templates', {
+      headers: this.getHeaders(),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to get gateway packages')
+    return json
+  }
+
+  async assignGatewayPackage(orgId: string, gatewayPackageId: string) {
+    const res = await fetchWithAuth(`/api/gateway/package-templates/${gatewayPackageId}/assign`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ orgId }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to assign gateway package')
+    return json
+  }
+
   async getChatUsage() {
     const res = await fetchWithAuth(`${API_BASE}/chat-usage`, {
       headers: this.getHeaders(),
@@ -815,6 +965,24 @@ class API {
     return res.json()
   }
 
+  // Requester's own subtree (assigned orgs + descendants, no ancestors). Works for admin/manager/developer.
+  async getMySubtreeOrganizations() {
+    const res = await fetchWithAuth(`${API_BASE}/my-subtree-organizations`, {
+      headers: this.getHeaders(),
+    })
+    if (!res.ok) throw new Error('Failed to load organizations')
+    return res.json()
+  }
+
+  // Members (users + managers) grouped by org node, scoped to the requester.
+  async getOrganizationMembers() {
+    const res = await fetchWithAuth(`${API_BASE}/organization-members`, {
+      headers: this.getHeaders(),
+    })
+    if (!res.ok) throw new Error('Failed to load organization members')
+    return res.json()
+  }
+
   async switchOrganization(organizationId: string) {
     const res = await fetchWithAuth(`${API_BASE}/switch-organization`, {
       method: 'POST',
@@ -825,14 +993,43 @@ class API {
     return res.json()
   }
 
-  async createUser(email: string, password: string, fullName: string, canUploadFiles: boolean = true, isAdmin: boolean = false) {
+  async createUser(email: string, password: string, fullName: string, canUploadFiles: boolean = true, isAdmin: boolean = false, organizationIds?: string[]) {
     const res = await fetchWithAuth(`${API_BASE}/users`, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({ email, password, fullName, canUploadFiles, isAdmin }),
+      body: JSON.stringify({ email, password, fullName, canUploadFiles, isAdmin, ...(organizationIds ? { organizationIds } : {}) }),
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || 'Failed to create user')
+    return json
+  }
+
+  // Combined create: department + its manager in one call (admin/developer).
+  async createDepartmentWithManager(name: string, parentId: string, manager?: { name: string; email: string; password: string }, systemPrompt?: string) {
+    const res = await fetchWithAuth(`${API_BASE}/create-department`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({
+        name,
+        parentId,
+        ...(systemPrompt ? { systemPrompt } : {}),
+        ...(manager ? { managerName: manager.name, managerEmail: manager.email, managerPassword: manager.password } : {}),
+      }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to create department')
+    return json
+  }
+
+  // Add another manager to an existing department/org node (admin/developer).
+  async addManagerToOrg(orgId: string, manager: { name: string; email: string; password: string }) {
+    const res = await fetchWithAuth(`${API_BASE}/organizations/${orgId}/managers`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ managerName: manager.name, managerEmail: manager.email, managerPassword: manager.password }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || 'Failed to add manager')
     return json
   }
 

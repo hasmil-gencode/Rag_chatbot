@@ -1,34 +1,72 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "./ConfirmDialog";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { Plus, Trash2, Edit, Building2, X, Globe, Bot } from "lucide-react";
+import { Plus, Trash2, Edit, Building2, X, Globe, Bot, ChevronRight, Layers, Package as PackageIcon, UserPlus, Users } from "lucide-react";
 
 export const OrganizationsPage = () => {
   const [organizations, setOrganizations] = useState<any[]>([]);
+  const [groups, setGroups] = useState<any[]>([]);
+  const [gatewayPackages, setGatewayPackages] = useState<any[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editingOrg, setEditingOrg] = useState<any>(null);
-  const [formData, setFormData] = useState({ name: "", type: "department" as "organization" | "entity" | "department", parentId: null as string | null, publicEnabled: false, systemPrompt: "", mandatoryFields: [] as { name: string; description: string; alwaysRequired?: boolean; requiredFor?: string[] }[], broadFirstSearch: false, broadFirstSearchChunks: 40, roleMode: 'single' as string, routerModel: '' });
+  const [formData, setFormData] = useState({ name: "", type: "department" as "organization" | "entity" | "department", parentId: null as string | null, publicEnabled: false, systemPrompt: "", mandatoryFields: [] as { name: string; description: string; alwaysRequired?: boolean; requiredFor?: string[] }[], broadFirstSearch: false, broadFirstSearchChunks: 40, roleMode: 'single' as string, routerModel: '', managerName: "", managerEmail: "", managerPassword: "" });
   const [showRolesModal, setShowRolesModal] = useState<any>(null); // org object
   const [roles, setRoles] = useState<any[]>([]);
   const [roleForm, setRoleForm] = useState<any>(null); // null = hidden, {} = new, {id} = edit
+  const [addManagerFor, setAddManagerFor] = useState<any>(null); // department org to add a manager to
+  const [mgrForm, setMgrForm] = useState({ name: '', email: '', password: '' });
+  const [members, setMembers] = useState<Record<string, any[]>>({}); // orgId -> [{id, fullName, email, role}]
+  const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>({});
   const userRole = localStorage.getItem('userRole') || 'user';
   const isDeveloper = userRole === 'developer';
+  const isAdmin = userRole === 'admin';
+  const isManager = userRole === 'manager';
   const confirm = useConfirm();
+  const toggleNode = (id: string) => setExpandedNodes(prev => ({ ...prev, [id]: !prev[id] }));
+  const roleBadgeClass = (role: string) => role === 'manager'
+    ? 'bg-orange-500/10 text-orange-600 dark:text-orange-400'
+    : role === 'admin' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'bg-muted text-muted-foreground';
 
   useEffect(() => { loadData(); }, []);
 
-  const loadData = async () => { try { const data = await api.getAllOrganizations(); setOrganizations(data.organizations || []); } catch (e) { console.error(e); } };
+  const loadData = async () => {
+    try {
+      const orgReq = isDeveloper ? api.getAllOrganizations() : api.getMySubtreeOrganizations();
+      const [orgData, groupData, memberData] = await Promise.all([
+        orgReq,
+        isDeveloper ? api.getGroups().catch(() => []) : Promise.resolve([]),
+        api.getOrganizationMembers().catch(() => ({ members: {} })),
+      ]);
+      const gatewayPackageData = isDeveloper
+        ? await api.getGatewayPackageTemplates().catch(() => [])
+        : [];
+      setOrganizations(orgData.organizations || []);
+      setGroups(Array.isArray(groupData) ? groupData : []);
+      setGatewayPackages(Array.isArray(gatewayPackageData) ? gatewayPackageData : []);
+      setMembers(memberData.members || {});
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
-  const handleEdit = (org: any) => { setEditingOrg(org); setFormData({ name: org.name, type: org.type, parentId: org.parentId, publicEnabled: org.publicEnabled || false, systemPrompt: org.systemPrompt || "", mandatoryFields: org.mandatoryFields || [], broadFirstSearch: org.broadFirstSearch || false, broadFirstSearchChunks: org.broadFirstSearchChunks || 40, roleMode: org.roleMode || 'single', routerModel: org.routerModel || '' }); setShowForm(true); };
+  const handleEdit = (org: any) => { setEditingOrg(org); setFormData({ name: org.name, type: org.type, parentId: org.parentId, publicEnabled: org.publicEnabled || false, systemPrompt: org.systemPrompt || "", mandatoryFields: org.mandatoryFields || [], broadFirstSearch: org.broadFirstSearch || false, broadFirstSearchChunks: org.broadFirstSearchChunks || 40, roleMode: org.roleMode || 'single', routerModel: org.routerModel || '', managerName: "", managerEmail: "", managerPassword: "" }); setShowForm(true); };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      if (editingOrg) await api.updateOrganization(editingOrg._id, formData.name, formData.type, formData.parentId, formData.publicEnabled, formData.systemPrompt, formData.mandatoryFields, formData.broadFirstSearch, formData.broadFirstSearchChunks, formData.roleMode, formData.routerModel);
-      else await api.createOrganization(formData.name, formData.type, formData.parentId, formData.publicEnabled, formData.systemPrompt, formData.mandatoryFields, formData.broadFirstSearch, formData.broadFirstSearchChunks);
-      setShowForm(false); setEditingOrg(null); setFormData({ name: "", type: "organization", parentId: null, publicEnabled: false, systemPrompt: "", mandatoryFields: [], broadFirstSearch: false, broadFirstSearchChunks: 40, roleMode: 'single', routerModel: '' }); loadData();
+      if (editingOrg) {
+        await api.updateOrganization(editingOrg._id, formData.name, formData.type, formData.parentId, formData.publicEnabled, formData.systemPrompt, formData.mandatoryFields, formData.broadFirstSearch, formData.broadFirstSearchChunks, formData.roleMode, formData.routerModel);
+      } else if (!isDeveloper) {
+        // Admin creates a department together with its manager in one call.
+        if (!formData.parentId) { toast.error('Please select a parent organization'); return; }
+        if (!formData.managerName || !formData.managerEmail || !formData.managerPassword) { toast.error('Manager name, email and password are required'); return; }
+        await api.createDepartmentWithManager(formData.name, formData.parentId, { name: formData.managerName, email: formData.managerEmail, password: formData.managerPassword }, formData.systemPrompt);
+      } else {
+        await api.createOrganization(formData.name, formData.type, formData.parentId, formData.publicEnabled, formData.systemPrompt, formData.mandatoryFields, formData.broadFirstSearch, formData.broadFirstSearchChunks);
+      }
+      setShowForm(false); setEditingOrg(null); setFormData({ name: "", type: "organization", parentId: null, publicEnabled: false, systemPrompt: "", mandatoryFields: [], broadFirstSearch: false, broadFirstSearchChunks: 40, roleMode: 'single', routerModel: '', managerName: "", managerEmail: "", managerPassword: "" }); loadData();
     } catch (e: any) { toast.error(e.message); }
   };
 
@@ -58,47 +96,209 @@ export const OrganizationsPage = () => {
 
   const handleDelete = async (orgId: string) => { if (await confirm("Delete this organization?")) { try { await api.deleteOrganization(orgId); loadData(); } catch (e: any) { toast.error(e.message); } } };
 
+  const handleAddManager = async () => {
+    if (!addManagerFor) return;
+    if (!mgrForm.name || !mgrForm.email || !mgrForm.password) { toast.error('Manager name, email and password are required'); return; }
+    try {
+      await api.addManagerToOrg(addManagerFor._id, mgrForm);
+      toast.success('Manager added');
+      setAddManagerFor(null); setMgrForm({ name: '', email: '', password: '' });
+    } catch (e: any) { toast.error(e.message); }
+  };
+
+  const handlePackageChange = async (orgId: string, groupId: string) => {
+    try {
+      if (groupId.startsWith('gateway:')) {
+        const gatewayPackageId = groupId.replace('gateway:', '');
+        const result = await api.assignGatewayPackage(orgId, gatewayPackageId);
+        const localGroupId = normalizeId(result.groupId || result.group?._id);
+        if (result.group) {
+          setGroups(prev => {
+            const existingIndex = prev.findIndex(group => normalizeId(group._id) === normalizeId(result.group._id));
+            if (existingIndex >= 0) {
+              const next = [...prev];
+              next[existingIndex] = result.group;
+              return next;
+            }
+            return [...prev, result.group];
+          });
+        }
+        setOrganizations(prev => prev.map(org => normalizeId(org._id) === orgId ? { ...org, groupId: localGroupId || null } : org));
+        toast.success('Gateway package imported and assigned');
+        await loadData();
+      } else {
+        await api.updateOrganizationPackage(orgId, groupId || null);
+        setOrganizations(prev => prev.map(org => normalizeId(org._id) === orgId ? { ...org, groupId: groupId || null } : org));
+        toast.success(groupId ? 'Package updated' : 'Package removed');
+        await loadData();
+      }
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to update package');
+    }
+  };
+
+  const normalizeId = (value: any) => value?._id?.toString?.() || value?.toString?.() || value || '';
+
+  const groupById = useMemo(() => {
+    const map: Record<string, any> = {};
+    groups.forEach((group) => {
+      map[normalizeId(group._id)] = group;
+    });
+    return map;
+  }, [groups]);
+
+  const packageSignature = (group: any) => [
+    (group.name || '').trim().toLowerCase(),
+    group.storageLimitGB ?? '',
+    group.chatQuota ?? 0,
+    group.quotaType || 'individual',
+    group.renewDay || 1,
+    group.departmentLimit || 0,
+  ].join('|');
+
+  const getPackageOptions = (selectedGroupId: string) => {
+    const seen = new Set<string>();
+    const options: any[] = [];
+    const selected = selectedGroupId ? groupById[selectedGroupId] : null;
+    const localGatewaySourceIds = new Set(groups.map((group) => String(group.sourcePackageId || '')).filter(Boolean));
+    if (selected) {
+      options.push({ value: normalizeId(selected._id), label: selected.name, source: 'tenant', item: selected });
+      seen.add(packageSignature(selected));
+    }
+    groups.forEach((group) => {
+      const signature = packageSignature(group);
+      if (seen.has(signature)) return;
+      seen.add(signature);
+      options.push({ value: normalizeId(group._id), label: group.name, source: 'tenant', item: group });
+    });
+    gatewayPackages.forEach((pkg) => {
+      const gatewayPackageId = String(pkg.gatewayPackageId || pkg._id || '');
+      if (!gatewayPackageId || localGatewaySourceIds.has(gatewayPackageId)) return;
+      const signature = packageSignature(pkg);
+      if (seen.has(signature)) return;
+      seen.add(signature);
+      options.push({
+        value: `gateway:${gatewayPackageId}`,
+        label: `${pkg.name} (Gateway)`,
+        source: 'gateway',
+        item: pkg,
+      });
+    });
+    return options;
+  };
+
+  const getChildren = (parentId: string) => organizations
+    .filter((org) => normalizeId(org.parentId) === parentId)
+    .sort((a, b) => {
+      const typeOrder: Record<string, number> = { organization: 0, entity: 1, department: 2 };
+      return (typeOrder[a.type] ?? 9) - (typeOrder[b.type] ?? 9) || a.name.localeCompare(b.name);
+    });
+
+  const hierarchyRoots = useMemo(() => {
+    const idSet = new Set(organizations.map((org) => normalizeId(org._id)));
+    return organizations
+      .filter((org) => !org.parentId || !idSet.has(normalizeId(org.parentId)))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [organizations]);
+
+  const typeBadgeClass = (type: string) => {
+    if (type === 'organization') return 'bg-blue-500/10 text-blue-600 dark:text-blue-400';
+    if (type === 'entity') return 'bg-purple-500/10 text-purple-600 dark:text-purple-400';
+    return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400';
+  };
+
+  const renderHierarchyNode = (org: any, depth = 0) => {
+    const children = getChildren(org._id.toString());
+    const selectedGroupId = normalizeId(org.groupId);
+    const group = groupById[selectedGroupId];
+    const effectiveGroupId = normalizeId(org.effectiveGroupId);
+    const effectiveGroup = effectiveGroupId ? groupById[effectiveGroupId] || { name: org.effectiveGroupName } : null;
+    const packageLabel = group?.name || effectiveGroup?.name || '';
+    const nodeMembers = members[org._id.toString()] || [];
+    const isExpanded = !!expandedNodes[org._id.toString()];
+    const canEditNode = isDeveloper || (isAdmin && !!org.parentId); // admin cannot edit/delete their own root org
+    const canAddManager = isDeveloper || isAdmin;
+
+    return (
+      <div key={org._id} className="relative">
+        {depth > 0 && <div className="absolute left-4 top-0 bottom-0 w-px bg-border" />}
+        <div className="flex items-center gap-2 py-2.5 pr-3 hover:bg-muted/30 transition-colors" style={{ paddingLeft: `${depth * 24 + 12}px` }}>
+          <div className="flex items-center justify-center w-5 h-5 text-muted-foreground">
+            {children.length > 0 ? <ChevronRight className="w-3.5 h-3.5 rotate-90" /> : <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />}
+          </div>
+          <div className="flex items-center justify-center w-8 h-8 rounded-lg border bg-background">
+            {org.type === 'organization' ? <Building2 className="w-4 h-4" /> : <Layers className="w-4 h-4" />}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="text-sm font-medium truncate">{org.name}</p>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full capitalize ${typeBadgeClass(org.type)}`}>{org.type}</span>
+              <button
+                onClick={() => toggleNode(org._id.toString())}
+                className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full transition-colors ${nodeMembers.length > 0 ? 'bg-muted hover:bg-muted/70 text-foreground' : 'bg-muted/40 text-muted-foreground'}`}
+                title="Show users & managers"
+              >
+                <Users className="w-3 h-3" /> {nodeMembers.length}
+                {nodeMembers.length > 0 && <ChevronRight className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />}
+              </button>
+              {packageLabel && (
+                <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full ${group ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'bg-muted text-muted-foreground'}`}>
+                  <PackageIcon className="w-3 h-3" /> {packageLabel}{!group && org.packageInherited ? ` inherited from ${org.packageOwnerOrgName || 'parent'}` : ''}
+                </span>
+              )}
+              {org.publicEnabled && <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300"><Globe className="w-3 h-3" />Public</span>}
+              {org.roleMode === 'multi' && <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300"><Bot className="w-3 h-3" />Multi-Role</span>}
+            </div>
+            <p className="text-[11px] text-muted-foreground truncate">{org.path?.join(' > ') || org.name}</p>
+          </div>
+          {isDeveloper && (
+              <select
+              value={selectedGroupId}
+              onChange={(e) => handlePackageChange(normalizeId(org._id), e.target.value)}
+              className="h-8 w-36 rounded-md border bg-background px-2 text-[11px] text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              title="Assign package"
+            >
+              <option value="">{org.parentId ? 'Inherit package' : 'No package'}</option>
+              {getPackageOptions(selectedGroupId).map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          )}
+          <div className="flex gap-1">
+            {isDeveloper && org.type === 'organization' && org.roleMode === 'multi' && <button onClick={() => openRolesModal(org)} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-purple-500" title="AI Roles"><Bot className="w-4 h-4" /></button>}
+            {canAddManager && <button onClick={() => { setAddManagerFor(org); setMgrForm({ name: '', email: '', password: '' }); }} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground" title="Add manager"><UserPlus className="w-4 h-4" /></button>}
+            {canEditNode && <button onClick={() => handleEdit(org)} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground" title="Edit"><Edit className="w-4 h-4" /></button>}
+            {canEditNode && <button onClick={() => handleDelete(org._id)} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-destructive" title="Delete"><Trash2 className="w-4 h-4" /></button>}
+          </div>
+        </div>
+        {isExpanded && (
+          <div className="pb-1" style={{ paddingLeft: `${depth * 24 + 52}px` }}>
+            {nodeMembers.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground py-1">No users assigned to this node</p>
+            ) : nodeMembers.map((m) => (
+              <div key={m.id} className="flex items-center gap-2 py-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 flex-shrink-0" />
+                <span className="text-[12px] font-medium truncate">{m.fullName}</span>
+                <span className="text-[11px] text-muted-foreground truncate">{m.email}</span>
+                <span className={`text-[9px] px-1.5 py-0.5 rounded-full capitalize ${roleBadgeClass(m.role)}`}>{m.role}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {children.length > 0 && (
+          <div>
+            {children.map((child) => renderHierarchyNode(child, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const orgsByType = {
     organization: organizations.filter(o => o.type === 'organization'),
     entity: organizations.filter(o => o.type === 'entity'),
     department: organizations.filter(o => o.type === 'department')
   };
-
-  const renderTable = (title: string, orgs: any[], typeLabel: string) => (
-    <div className="border rounded-lg overflow-hidden">
-      <div className="px-4 py-2.5 border-b">
-        <p className="text-xs font-medium flex items-center gap-1.5"><Building2 className="w-3.5 h-3.5" /> {title}</p>
-      </div>
-      <table className="w-full text-[13px]">
-        <thead>
-          <tr className="border-b">
-            <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">Name</th>
-            <th className="px-4 py-2.5 text-left text-[11px] font-medium text-muted-foreground">Path</th>
-            {isDeveloper && <th className="px-4 py-2.5 w-20"></th>}
-          </tr>
-        </thead>
-        <tbody>
-          {orgs.length === 0 ? (
-            <tr><td colSpan={isDeveloper ? 3 : 2} className="px-4 py-8 text-center text-sm text-muted-foreground">No {typeLabel.toLowerCase()}s</td></tr>
-          ) : orgs.map((org) => (
-            <tr key={org._id} className="border-t hover:bg-muted/30 transition-colors">
-              <td className="px-4 py-2.5 font-medium">{org.name}{org.publicEnabled && <span className="ml-2 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300"><Globe className="w-3 h-3" />Public</span>}{org.roleMode === 'multi' && <span className="ml-2 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300"><Bot className="w-3 h-3" />Multi-Role</span>}</td>
-              <td className="px-4 py-2.5 text-muted-foreground text-[12px]">{org.path?.join(' > ')}</td>
-              {isDeveloper && (
-                <td className="px-4 py-2.5 text-right">
-                  <div className="flex gap-1 justify-end">
-                    {org.type === 'organization' && org.roleMode === 'multi' && <button onClick={() => openRolesModal(org)} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-purple-500" title="AI Roles"><Bot className="w-4 h-4" /></button>}
-                    <button onClick={() => handleEdit(org)} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"><Edit className="w-4 h-4" /></button>
-                    <button onClick={() => handleDelete(org._id)} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-destructive"><Trash2 className="w-4 h-4" /></button>
-                  </div>
-                </td>
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
 
   // Get admin's org name
   const adminOrgName = !isDeveloper && orgsByType.organization.length > 0 ? orgsByType.organization[0].name : '';
@@ -109,13 +309,15 @@ export const OrganizationsPage = () => {
         {/* Header */}
         <div className="flex items-start justify-between mb-5">
           <div>
-            <p className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">{isDeveloper ? 'Structure' : adminOrgName}</p>
-            <h1 className="text-xl font-semibold">{isDeveloper ? 'Organizations' : 'Departments'}</h1>
-            <p className="text-xs text-muted-foreground mt-0.5">{isDeveloper ? 'Manage organizational hierarchy.' : 'Manage departments under your organization.'}</p>
+            <p className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">{isDeveloper ? 'Structure' : adminOrgName || (isManager ? 'Department' : 'Organization')}</p>
+            <h1 className="text-xl font-semibold">{isDeveloper ? 'Organizations' : isManager ? 'My Department' : 'Departments'}</h1>
+            <p className="text-xs text-muted-foreground mt-0.5">{isDeveloper ? 'Manage organizational hierarchy.' : isManager ? 'View users and managers in your department.' : 'Manage departments, managers and members under your organization.'}</p>
           </div>
-          <Button size="sm" onClick={() => { setShowForm(true); setEditingOrg(null); setFormData({ name: "", type: isDeveloper ? "organization" : "department", parentId: null, publicEnabled: false, systemPrompt: "", mandatoryFields: [], broadFirstSearch: false, broadFirstSearchChunks: 40, roleMode: 'single', routerModel: '' }); }} className="text-xs h-8 rounded-lg">
-            <Plus className="w-3.5 h-3.5 mr-1.5" /> {isDeveloper ? 'Create' : 'Add Department'}
-          </Button>
+          {(isDeveloper || isAdmin) && (
+            <Button size="sm" onClick={() => { setShowForm(true); setEditingOrg(null); setFormData({ name: "", type: isDeveloper ? "organization" : "department", parentId: null, publicEnabled: false, systemPrompt: "", mandatoryFields: [], broadFirstSearch: false, broadFirstSearchChunks: 40, roleMode: 'single', routerModel: '', managerName: "", managerEmail: "", managerPassword: "" }); }} className="text-xs h-8 rounded-lg">
+              <Plus className="w-3.5 h-3.5 mr-1.5" /> {isDeveloper ? 'Create' : 'Add Department'}
+            </Button>
+          )}
         </div>
 
         {/* Stats - Developer only */}
@@ -136,11 +338,22 @@ export const OrganizationsPage = () => {
           </div>
         )}
 
-        {/* Tables */}
-        <div className="space-y-5">
-          {isDeveloper && renderTable('Organizations (Top Level)', orgsByType.organization, 'Organization')}
-          {isDeveloper && orgsByType.entity.length > 0 && renderTable('Entities (Mid Level)', orgsByType.entity, 'Entity')}
-          {orgsByType.department.length > 0 && renderTable('Departments', orgsByType.department, 'Department')}
+        {/* Hierarchy tree with expandable members — all roles */}
+        <div className="border rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b flex items-center justify-between">
+            <div>
+              <p className="text-xs font-medium flex items-center gap-1.5"><Building2 className="w-3.5 h-3.5" /> {isDeveloper ? 'Organization Hierarchy' : 'Structure & Members'}</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">{isDeveloper ? 'Packages can be assigned directly or inherited from a parent node.' : 'Click the people badge on a node to see its users and managers.'}</p>
+            </div>
+            <div className="text-[11px] text-muted-foreground">{organizations.length} node{organizations.length === 1 ? '' : 's'}</div>
+          </div>
+          {hierarchyRoots.length === 0 ? (
+            <p className="px-4 py-10 text-center text-sm text-muted-foreground">Nothing to show yet</p>
+          ) : (
+            <div className="divide-y">
+              {hierarchyRoots.map((org) => renderHierarchyNode(org))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -185,6 +398,33 @@ export const OrganizationsPage = () => {
                   <input type="checkbox" checked={formData.publicEnabled} onChange={e => setFormData({ ...formData, publicEnabled: e.target.checked })} className="rounded" />
                   <span className="text-xs flex items-center gap-1.5"><Globe className="w-3.5 h-3.5" />Enable public access (embed widget for external visitors)</span>
                 </label>
+              )}
+              {!isDeveloper && !editingOrg && (
+                <div className="space-y-3 border-t pt-3">
+                  <p className="text-[11px] font-medium text-muted-foreground">Department Manager</p>
+                  <div>
+                    <label className="text-[11px] text-muted-foreground">Manager Full Name</label>
+                    <input type="text" value={formData.managerName} onChange={(e) => setFormData({ ...formData, managerName: e.target.value })}
+                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" placeholder="e.g., Ahmad" />
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-muted-foreground">Manager Email</label>
+                    <input type="email" value={formData.managerEmail} onChange={(e) => setFormData({ ...formData, managerEmail: e.target.value })}
+                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" placeholder="manager@client.com" />
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-muted-foreground">Manager Password</label>
+                    <input type="password" value={formData.managerPassword} onChange={(e) => setFormData({ ...formData, managerPassword: e.target.value })}
+                      className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" placeholder="Min 8 chars, upper/lower/number" />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">The manager manages users and views chats within this department, and must change this password on first login.</p>
+                </div>
+              )}
+              {!isDeveloper && !editingOrg && (
+                <div>
+                  <label className="text-[11px] text-muted-foreground">AI Instructions <span className="text-[10px]">(optional — how this department's bot behaves; identity is auto-set)</span></label>
+                  <textarea value={formData.systemPrompt} onChange={e => setFormData({ ...formData, systemPrompt: e.target.value })} rows={3} placeholder="e.g. Handle sales enquiries, quote prices, escalate complaints to the manager." className="w-full mt-1 px-3 py-2 text-xs border rounded-lg bg-background resize-none" />
+                </div>
               )}
               {formData.type === 'organization' && (
                 <>
@@ -310,6 +550,36 @@ export const OrganizationsPage = () => {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Add Manager Modal */}
+      {addManagerFor && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setAddManagerFor(null)}>
+          <div className="bg-background rounded-xl p-5 w-full max-w-sm mx-4 border" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold">Add Manager — {addManagerFor.name}</h2>
+              <button onClick={() => setAddManagerFor(null)} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="text-[11px] text-muted-foreground">Manager Full Name</label>
+                <input type="text" value={mgrForm.name} onChange={e => setMgrForm({ ...mgrForm, name: e.target.value })} className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" placeholder="e.g., Ahmad" />
+              </div>
+              <div>
+                <label className="text-[11px] text-muted-foreground">Manager Email</label>
+                <input type="email" value={mgrForm.email} onChange={e => setMgrForm({ ...mgrForm, email: e.target.value })} className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" placeholder="manager@client.com" />
+              </div>
+              <div>
+                <label className="text-[11px] text-muted-foreground">Manager Password</label>
+                <input type="password" value={mgrForm.password} onChange={e => setMgrForm({ ...mgrForm, password: e.target.value })} className="w-full h-9 px-3 mt-1 text-[13px] rounded-lg border bg-transparent focus:outline-none focus:ring-1 focus:ring-ring" placeholder="Min 8 chars, upper/lower/number" />
+              </div>
+              <div className="flex gap-2 pt-1">
+                <Button size="sm" onClick={handleAddManager} className="text-xs h-8 flex-1">Add Manager</Button>
+                <Button size="sm" variant="outline" onClick={() => setAddManagerFor(null)} className="text-xs h-8">Cancel</Button>
+              </div>
+            </div>
           </div>
         </div>
       )}

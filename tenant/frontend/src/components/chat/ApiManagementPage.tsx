@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { useConfirm } from "./ConfirmDialog";
 import { api } from "@/lib/api";
-import { Plus, Copy, Power, Trash2, Eye, EyeOff, Key, X, Edit2, Activity } from "lucide-react";
+import { Plus, Copy, Power, Trash2, Eye, EyeOff, Key, X, Edit2, Activity, ChevronDown } from "lucide-react";
 
 interface ApiKey { _id: string; key: string; shortKey?: string; hasShortKey?: boolean; name: string; description?: string; userId: string; userEmail: string; chatMode?: string; webhookUrl?: string; systemPrompt?: string; scopes?: string[]; streamChunkSize?: number; streamDelayMs?: number; isActive: boolean; createdAt: string; lastUsedAt: string | null; }
 interface ApiUsageSummary {
@@ -24,6 +24,8 @@ export const ApiManagementPage = () => {
   const [editingKey, setEditingKey] = useState<ApiKey | null>(null);
   const [form, setForm] = useState({ name: "", description: "", userId: "", chatMode: "native", webhookUrl: "", systemPrompt: "", generateShortKey: false, scopes: ["chat"] as string[], streamChunkSize: 10, streamDelayMs: 22 });
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
+  const [docsTab, setDocsTab] = useState<'streaming' | 'ingest'>('streaming');
+  const [usageExpanded, setUsageExpanded] = useState(false);
   const confirm = useConfirm();
 
   useEffect(() => { loadKeys(); loadUsers(); loadUsage(); }, []);
@@ -141,9 +143,16 @@ export const ApiManagementPage = () => {
         {/* Usage */}
         <div className="border rounded-lg overflow-hidden mb-5">
           <div className="px-4 py-2.5 border-b flex items-center justify-between">
-            <p className="text-xs font-medium flex items-center gap-1.5"><Activity className="w-3.5 h-3.5" /> API Usage</p>
-            <button onClick={loadUsage} className="text-[11px] text-muted-foreground hover:text-foreground">Refresh</button>
+            <button onClick={() => setUsageExpanded(v => !v)} className="text-xs font-medium flex items-center gap-1.5 hover:text-foreground">
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${usageExpanded ? 'rotate-180' : ''}`} />
+              <Activity className="w-3.5 h-3.5" /> API Usage
+              <span className="text-[10px] font-normal text-muted-foreground">({usageSummary.totalRequests.toLocaleString()} requests)</span>
+            </button>
+            {usageExpanded && (
+              <button onClick={loadUsage} className="text-[11px] text-muted-foreground hover:text-foreground">Refresh</button>
+            )}
           </div>
+          {usageExpanded && (
           <div className="p-4">
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
               <div className="rounded-lg bg-muted/40 px-3 py-2">
@@ -205,40 +214,49 @@ export const ApiManagementPage = () => {
               </div>
             )}
           </div>
+          )}
         </div>
 
-        {/* API Docs */}
+        {/* API Docs (tabbed) */}
         <div className="border rounded-lg overflow-hidden">
-          <div className="px-4 py-2.5 border-b"><p className="text-xs font-medium">API Usage Guide</p></div>
-          <div className="p-4 space-y-3">
-            <div><p className="text-[11px] text-muted-foreground mb-1">Endpoint</p><code className="block text-xs bg-muted px-3 py-2 rounded">POST /api/v1/chat</code></div>
-            <div><p className="text-[11px] text-muted-foreground mb-1">Streaming Endpoint</p><code className="block text-xs bg-muted px-3 py-2 rounded">POST /api/v1/chat/stream</code></div>
-            <div><p className="text-[11px] text-muted-foreground mb-1">Dynamic Ingest Endpoint</p><code className="block text-xs bg-muted px-3 py-2 rounded">POST /api/v1/ingest/dynamic</code></div>
-            <div><p className="text-[11px] text-muted-foreground mb-1">Headers</p><code className="block text-xs bg-muted px-3 py-2 rounded">x-api-key: YOUR_API_KEY</code></div>
-            <div><p className="text-[11px] text-muted-foreground mb-1">Normal Curl</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`curl https://YOUR_DOMAIN/api/v1/chat \\
+          <div className="px-4 py-2.5 border-b flex items-center justify-between gap-3 flex-wrap">
+            <p className="text-xs font-medium">API Usage Guide</p>
+            <div className="flex gap-0.5 bg-muted/50 rounded-lg p-0.5">
+              <button
+                onClick={() => setDocsTab('streaming')}
+                className={`px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors ${docsTab === 'streaming' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                Chat Streaming
+              </button>
+              <button
+                onClick={() => setDocsTab('ingest')}
+                className={`px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors ${docsTab === 'ingest' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                Ingest Write
+              </button>
+            </div>
+          </div>
+
+          {docsTab === 'streaming' && (
+            <div className="p-4 space-y-3">
+              <div><p className="text-[11px] text-muted-foreground mb-1">Endpoint</p><code className="block text-xs bg-muted px-3 py-2 rounded">POST /api/v1/chat/stream</code></div>
+              <div><p className="text-[11px] text-muted-foreground mb-1">Required scope</p><code className="block text-xs bg-muted px-3 py-2 rounded">chat</code></div>
+              <div><p className="text-[11px] text-muted-foreground mb-1">Headers</p><code className="block text-xs bg-muted px-3 py-2 rounded">x-api-key: YOUR_API_KEY</code></div>
+              <div><p className="text-[11px] text-muted-foreground mb-1">Streaming Curl</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`curl -N https://YOUR_DOMAIN/api/v1/chat/stream \\
   -H "Content-Type: application/json" \\
   -H "x-api-key: YOUR_API_KEY" \\
   -d '{"message":"Your question","sessionId":"optional"}'`}</pre></div>
-            <div><p className="text-[11px] text-muted-foreground mb-1">Streaming Curl</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`curl -N https://YOUR_DOMAIN/api/v1/chat/stream \\
-  -H "Content-Type: application/json" \\
-  -H "x-api-key: YOUR_API_KEY" \\
-  -d '{"message":"Your question","sessionId":"optional"}'`}</pre></div>
-            <div><p className="text-[11px] text-muted-foreground mb-1">Dynamic Ingest Curl</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`curl https://YOUR_DOMAIN/api/v1/ingest/dynamic \\
-  -H "Content-Type: application/json" \\
-  -H "x-api-key: YOUR_API_KEY" \\
-  -d '{
-    "sourceApp": "genform",
-    "externalSourceId": "genform:FORM_ID",
-    "displayName": "Customer Survey",
-    "mode": "replace",
-    "fields": [{ "id": "message", "label": "Message", "type": "text" }],
-    "records": [{ "message": "Great service", "submitted_at": "2026-06-10T04:20:21.000Z" }]
-  }'`}</pre></div>
-            <div><p className="text-[11px] text-muted-foreground mb-1">Basic Request</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`{
+              <div><p className="text-[11px] text-muted-foreground mb-1">Basic Request</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`{
   "message": "Your question",
   "sessionId": "optional"
+}
+
+Ollama-style prompt is also accepted:
+{
+  "prompt": "Your question",
+  "sessionId": "optional"
 }`}</pre></div>
-            <div><p className="text-[11px] text-muted-foreground mb-1">With Filter (for external data scoping)</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`{
+              <div><p className="text-[11px] text-muted-foreground mb-1">With Filter (for external data scoping)</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`{
   "message": "show my purchase orders",
   "filter": {
     "externalUserId": "user_123",
@@ -246,33 +264,19 @@ export const ApiManagementPage = () => {
     "company": "ABC Sdn Bhd"
   }
 }`}</pre></div>
-            <div><p className="text-[11px] text-muted-foreground mb-1">Streaming Response</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`Default response is raw text chunks only:
-Hello, how can I help you today?
+              <div><p className="text-[11px] text-muted-foreground mb-1">Streaming Response</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`Response is newline-delimited JSON, compatible with Ollama-style streaming:
+{"model":"gemini-2.5-flash","created_at":"2026-06-15T00:00:00.000Z","response":"Hello","done":false}
+{"model":"gemini-2.5-flash","created_at":"2026-06-15T00:00:00.100Z","response":" there","done":false}
+{"model":"gemini-2.5-flash","created_at":"2026-06-15T00:00:00.250Z","response":"","done":true,"session_id":"...","sources":[],"artifacts":[],"blocked":false,"response_time_ms":250,"total_duration":250000000}
 
-Chunk size and delay are configurable per API key in API Stream Timing.
-
-Legacy SSE is still available with:
-POST /api/v1/chat/stream?format=sse
-or header: X-Stream-Format: sse`}</pre></div>
-            <div><p className="text-[11px] text-muted-foreground mb-1">Postman Notes</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`Normal chat:
-- Method: POST
-- Body: raw JSON
-- Header: x-api-key
-
-Streaming chat:
+Chunk size and delay are configurable per API key in API Stream Timing.`}</pre></div>
+              <div><p className="text-[11px] text-muted-foreground mb-1">Postman Notes</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`Chat API:
+- Use POST /api/v1/chat/stream for all chat requests.
 - Use Postman Send and Download / stream-capable clients for best results.
-- Response body is plain text chunks, no event/data wrapper.
+- Response body is newline-delimited JSON.
 - Native mode streams while the LLM generates. Webhook mode streams after the webhook returns its response.
-- Add ?format=sse only if your client needs Server-Sent Events metadata.`}</pre></div>
-            <div><p className="text-[11px] text-muted-foreground mb-1">Error Codes</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`400 BAD_REQUEST              Missing/invalid request body
-401 Unauthorized             Missing/invalid API key
-403 API_SCOPE_DENIED         API key lacks required scope
-429 Too Many Requests        API rate limit hit
-502 LLM_AUTH_ERROR           Provider key rejected
-503 LLM_RATE_LIMIT           Provider quota/rate limit
-504 LLM_TIMEOUT              Provider timeout
-500 SERVER_ERROR             Unexpected server error`}</pre></div>
-            <div><p className="text-[11px] text-muted-foreground mb-1">Streaming Fetch Example</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`const res = await fetch('/api/v1/chat/stream', {
+- Stop reading when the JSON chunk has done: true.`}</pre></div>
+              <div><p className="text-[11px] text-muted-foreground mb-1">Streaming Fetch Example</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`const res = await fetch('/api/v1/chat/stream', {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
@@ -283,13 +287,99 @@ Streaming chat:
 
 const reader = res.body.getReader();
 const decoder = new TextDecoder();
+let buffer = '';
+let fullText = '';
 
 while (true) {
   const { done, value } = await reader.read();
   if (done) break;
-  process.stdout.write(decoder.decode(value, { stream: true }));
+  buffer += decoder.decode(value, { stream: true });
+  const lines = buffer.split('\\n');
+  buffer = lines.pop() || '';
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const chunk = JSON.parse(line);
+    if (chunk.response) {
+      fullText += chunk.response;
+      process.stdout.write(chunk.response);
+    }
+    if (chunk.done) {
+      console.log('\\nSession:', chunk.session_id);
+      break;
+    }
+  }
 }`}</pre></div>
-          </div>
+              <div><p className="text-[11px] text-muted-foreground mb-1">Error Codes</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`400 BAD_REQUEST              Missing/invalid request body
+401 Unauthorized             Missing/invalid API key
+403 API_SCOPE_DENIED         API key lacks required scope
+429 Too Many Requests        API rate limit hit
+502 LLM_AUTH_ERROR           Provider key rejected
+503 LLM_RATE_LIMIT           Provider quota/rate limit
+504 LLM_TIMEOUT              Provider timeout
+500 SERVER_ERROR             Unexpected server error`}</pre></div>
+            </div>
+          )}
+
+          {docsTab === 'ingest' && (
+            <div className="p-4 space-y-3">
+              <p className="text-[11px] text-muted-foreground">Push structured (tabular) data from an external app into a managed MySQL data source. Ingested tables become queryable by the chatbot via text-to-SQL and appear under Data Sources.</p>
+              <div><p className="text-[11px] text-muted-foreground mb-1">Endpoint</p><code className="block text-xs bg-muted px-3 py-2 rounded">POST /api/v1/ingest/dynamic</code></div>
+              <div><p className="text-[11px] text-muted-foreground mb-1">Required scope</p><code className="block text-xs bg-muted px-3 py-2 rounded">ingest:write</code></div>
+              <div><p className="text-[11px] text-muted-foreground mb-1">Headers</p><code className="block text-xs bg-muted px-3 py-2 rounded">x-api-key: YOUR_API_KEY</code></div>
+              <div><p className="text-[11px] text-muted-foreground mb-1">Dynamic Ingest Curl</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`curl https://YOUR_DOMAIN/api/v1/ingest/dynamic \\
+  -H "Content-Type: application/json" \\
+  -H "x-api-key: YOUR_API_KEY" \\
+  -d '{
+    "sourceApp": "genform",
+    "externalSourceId": "genform:FORM_ID",
+    "displayName": "Customer Survey",
+    "description": "Responses from the customer survey form",
+    "mode": "replace",
+    "organizationId": "optional-org-id",
+    "fields": [
+      { "id": "message", "label": "Message", "type": "text" },
+      { "id": "submitted_at", "label": "Submitted At", "type": "date" }
+    ],
+    "records": [
+      { "message": "Great service", "submitted_at": "2026-06-10T04:20:21.000Z" }
+    ]
+  }'`}</pre></div>
+              <div><p className="text-[11px] text-muted-foreground mb-1">Body Fields</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`sourceApp        Label for the source system (e.g. "genform"). Default "external".
+externalSourceId REQUIRED. Stable unique id for this dataset. Same id updates the same table.
+displayName      Human-friendly name shown in Data Sources.
+description      Optional description shown to the model + UI.
+fields[]         Column schema: { id, label, type }.
+                 type: string | text | number | integer | date | boolean
+records[]        REQUIRED. Array of row objects keyed by field id. Max 10,000 per request.
+mode             "replace" (default) rebuilds/overwrites rows, or "append" adds rows.
+organizationId   Optional. Scopes the data source to an organization.`}</pre></div>
+              <div><p className="text-[11px] text-muted-foreground mb-1">Modes</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`replace  Truncates the table then inserts the sent records.
+         Required when the column schema (fields) changes — rebuilds the table.
+append   Keeps existing rows and adds the new records (schema must match).`}</pre></div>
+              <div><p className="text-[11px] text-muted-foreground mb-1">Success Response</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`{
+  "success": true,
+  "created": true,
+  "dataSourceId": "665f...",
+  "tableName": "ds_genform_...",
+  "inserted": 1,
+  "columns": [
+    { "name": "message", "type": "text", "label": "Message", "sourceKey": "message" },
+    { "name": "submitted_at", "type": "date", "label": "Submitted At", "sourceKey": "submitted_at" }
+  ]
+}`}</pre></div>
+              <div><p className="text-[11px] text-muted-foreground mb-1">Notes</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`- Rate limit: 120 requests / minute per API key.
+- Re-send with the same externalSourceId to refresh a dataset (use mode=replace).
+- Row values are inserted with parameterized queries; table/column names are sanitized.
+- Metadata (table name, columns, org scope) is stored in MongoDB; rows live in MySQL.`}</pre></div>
+              <div><p className="text-[11px] text-muted-foreground mb-1">Error Codes</p><pre className="text-xs bg-muted px-3 py-2 rounded whitespace-pre-wrap">{`400 BAD_REQUEST              Missing externalSourceId/records, too many records, or schema changed without mode=replace
+401 Unauthorized             Missing/invalid API key
+403 API_SCOPE_DENIED         API key lacks the ingest:write scope
+429 Too Many Requests        Ingest rate limit hit
+503                          MySQL data source storage unavailable
+500 INGEST_ERROR             Unexpected server error`}</pre></div>
+            </div>
+          )}
         </div>
       </div>
 

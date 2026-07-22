@@ -5,9 +5,11 @@ import { useState } from "react";
 
 interface EChartBlockProps {
   option: Record<string, any>;
+  title?: string;
+  compact?: boolean;
 }
 
-export function EChartBlock({ option }: EChartBlockProps) {
+export function EChartBlock({ option, title = "Chart", compact = false }: EChartBlockProps) {
   const chartRef = useRef<any>(null);
   const [expanded, setExpanded] = useState(false);
   const mapAxis = (axis: any): any => {
@@ -67,9 +69,9 @@ export function EChartBlock({ option }: EChartBlockProps) {
   };
 
   return (
-    <div className={`not-prose my-4 w-full min-w-0 border rounded-lg overflow-hidden ${expanded ? "fixed inset-4 z-50 bg-background shadow-2xl flex flex-col" : ""}`}>
+    <div className={`not-prose ${compact ? "my-0" : "my-4"} w-full min-w-0 border rounded-lg overflow-hidden ${expanded ? "fixed inset-4 z-50 bg-background shadow-2xl flex flex-col" : ""}`}>
       <div className="flex items-center justify-between px-3 py-1.5 bg-muted/50 border-b">
-        <span className="text-[10px] font-medium text-muted-foreground">Chart</span>
+        <span className="text-[10px] font-medium text-muted-foreground truncate">{title}</span>
         <div className="flex items-center gap-1">
           <button onClick={downloadImage} className="p-1 rounded hover:bg-muted transition-colors" title="Download PNG">
             <Download className="w-3.5 h-3.5 text-muted-foreground" />
@@ -80,7 +82,7 @@ export function EChartBlock({ option }: EChartBlockProps) {
         </div>
       </div>
       <div className={expanded ? "flex-1" : ""}>
-        <ReactECharts ref={chartRef} option={darkOption} style={{ height: expanded ? "100%" : "350px", minHeight: "300px", width: "100%" }} />
+        <ReactECharts ref={chartRef} option={darkOption} style={{ height: expanded ? "100%" : compact ? "310px" : "350px", minHeight: compact ? "260px" : "300px", width: "100%" }} />
       </div>
     </div>
   );

@@ -17,12 +17,15 @@ export const DataSourcesPage = () => {
   const [sqlQuery, setSqlQuery] = useState('');
   const [queryResult, setQueryResult] = useState<any>(null);
   const confirm = useConfirm();
+  const userRole = (localStorage.getItem('userRole') || 'user').toLowerCase();
+  const isDeveloper = userRole === 'developer';
 
-  useEffect(() => { load(); loadOrgs(); }, []);
+  useEffect(() => { load(); if (isDeveloper) loadOrgs(); }, []);
   const load = async () => { try { setSources(await api.getDataSources()); } catch (e: any) { toast.error(e.message); } };
   const loadOrgs = async () => { try { const d = await api.getAllOrganizations(); setOrganizations((d.organizations || []).filter((o: any) => o.type === 'organization')); } catch {} };
 
   const handleCreate = async () => {
+    if (!isDeveloper) return;
     if (!form.name) { toast.error('Name required'); return; }
     try {
       await api.createDataSource({ name: form.name, description: form.description, columns: form.columns.filter(c => c.name), organizationIds: form.organizationIds });
@@ -31,12 +34,14 @@ export const DataSourcesPage = () => {
   };
 
   const handleDelete = async (id: string) => {
+    if (!isDeveloper) return;
     if (await confirm({ title: 'Delete Data Source', message: 'This will permanently drop the MySQL table and all data. Continue?', confirmText: 'Delete' })) {
       try { await api.deleteDataSource(id); load(); toast.success('Deleted'); } catch (e: any) { toast.error(e.message); }
     }
   };
 
   const handleClear = async (id: string) => {
+    if (!isDeveloper) return;
     if (await confirm({ title: 'Clear All Records', message: 'This will delete all rows. Continue?', confirmText: 'Clear' })) {
       try { await api.clearDataSource(id); loadRecords(viewSource); toast.success('Cleared'); } catch (e: any) { toast.error(e.message); }
     }
@@ -46,6 +51,7 @@ export const DataSourcesPage = () => {
   const loadRecords = async (s: any, page = 1) => { try { setRecords(await api.getDataSourceRecords(s._id, page)); } catch { setRecords({ records: [], total: 0, page: 1 }); } };
 
   const handleQuery = async () => {
+    if (!isDeveloper) return;
     if (!sqlQuery.trim()) return;
     try { setQueryResult(await api.queryDataSource(sqlQuery)); } catch (e: any) { setQueryResult({ error: e.message }); }
   };
@@ -61,11 +67,17 @@ export const DataSourcesPage = () => {
       <div className="px-6 py-5">
         <div className="flex items-start justify-between mb-5">
           <div>
-            <p className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">Developer</p>
-            <h1 className="text-xl font-semibold">Data Sources</h1>
-            <p className="text-xs text-muted-foreground mt-0.5">MySQL tables for structured data. AI can query these using natural language.</p>
+            <p className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">{isDeveloper ? 'Developer' : 'Management'}</p>
+            <h1 className="text-xl font-semibold">{isDeveloper ? 'Data Sources' : 'Ingested Data'}</h1>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {isDeveloper
+                ? 'MySQL tables for structured data. AI can query these using natural language.'
+                : 'Read-only view of structured data linked to your organization.'}
+            </p>
           </div>
-          <Button size="sm" onClick={() => setShowForm(true)} className="text-xs h-8 rounded-lg"><Plus className="w-3.5 h-3.5 mr-1.5" />Create Table</Button>
+          {isDeveloper && (
+            <Button size="sm" onClick={() => setShowForm(true)} className="text-xs h-8 rounded-lg"><Plus className="w-3.5 h-3.5 mr-1.5" />Create Table</Button>
+          )}
         </div>
 
         {/* Sources List */}
@@ -90,14 +102,14 @@ export const DataSourcesPage = () => {
               </div>
               <div className="flex gap-1">
                 <button onClick={() => openView(s)} className="p-1.5 rounded hover:bg-muted"><Table className="w-4 h-4" /></button>
-                <button onClick={() => handleDelete(s._id)} className="p-1.5 rounded hover:bg-muted text-destructive"><Trash2 className="w-4 h-4" /></button>
+                {isDeveloper && <button onClick={() => handleDelete(s._id)} className="p-1.5 rounded hover:bg-muted text-destructive"><Trash2 className="w-4 h-4" /></button>}
               </div>
             </div>
           ))}
         </div>
 
         {/* SQL Query Tool */}
-        <div className="mt-6 border rounded-lg p-4">
+        {isDeveloper && <div className="mt-6 border rounded-lg p-4">
           <p className="text-xs font-medium mb-2">SQL Query (SELECT only)</p>
           <div className="flex gap-2">
             <input value={sqlQuery} onChange={e => setSqlQuery(e.target.value)} placeholder="SELECT * FROM ds_customer_survey LIMIT 10" className="flex-1 h-8 px-3 text-xs border rounded-lg bg-transparent" onKeyDown={e => e.key === 'Enter' && handleQuery()} />
@@ -113,11 +125,11 @@ export const DataSourcesPage = () => {
               <p className="text-[10px] text-muted-foreground px-2 py-1">{queryResult.rowCount} rows</p>
             </div>
           )}
-        </div>
+        </div>}
       </div>
 
       {/* Create Modal */}
-      {showForm && (
+      {showForm && isDeveloper && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowForm(false)}>
           <div className="bg-background rounded-xl p-5 w-full max-w-lg mx-4 border max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
@@ -188,7 +200,7 @@ export const DataSourcesPage = () => {
                 )}
               </div>
               <div className="flex gap-2">
-                <Button size="sm" variant="outline" onClick={() => handleClear(viewSource._id)} className="text-xs h-7">Clear All</Button>
+                {isDeveloper && <Button size="sm" variant="outline" onClick={() => handleClear(viewSource._id)} className="text-xs h-7">Clear All</Button>}
                 <button onClick={() => setViewSource(null)}><X className="w-4 h-4" /></button>
               </div>
             </div>

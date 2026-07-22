@@ -180,7 +180,7 @@ async function embedTexts(texts, settings) {
     const ollamaUrl = mode === 'offline' ? (settings.offlineOllamaUrl || 'http://ollama:11434') : (settings.offlineOllamaUrl || 'http://ollama:11434');
     const results = [];
     for (const text of texts) {
-      const res = await axios.post(`${ollamaUrl}/api/embed`, { model, input: text });
+      const res = await embedRetryOn429(() => axios.post(`${ollamaUrl}/api/embed`, { model, input: text }));
       results.push(res.data.embeddings[0]);
     }
     return results;
@@ -189,7 +189,7 @@ async function embedTexts(texts, settings) {
   if (provider === 'openai') {
     const apiKey = settings[`embeddingApiKey_openai`] || settings.embeddingApiKey;
     const openai = new OpenAI({ apiKey });
-    const res = await openai.embeddings.create({ model, input: texts });
+    const res = await embedRetryOn429(() => openai.embeddings.create({ model, input: texts }));
     return res.data.map(d => d.embedding);
   }
 
@@ -197,10 +197,10 @@ async function embedTexts(texts, settings) {
     const apiKey = settings[`embeddingApiKey_gemini`] || settings.embeddingApiKey;
     const results = [];
     for (const text of texts) {
-      const res = await axios.post(
+      const res = await embedRetryOn429(() => axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${apiKey}`,
         { content: { parts: [{ text }] }, taskType: 'RETRIEVAL_DOCUMENT' }
-      );
+      ));
       results.push(res.data.embedding.values);
     }
     return results;
@@ -208,13 +208,34 @@ async function embedTexts(texts, settings) {
 
   if (provider === 'mistral') {
     const apiKey = settings[`embeddingApiKey_mistral`] || settings.embeddingApiKey;
-    const res = await axios.post('https://api.mistral.ai/v1/embeddings', { model, input: texts }, {
+    const res = await embedRetryOn429(() => axios.post('https://api.mistral.ai/v1/embeddings', { model, input: texts }, {
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }
-    });
+    }));
     return res.data.data.map(d => d.embedding);
   }
 
   throw new Error(`Unknown embedding provider: ${provider}`);
+}
+
+// Retry embedding network calls on rate limits (HTTP 429) with exponential
+// backoff — important when ingesting many files (e.g. thousands of resumes).
+async function embedRetryOn429(fn, { retries = 5, baseDelayMs = 1500 } = {}) {
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = err?.response?.status || err?.status;
+      const isRateLimit = status === 429 || status === 503;
+      if (!isRateLimit || attempt >= retries) throw err;
+      const retryAfter = Number(err?.response?.headers?.['retry-after']);
+      const delay = Number.isFinite(retryAfter) && retryAfter > 0
+        ? retryAfter * 1000
+        : baseDelayMs * Math.pow(2, attempt) + Math.floor(Math.random() * 500);
+      await new Promise(r => setTimeout(r, delay));
+      attempt++;
+    }
+  }
 }
 
 // ─── Vector Storage ────────────────────────────────────────────
@@ -291,6 +312,57 @@ export async function deleteFileVectors(fileId, settings) {
       }
     } catch (e) { console.error('Pinecone delete error:', e.message); }
   }
+}
+
+// ─── Hybrid: embed one text "card" per tabular row ────────────
+// Build a natural-language card for a single row so entity lookups
+// (e.g. "tell me about Y16ZR") retrieve it via semantic + keyword search,
+// with name variations handled naturally by the embedding model.
+function buildRowCard(sourceName, columns, row) {
+  const parts = [];
+  for (const c of columns) {
+    const key = c.name;
+    const val = row?.[key];
+    if (val === null || val === undefined || String(val).trim() === '') continue;
+    parts.push(`${c.label || c.name}: ${val}`);
+  }
+  return `${sourceName}\n${parts.join('\n')}`;
+}
+
+// Embed rows of a tabular data source into the same vector collection as
+// documents, tagged with file_id (so RAG retrieval and delete-by-file work).
+export async function embedTabularRows({ fileId, fileName, sourceName, dataSourceId, columns, rows, settings, onProgress = null }) {
+  const notify = (s, d) => { if (onProgress) onProgress(s, d); };
+  if (!Array.isArray(rows) || rows.length === 0 || !Array.isArray(columns) || columns.length === 0) return { embedded: 0 };
+  const mode = settings.uploadProcessingMode;
+  const vectorDb = mode === 'offline' ? 'qdrant' : (settings.vectorDbProvider || 'qdrant');
+  const batchSize = 64;
+  let client = null;
+  let stored = 0;
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const batchRows = rows.slice(i, i + batchSize);
+    const texts = batchRows.map(r => buildRowCard(sourceName, columns, r));
+    const vectors = await embedTexts(texts, settings);
+    if (!vectors.length || !vectors[0]?.length) continue;
+    const payloads = texts.map((content, j) => ({
+      file_id: String(fileId),
+      file_name: fileName,
+      page_number: 1,
+      chunk_index: i + j,
+      content,
+      source_type: 'tabular_row',
+      data_source_id: dataSourceId ? String(dataSourceId) : undefined,
+      row_index: i + j,
+    }));
+    if (vectorDb === 'qdrant') {
+      if (!client) { client = await getQdrantClient(settings); await ensureQdrantCollection(client, vectors[0].length); }
+      stored += await storeInQdrant(client, vectors, payloads);
+    } else {
+      stored += await storeInPinecone(vectors, payloads, settings);
+    }
+    notify('embedding_rows', `Embedded ${Math.min(i + batchSize, rows.length)}/${rows.length} row(s)...`);
+  }
+  return { embedded: stored };
 }
 
 // ─── Main Pipeline ─────────────────────────────────────────────
